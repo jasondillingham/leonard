@@ -11,17 +11,17 @@ import (
 // Wire-format payloads for the claim MCP tools. Field names and JSON tags
 // match the schemas declared in phase-3-brief.md / DESIGN.md §4.4.
 //
-// session_id is opaque to Leonard — Claude Code surfaces it via the Stop
-// hook payload and the MCP layer plumbs it through faithfully. The MCP
-// handler does not validate the session id; the real store rejects empty
-// values, which surface as an MCP error result.
+// session_id is opaque to Leonard — it travels as a tag, not a foreign key.
+// An empty value means "unscoped" (not associated with any session yet)
+// and is stored verbatim; get_unverified_claims with no session filter
+// surfaces unscoped rows alongside session-tagged ones.
 
 // RecordClaimInput is the argument shape for record_claim.
 type RecordClaimInput struct {
 	Claim     string `json:"claim" jsonschema:"the assertion being recorded (e.g. 'go vet clean', 'all tests pass')"`
 	Evidence  string `json:"evidence" jsonschema:"supporting evidence — command output, exit codes, file paths; can be longer than the claim itself"`
 	Verified  bool   `json:"verified" jsonschema:"true if the claim has already been confirmed; false to flag it for follow-up at session end"`
-	SessionID string `json:"session_id,omitempty" jsonschema:"opaque Claude Code session identifier; the stop hook fills it in"`
+	SessionID string `json:"session_id,omitempty" jsonschema:"opaque Claude Code session identifier; empty means unscoped (no session attribution yet)"`
 }
 
 // RecordClaimOutput returns the newly assigned claim id.

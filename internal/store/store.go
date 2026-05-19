@@ -513,11 +513,9 @@ func (s *Store) SupersedeDecision(id int64, choice, reasoning string) (int64, er
 }
 
 // RecordClaim inserts a claim row and returns its ID. If RecordedAt is zero,
-// the current unix time is used.
+// the current unix time is used. SessionID is opaque to the store — an empty
+// value means "unscoped" (no session associated yet) and is accepted as-is.
 func (s *Store) RecordClaim(c Claim) (int64, error) {
-	if c.SessionID == "" {
-		return 0, errors.New("store: RecordClaim: empty session id")
-	}
 	if c.RecordedAt == 0 {
 		c.RecordedAt = time.Now().Unix()
 	}

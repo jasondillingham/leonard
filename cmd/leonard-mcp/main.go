@@ -7,10 +7,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	leonardmcp "github.com/jasondillingham/leonard/internal/mcp"
 	"github.com/jasondillingham/leonard/internal/store"
@@ -19,6 +21,11 @@ import (
 
 // version is overridable at build time via -ldflags "-X main.version=...".
 var version = "0.1.0-dev"
+
+// dbWatchInterval is how often the active watcher polls the DB path for a
+// swap. Two seconds is a generous balance: well under the human latency of
+// "did my init succeed?" while keeping the syscall load trivial.
+const dbWatchInterval = 2 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -46,10 +53,39 @@ func run() error {
 	}
 	defer st.Close()
 
-	srv := leonardmcp.NewServer(leonardmcp.NewStoreAdapter(st), leonardmcp.Implementation{
+	adapter := leonardmcp.NewStoreAdapter(st)
+	if err := adapter.WatchDatabase(dbPath); err != nil {
+		return fmt.Errorf("watch database: %w", err)
+	}
+
+	go watchDatabase(ctx, stop, adapter, dbPath, os.Stderr)
+
+	srv := leonardmcp.NewServer(adapter, leonardmcp.Implementation{
 		Name:    "leonard-mcp",
 		Version: version,
 	})
 
 	return srv.Run(ctx, &mcp.StdioTransport{})
+}
+
+// watchDatabase polls the DB path on a ticker and triggers a clean
+// shutdown if the file disappears or its inode no longer matches the
+// open handle. Lazy detection on each tool call (in StoreAdapter) is the
+// primary guard; this watcher tears the server down so a session that
+// goes idle after the swap doesn't keep returning stale reads.
+func watchDatabase(ctx context.Context, stop func(), a *leonardmcp.StoreAdapter, dbPath string, errOut io.Writer) {
+	ticker := time.NewTicker(dbWatchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.CheckDatabase(); err != nil {
+				fmt.Fprintf(errOut, "leonard-mcp: database at %s was removed or replaced — shutting down\n", dbPath)
+				stop()
+				return
+			}
+		}
+	}
 }

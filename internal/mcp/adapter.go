@@ -2,20 +2,88 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"syscall"
 
 	"github.com/jasondillingham/leonard/internal/store"
 )
+
+// ErrDatabaseReplaced is returned by adapter methods when WatchDatabase
+// has been wired and the on-disk database file is gone or its inode no
+// longer matches the open file handle. The error string is a JSON object
+// so clients can parse the code+message even after the MCP layer wraps
+// the error with a tool-name prefix.
+var ErrDatabaseReplaced = errors.New(`{"code":"database-replaced","message":"the project store has been replaced; restart leonard-mcp"}`)
 
 // StoreAdapter wraps *store.Store to satisfy SymbolStore. The store
 // package's methods are context-free; the adapter accepts ctx for
 // uniformity with the MCP-side interface and uses it only for short-circuit
 // cancellation, never to abort an in-flight query.
-type StoreAdapter struct{ S *store.Store }
+//
+// When WatchDatabase has been called, every adapter method stats the
+// configured DB path first and returns ErrDatabaseReplaced on missing or
+// swapped (different inode) files — without touching the now-ghost store.
+type StoreAdapter struct {
+	S       *store.Store
+	dbPath  string
+	dbInode uint64
+}
 
 func NewStoreAdapter(s *store.Store) *StoreAdapter { return &StoreAdapter{S: s} }
 
-func (a *StoreAdapter) FindSymbolsByName(ctx context.Context, name string) ([]SymbolRecord, error) {
+// WatchDatabase enables swap detection against path. The adapter records
+// the file's current inode; subsequent method calls os.Stat the path and
+// compare. Returns an error only if the initial stat fails — callers may
+// proceed without watching by skipping this call.
+func (a *StoreAdapter) WatchDatabase(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("watch database: %w", err)
+	}
+	stat, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("watch database: unsupported FileInfo.Sys() type %T", fi.Sys())
+	}
+	a.dbPath = path
+	a.dbInode = stat.Ino
+	return nil
+}
+
+// CheckDatabase returns ErrDatabaseReplaced when the watched DB file has
+// been removed or replaced under the running server. Returns nil when no
+// path is configured (back-compat for tests that bypass WatchDatabase).
+func (a *StoreAdapter) CheckDatabase() error {
+	if a.dbPath == "" {
+		return nil
+	}
+	fi, err := os.Stat(a.dbPath)
+	if err != nil {
+		return ErrDatabaseReplaced
+	}
+	stat, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil
+	}
+	if stat.Ino != a.dbInode {
+		return ErrDatabaseReplaced
+	}
+	return nil
+}
+
+// preflight checks ctx cancellation and DB swap-detection. Every adapter
+// method runs this first so a ghost-inode store can't accept reads or
+// writes after the on-disk DB has been removed or replaced.
+func (a *StoreAdapter) preflight(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return a.CheckDatabase()
+}
+
+func (a *StoreAdapter) FindSymbolsByName(ctx context.Context, name string) ([]SymbolRecord, error) {
+	if err := a.preflight(ctx); err != nil {
 		return nil, err
 	}
 	syms, err := a.S.FindSymbolsByName(name)
@@ -26,7 +94,7 @@ func (a *StoreAdapter) FindSymbolsByName(ctx context.Context, name string) ([]Sy
 }
 
 func (a *StoreAdapter) FindSymbolsByQuery(ctx context.Context, query string, limit int) ([]SymbolRecord, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return nil, err
 	}
 	syms, err := a.S.FindSymbolsByQuery(query, limit)
@@ -37,7 +105,7 @@ func (a *StoreAdapter) FindSymbolsByQuery(ctx context.Context, query string, lim
 }
 
 func (a *StoreAdapter) ListFiles(ctx context.Context, pattern, language string) ([]FileRecord, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return nil, err
 	}
 	files, err := a.S.ListFiles(pattern, language)
@@ -52,7 +120,7 @@ func (a *StoreAdapter) ListFiles(ctx context.Context, pattern, language string) 
 }
 
 func (a *StoreAdapter) RecordDecision(ctx context.Context, topic, choice, reasoning string) (int64, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return 0, err
 	}
 	return a.S.RecordDecision(store.Decision{
@@ -63,7 +131,7 @@ func (a *StoreAdapter) RecordDecision(ctx context.Context, topic, choice, reason
 }
 
 func (a *StoreAdapter) GetDecisions(ctx context.Context, topic string, since int64, limit int) ([]DecisionRecord, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return nil, err
 	}
 	ds, err := a.S.GetDecisions(topic, since, limit)
@@ -84,14 +152,14 @@ func (a *StoreAdapter) GetDecisions(ctx context.Context, topic string, since int
 }
 
 func (a *StoreAdapter) SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return 0, err
 	}
 	return a.S.SupersedeDecision(decisionID, newChoice, newReasoning)
 }
 
 func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, evidence string, verified bool) (int64, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return 0, err
 	}
 	return a.S.RecordClaim(store.Claim{
@@ -103,7 +171,7 @@ func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, eviden
 }
 
 func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string) ([]ClaimRecord, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return nil, err
 	}
 	cs, err := a.S.GetUnverifiedClaims(sessionID)
@@ -124,7 +192,7 @@ func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string
 }
 
 func (a *StoreAdapter) ListFilesIndexedSince(ctx context.Context, since int64, limit int) ([]FileRecord, error) {
-	if err := ctx.Err(); err != nil {
+	if err := a.preflight(ctx); err != nil {
 		return nil, err
 	}
 	files, err := a.S.ListFilesIndexedSince(since, limit)

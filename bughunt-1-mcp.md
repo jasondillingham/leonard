@@ -29,6 +29,7 @@ Scratch harness lives at `/tmp/leonard-mcp-harness/` (separate `go.mod` with a
 
 ### F1 — `record_claim` schema declares `session_id` optional but the store rejects empty session_id
 
+- **Status:** Fixed on `bosun/fix-mcp` — `store.Store.RecordClaim` no longer rejects empty `session_id` (treated as opaque "unscoped" tag); the MCP schema description for `record_claim.session_id` says empty means unscoped; `internal/store/store_test.go::TestRecordClaimAcceptsEmptySession` covers the store path and the real-store round-trip in `internal/mcp/claims_test.go::TestClaimToolsAgainstRealStore` covers the wire path.
 - **Severity:** high
 - **Reproducer:**
 
@@ -70,6 +71,7 @@ Scratch harness lives at `/tmp/leonard-mcp-harness/` (separate `go.mod` with a
 
 ### F2 — DB removed/replaced mid-session causes silent data loss
 
+- **Status:** Fixed on `bosun/fix-mcp`. `StoreAdapter.WatchDatabase(path)` records the DB's inode at startup; every adapter method preflights through `CheckDatabase`, returning `ErrDatabaseReplaced` (a JSON-formatted sentinel `{"code":"database-replaced","message":"…"}`) when the path is missing or its inode no longer matches. `cmd/leonard-mcp/main.go` also runs a 2s polling goroutine that calls the signal context's `stop()` on swap so an idle session is torn down cleanly. `internal/mcp/claims_test.go::TestDatabaseReplacedDetection` covers the lazy-detection + restart round-trip.
 - **Severity:** high
 - **Reproducer:** `/tmp/leonard-mcp-harness/probe2/main.go` — copy the indexed
   `.leonard/leonard.db` to a scratch dir, start `leonard-mcp` with the scratch

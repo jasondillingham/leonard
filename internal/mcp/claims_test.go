@@ -2,8 +2,10 @@ package mcp_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -327,20 +329,150 @@ func TestClaimToolsAgainstRealStore(t *testing.T) {
 		t.Errorf("expected recorded_at to be populated, got %d", got[0].RecordedAt)
 	}
 
-	// Empty session id is rejected by the real store; the failure should
-	// surface as an MCP error result, not a transport error.
+	// Omitting session_id (the schema declares it optional) records an
+	// unscoped claim and round-trips through get_unverified_claims without
+	// any session filter. session_id is opaque to Leonard.
+	res := callTool(t, sess, "record_claim", map[string]any{
+		"claim":    "no session",
+		"evidence": "",
+		"verified": false,
+	})
+	unscopedID := decodeResult[leonardmcp.RecordClaimOutput](t, res).ClaimID
+	if unscopedID <= 0 {
+		t.Fatalf("expected positive id for unscoped claim, got %d", unscopedID)
+	}
+
+	list = callTool(t, sess, "get_unverified_claims", map[string]any{})
+	got = decodeResult[leonardmcp.GetUnverifiedClaimsOutput](t, list).Claims
+	var unscoped *leonardmcp.ClaimEntry
+	for i := range got {
+		if got[i].ID == unscopedID {
+			unscoped = &got[i]
+			break
+		}
+	}
+	if unscoped == nil {
+		t.Fatalf("unscoped claim %d not surfaced by get_unverified_claims: %+v", unscopedID, got)
+	}
+	if unscoped.SessionID != "" || unscoped.Claim != "no session" {
+		t.Errorf("unscoped claim round-trip mismatch: %+v", *unscoped)
+	}
+}
+
+// TestDatabaseReplacedDetection exercises F2's lazy-detection path: once
+// the on-disk DB file is removed under a running server, the very next
+// tool call must surface a structured database-replaced error rather than
+// silently writing to the unlinked inode. Restarting against the freshly
+// re-init'd file must come up cleanly.
+func TestDatabaseReplacedDetection(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "leonard.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = st.Close()
+		}
+	})
+
+	adapter := leonardmcp.NewStoreAdapter(st)
+	if err := adapter.WatchDatabase(dbPath); err != nil {
+		t.Fatalf("WatchDatabase: %v", err)
+	}
+	sess := newSession(t, adapter)
+
+	// Baseline: a tool call works while the DB is intact.
+	ok := callTool(t, sess, "record_claim", map[string]any{
+		"claim": "before", "evidence": "x", "verified": false, "session_id": "s",
+	})
+	if id := decodeResult[leonardmcp.RecordClaimOutput](t, ok).ClaimID; id <= 0 {
+		t.Fatalf("baseline record_claim returned non-positive id: %d", id)
+	}
+
+	// Simulate `rm -f .leonard/leonard.db*` from another shell. The store's
+	// FD stays valid but the path no longer resolves to the same inode.
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		_ = os.Remove(p)
+	}
+
+	// Lazy detection: the next tool call must surface database-replaced.
 	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "record_claim",
 		Arguments: map[string]any{
-			"claim":    "no session",
-			"evidence": "",
-			"verified": false,
+			"claim": "after", "evidence": "x", "verified": false, "session_id": "s",
 		},
 	})
 	if err != nil {
 		t.Fatalf("CallTool transport: %v", err)
 	}
 	if res == nil || !res.IsError {
-		t.Fatalf("expected IsError when real store rejects empty session_id, got %+v", res)
+		t.Fatalf("expected IsError after DB removed, got %+v", res)
 	}
+	text := errorText(t, res)
+	if !strings.Contains(text, `"code":"database-replaced"`) {
+		t.Fatalf("error result missing database-replaced code; text=%q", text)
+	}
+
+	// A non-claim tool path must also be guarded — the inode check lives in
+	// the adapter, so every method routes through it.
+	res, err = sess.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "list_files",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallTool transport: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError on list_files after DB removed, got %+v", res)
+	}
+	if !strings.Contains(errorText(t, res), `"code":"database-replaced"`) {
+		t.Fatalf("list_files did not surface database-replaced")
+	}
+
+	// "Restart": close the stale store, re-init at the same path, spin up a
+	// fresh adapter+session. Should come up cleanly with no errors.
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close stale store: %v", err)
+	}
+	closed = true
+
+	st2, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("re-init store: %v", err)
+	}
+	t.Cleanup(func() { _ = st2.Close() })
+
+	adapter2 := leonardmcp.NewStoreAdapter(st2)
+	if err := adapter2.WatchDatabase(dbPath); err != nil {
+		t.Fatalf("WatchDatabase after restart: %v", err)
+	}
+	sess2 := newSession(t, adapter2)
+
+	rec := callTool(t, sess2, "record_claim", map[string]any{
+		"claim": "post-restart", "evidence": "x", "verified": false, "session_id": "s",
+	})
+	if id := decodeResult[leonardmcp.RecordClaimOutput](t, rec).ClaimID; id <= 0 {
+		t.Fatalf("post-restart record_claim returned non-positive id: %d", id)
+	}
+}
+
+// errorText returns the textual payload of an IsError result so callers
+// can match against substrings. Falls back through TextContent and the
+// raw Content slice.
+func errorText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	if res == nil {
+		return ""
+	}
+	var parts []string
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			parts = append(parts, tc.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }

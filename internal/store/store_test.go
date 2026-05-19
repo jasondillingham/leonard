@@ -536,10 +536,24 @@ func TestClaimsLifecycle(t *testing.T) {
 	}
 }
 
-func TestRecordClaimRejectsEmptySession(t *testing.T) {
+// session_id is opaque to Leonard; empty means "unscoped" and must be accepted.
+// The unscoped row should round-trip through GetUnverifiedClaims when no
+// session filter is supplied.
+func TestRecordClaimAcceptsEmptySession(t *testing.T) {
 	s, _ := newTestStore(t)
-	if _, err := s.RecordClaim(Claim{Claim: "x", Evidence: "y"}); err == nil {
-		t.Fatal("RecordClaim empty session should error")
+	id, err := s.RecordClaim(Claim{Claim: "x", Evidence: "y"})
+	if err != nil {
+		t.Fatalf("RecordClaim empty session: %v", err)
+	}
+	if id <= 0 {
+		t.Fatalf("expected positive id, got %d", id)
+	}
+	got, err := s.GetUnverifiedClaims("")
+	if err != nil {
+		t.Fatalf("GetUnverifiedClaims: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != id || got[0].SessionID != "" {
+		t.Fatalf("expected one unscoped claim, got %+v", got)
 	}
 }
 
