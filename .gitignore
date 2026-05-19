@@ -1,0 +1,18 @@
+# Built binaries
+/leonard
+/leonard-mcp
+/leonard-hook
+
+# Per-project store and runtime state
+.leonard/leonard.db
+.leonard/leonard.db-journal
+.leonard/leonard.db-wal
+.leonard/leonard.db-shm
+
+# Go
+coverage.out
+*.test
+*.out
+
+# macOS
+.DS_Store
