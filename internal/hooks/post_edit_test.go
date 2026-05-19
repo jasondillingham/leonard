@@ -350,6 +350,101 @@ func TestHandlePostEdit_EvidenceTruncated(t *testing.T) {
 	}
 }
 
+func TestFilterVetNoise(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "no noise passes through",
+			in:   "# example.com/x\nx.go:1: real problem",
+			want: "# example.com/x\nx.go:1: real problem",
+		},
+		{
+			name: "drops go-m1cpu block",
+			in: "# github.com/shoenig/go-m1cpu\n" +
+				"/go/pkg/mod/github.com/shoenig/go-m1cpu@v0.1.6/cpu.go:75:17: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]\n" +
+				"/go/pkg/mod/github.com/shoenig/go-m1cpu@v0.1.6/cpu.go:77:16: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]\n" +
+				"# example.com/project\n" +
+				"# [example.com/project]\n" +
+				"vet: project.go:10: declared and not used: foo",
+			want: "# example.com/project\n" +
+				"# [example.com/project]\n" +
+				"vet: project.go:10: declared and not used: foo",
+		},
+		{
+			name: "noise block at EOF",
+			in: "# example.com/project\n" +
+				"vet: project.go:10: real failure\n" +
+				"# github.com/shoenig/go-m1cpu\n" +
+				"/path/to/cpu.go:1: warning: noise",
+			want: "# example.com/project\nvet: project.go:10: real failure",
+		},
+		{
+			name: "only noise yields empty",
+			in: "# github.com/shoenig/go-m1cpu\n" +
+				"/path/cpu.go:1: warning: foo\n" +
+				"/path/cpu.go:2: warning: bar",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := filterVetNoise(tc.in)
+			if got != tc.want {
+				t.Errorf("filterVetNoise:\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandlePostEdit_StripsVetNoise(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeGoMod(t, root)
+	noisy := "# github.com/shoenig/go-m1cpu\n" +
+		"/go/pkg/mod/github.com/shoenig/go-m1cpu@v0.1.6/cpu.go:75:17: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]\n" +
+		"# example.com/x/cmd/app\n" +
+		"vet: cmd/app/main.go:1: real error"
+	stubVet := func(ctx context.Context, dir string) (string, error) {
+		return noisy, errors.New("exit status 1")
+	}
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-noise",
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: filepath.Join(root, "main.go")},
+		CWD:       root,
+	}))
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: &fakeIndexer{},
+		Claims:  claims,
+		Vet:     stubVet,
+	}, stdin, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	rows := claims.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("claim rows = %d", len(rows))
+	}
+	if strings.Contains(rows[0].Evidence, "go-m1cpu") {
+		t.Errorf("evidence still contains go-m1cpu noise: %q", rows[0].Evidence)
+	}
+	if !strings.Contains(rows[0].Evidence, "vet: cmd/app/main.go:1: real error") {
+		t.Errorf("evidence missing real vet error: %q", rows[0].Evidence)
+	}
+}
+
 func TestRunGoVet_RealCommand(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

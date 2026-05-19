@@ -173,13 +173,55 @@ func runVet(ctx context.Context, opts PostEditOptions, root string) VetResult {
 	vctx, cancel := context.WithTimeout(ctx, opts.VetTimeout)
 	defer cancel()
 	out, err := opts.Vet(vctx, root)
-	res := VetResult{Ran: true, Output: out}
+	res := VetResult{Ran: true, Output: filterVetNoise(out)}
 	if err == nil {
 		res.Passed = true
 	} else {
 		res.ExitErr = err.Error()
 	}
 	return res
+}
+
+// vetNoisePackages lists header lines (`# <pkg>`) whose entire diagnostic
+// block is unconditional environment noise rather than a defect in the
+// project's code. shoenig/go-m1cpu emits CGO compiler warnings every run on
+// Apple-silicon macs regardless of what changed in the project, burying the
+// real vet failure under boilerplate that's identical across runs.
+var vetNoisePackages = []string{
+	"github.com/shoenig/go-m1cpu",
+}
+
+// filterVetNoise removes diagnostic blocks for packages in vetNoisePackages
+// from raw `go vet ./...` combined-output. A block starts at a `# <pkg>`
+// header line and extends through every subsequent line up to (but not
+// including) the next `# ` header or EOF. Non-noise blocks pass through
+// untouched.
+func filterVetNoise(out string) string {
+	if out == "" {
+		return out
+	}
+	lines := strings.Split(out, "\n")
+	kept := make([]string, 0, len(lines))
+	skip := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "# ") {
+			pkg := strings.TrimPrefix(line, "# ")
+			skip = false
+			for _, noise := range vetNoisePackages {
+				if pkg == noise || strings.HasPrefix(pkg, noise+" ") {
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+		} else if skip {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 func hasGoModule(root string) bool {
