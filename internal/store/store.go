@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -14,7 +15,7 @@ import (
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 3
+const schemaVersion = 4
 
 // File describes an indexed source file.
 type File struct {
@@ -40,14 +41,29 @@ type Symbol struct {
 }
 
 // Decision is a recorded project choice. SupersededBy points at the decision
-// that replaces this one (if any).
+// that replaces this one (if any). RelatedFiles / RelatedSymbols are
+// optional pointers into the index used by GetStaleDecisions: a decision
+// referencing a symbol the index no longer knows about is flagged for
+// review rather than going silently stale.
 type Decision struct {
-	ID           int64
-	Topic        string
-	Choice       string
-	Reasoning    string
-	RecordedAt   int64
-	SupersededBy *int64
+	ID             int64
+	Topic          string
+	Choice         string
+	Reasoning      string
+	RecordedAt     int64
+	SupersededBy   *int64
+	RelatedFiles   []string
+	RelatedSymbols []string
+}
+
+// StaleDecision is the response shape for GetStaleDecisions: the decision
+// itself plus the specific refs that no longer resolve against the index.
+// At least one of MissingFiles or MissingSymbols is non-empty by
+// construction — clean decisions are filtered out.
+type StaleDecision struct {
+	Decision       Decision
+	MissingFiles   []string
+	MissingSymbols []string
 }
 
 // Claim is a verifiable assertion made during a Claude Code session.
@@ -129,6 +145,7 @@ var migrations = []func(*sql.Tx) error{
 	migrateV1,
 	migrateV2,
 	migrateV3,
+	migrateV4,
 }
 
 func (s *Store) migrate() error {
@@ -264,6 +281,25 @@ func migrateV3(tx *sql.Tx) error {
 		`ALTER TABLE claims ADD COLUMN vet_ok INTEGER`,
 		`ALTER TABLE claims ADD COLUMN vet_error_summary TEXT`,
 		`CREATE INDEX idx_claims_vet_ok ON claims(vet_ok)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
+		}
+	}
+	return nil
+}
+
+// migrateV4 adds JSON-array columns that let decisions point at the files
+// and symbols they reason about. GetStaleDecisions cross-checks these refs
+// against the live index so a decision whose target symbol has been
+// renamed or removed surfaces for review instead of going silently stale.
+// Both columns are nullable — legacy decisions and refs-less new ones keep
+// NULL and round-trip with empty slices.
+func migrateV4(tx *sql.Tx) error {
+	stmts := []string{
+		`ALTER TABLE decisions ADD COLUMN related_files TEXT`,
+		`ALTER TABLE decisions ADD COLUMN related_symbols TEXT`,
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -454,7 +490,9 @@ func (s *Store) ListFiles(pattern, lang string) ([]File, error) {
 }
 
 // RecordDecision inserts a decision and returns its row ID. If RecordedAt is
-// zero, the current unix time is used.
+// zero, the current unix time is used. RelatedFiles / RelatedSymbols are
+// serialized as JSON arrays (or left NULL when empty) so GetStaleDecisions
+// can later cross-check them against the live index.
 func (s *Store) RecordDecision(d Decision) (int64, error) {
 	if d.Topic == "" {
 		return 0, errors.New("store: RecordDecision: empty topic")
@@ -462,9 +500,19 @@ func (s *Store) RecordDecision(d Decision) (int64, error) {
 	if d.RecordedAt == 0 {
 		d.RecordedAt = time.Now().Unix()
 	}
-	res, err := s.db.Exec(`INSERT INTO decisions(topic, choice, reasoning, recorded_at, superseded_by)
-		VALUES(?, ?, ?, ?, ?)`,
-		d.Topic, d.Choice, d.Reasoning, d.RecordedAt, nullableInt64(d.SupersededBy))
+	relFiles, err := jsonStringArray(d.RelatedFiles)
+	if err != nil {
+		return 0, fmt.Errorf("store: RecordDecision marshal related_files: %w", err)
+	}
+	relSyms, err := jsonStringArray(d.RelatedSymbols)
+	if err != nil {
+		return 0, fmt.Errorf("store: RecordDecision marshal related_symbols: %w", err)
+	}
+	res, err := s.db.Exec(`INSERT INTO decisions(
+		topic, choice, reasoning, recorded_at, superseded_by, related_files, related_symbols
+	) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		d.Topic, d.Choice, d.Reasoning, d.RecordedAt, nullableInt64(d.SupersededBy),
+		relFiles, relSyms)
 	if err != nil {
 		return 0, fmt.Errorf("store: RecordDecision: %w", err)
 	}
@@ -489,7 +537,8 @@ func (s *Store) GetDecisions(topic string, since int64, limit int) ([]Decision, 
 		clauses = append(clauses, "recorded_at >= ?")
 		args = append(args, since)
 	}
-	q := `SELECT id, topic, choice, reasoning, recorded_at, superseded_by FROM decisions`
+	q := `SELECT id, topic, choice, reasoning, recorded_at, superseded_by,
+		related_files, related_symbols FROM decisions`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -504,16 +553,9 @@ func (s *Store) GetDecisions(topic string, since int64, limit int) ([]Decision, 
 
 	var out []Decision
 	for rows.Next() {
-		var (
-			d   Decision
-			sup sql.NullInt64
-		)
-		if err := rows.Scan(&d.ID, &d.Topic, &d.Choice, &d.Reasoning, &d.RecordedAt, &sup); err != nil {
+		d, err := scanDecision(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: GetDecisions scan: %w", err)
-		}
-		if sup.Valid {
-			v := sup.Int64
-			d.SupersededBy = &v
 		}
 		out = append(out, d)
 	}
@@ -521,6 +563,139 @@ func (s *Store) GetDecisions(topic string, since int64, limit int) ([]Decision, 
 		return nil, fmt.Errorf("store: GetDecisions iter: %w", err)
 	}
 	return out, nil
+}
+
+// GetStaleDecisions walks every decision (newest first), cross-checks its
+// related_files / related_symbols against the live index, and returns the
+// ones with at least one missing ref. A file ref is missing when no row in
+// the files table matches the path; a symbol ref is missing when no row in
+// the symbols table matches either the name column or qualified_name. A
+// limit of zero returns up to 200 decisions; the caller is expected to
+// keep total decision counts modest.
+func (s *Store) GetStaleDecisions(limit int) ([]StaleDecision, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.Query(`SELECT id, topic, choice, reasoning, recorded_at,
+		superseded_by, related_files, related_symbols FROM decisions
+		WHERE related_files IS NOT NULL OR related_symbols IS NOT NULL
+		ORDER BY recorded_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: GetStaleDecisions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []StaleDecision
+	for rows.Next() {
+		d, err := scanDecision(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: GetStaleDecisions scan: %w", err)
+		}
+		missingFiles, err := s.missingFiles(d.RelatedFiles)
+		if err != nil {
+			return nil, err
+		}
+		missingSyms, err := s.missingSymbols(d.RelatedSymbols)
+		if err != nil {
+			return nil, err
+		}
+		if len(missingFiles) == 0 && len(missingSyms) == 0 {
+			continue
+		}
+		out = append(out, StaleDecision{
+			Decision:       d,
+			MissingFiles:   missingFiles,
+			MissingSymbols: missingSyms,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: GetStaleDecisions iter: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) missingFiles(paths []string) ([]string, error) {
+	var missing []string
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		var found int
+		if err := s.db.QueryRow(`SELECT 1 FROM files WHERE path = ? LIMIT 1`, p).Scan(&found); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				missing = append(missing, p)
+				continue
+			}
+			return nil, fmt.Errorf("store: missingFiles probe %q: %w", p, err)
+		}
+	}
+	return missing, nil
+}
+
+func (s *Store) missingSymbols(names []string) ([]string, error) {
+	var missing []string
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		var found int
+		err := s.db.QueryRow(`SELECT 1 FROM symbols
+			WHERE name = ? OR qualified_name = ? LIMIT 1`, n, n).Scan(&found)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				missing = append(missing, n)
+				continue
+			}
+			return nil, fmt.Errorf("store: missingSymbols probe %q: %w", n, err)
+		}
+	}
+	return missing, nil
+}
+
+// scanDecision factors out the common row scan used by GetDecisions and
+// GetStaleDecisions. The row's column list must match exactly:
+//   id, topic, choice, reasoning, recorded_at, superseded_by,
+//   related_files, related_symbols
+func scanDecision(rows *sql.Rows) (Decision, error) {
+	var (
+		d       Decision
+		sup     sql.NullInt64
+		relF    sql.NullString
+		relS    sql.NullString
+	)
+	if err := rows.Scan(&d.ID, &d.Topic, &d.Choice, &d.Reasoning,
+		&d.RecordedAt, &sup, &relF, &relS); err != nil {
+		return Decision{}, err
+	}
+	if sup.Valid {
+		v := sup.Int64
+		d.SupersededBy = &v
+	}
+	if relF.Valid && relF.String != "" {
+		if err := json.Unmarshal([]byte(relF.String), &d.RelatedFiles); err != nil {
+			return Decision{}, fmt.Errorf("decode related_files: %w", err)
+		}
+	}
+	if relS.Valid && relS.String != "" {
+		if err := json.Unmarshal([]byte(relS.String), &d.RelatedSymbols); err != nil {
+			return Decision{}, fmt.Errorf("decode related_symbols: %w", err)
+		}
+	}
+	return d, nil
+}
+
+// jsonStringArray serializes xs as a JSON array, or returns nil so the
+// caller persists SQL NULL when there's nothing to record. Empty slices
+// and nil are equivalent — both store NULL.
+func jsonStringArray(xs []string) (any, error) {
+	if len(xs) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(xs)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
 }
 
 // SupersedeDecision records a replacement for an existing decision under the

@@ -39,12 +39,24 @@ type SymbolStore interface {
 
 // DecisionRecord is the subset of internal/store.Decision that the MCP
 // layer surfaces through the decision tools. RecordedAt is unix seconds.
+// RelatedFiles / RelatedSymbols are decoded from the JSON columns added in
+// schema v4; nil for decisions recorded before that migration.
 type DecisionRecord struct {
-	ID         int64
-	Topic      string
-	Choice     string
-	Reasoning  string
-	RecordedAt int64
+	ID             int64
+	Topic          string
+	Choice         string
+	Reasoning      string
+	RecordedAt     int64
+	RelatedFiles   []string
+	RelatedSymbols []string
+}
+
+// StaleDecisionRecord wraps DecisionRecord with the specific refs that no
+// longer resolve against the live index, as returned by get_stale_decisions.
+type StaleDecisionRecord struct {
+	Decision       DecisionRecord
+	MissingFiles   []string
+	MissingSymbols []string
 }
 
 // DecisionStore is the read/write surface the decision tools depend on.
@@ -56,9 +68,10 @@ type DecisionRecord struct {
 // tools when the assertion succeeds — the real StoreAdapter satisfies
 // both interfaces, so leonard-mcp always exposes the full surface.
 type DecisionStore interface {
-	RecordDecision(ctx context.Context, topic, choice, reasoning string) (int64, error)
+	RecordDecision(ctx context.Context, topic, choice, reasoning string, relatedFiles, relatedSymbols []string) (int64, error)
 	GetDecisions(ctx context.Context, topic string, since int64, limit int) ([]DecisionRecord, error)
 	SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error)
+	GetStaleDecisions(ctx context.Context, limit int) ([]StaleDecisionRecord, error)
 }
 
 // ClaimRecord is the subset of internal/store.Claim that the MCP layer

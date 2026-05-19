@@ -26,28 +26,32 @@ type memDecisionStore struct {
 }
 
 type decisionRow struct {
-	id           int64
-	topic        string
-	choice       string
-	reasoning    string
-	recordedAt   int64
-	supersededBy *int64
+	id             int64
+	topic          string
+	choice         string
+	reasoning      string
+	recordedAt     int64
+	supersededBy   *int64
+	relatedFiles   []string
+	relatedSymbols []string
 }
 
 func newMemDecisionStore() *memDecisionStore {
 	return &memDecisionStore{MemStore: leonardmcp.NewMemStore()}
 }
 
-func (m *memDecisionStore) RecordDecision(_ context.Context, topic, choice, reasoning string) (int64, error) {
+func (m *memDecisionStore) RecordDecision(_ context.Context, topic, choice, reasoning string, relatedFiles, relatedSymbols []string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextID++
 	m.decisions = append(m.decisions, decisionRow{
-		id:         m.nextID,
-		topic:      topic,
-		choice:     choice,
-		reasoning:  reasoning,
-		recordedAt: time.Now().Unix(),
+		id:             m.nextID,
+		topic:          topic,
+		choice:         choice,
+		reasoning:      reasoning,
+		recordedAt:     time.Now().Unix(),
+		relatedFiles:   relatedFiles,
+		relatedSymbols: relatedSymbols,
 	})
 	return m.nextID, nil
 }
@@ -96,14 +100,22 @@ func (m *memDecisionStore) GetDecisions(_ context.Context, topic string, since i
 	out := make([]leonardmcp.DecisionRecord, len(filtered))
 	for i, d := range filtered {
 		out[i] = leonardmcp.DecisionRecord{
-			ID:         d.id,
-			Topic:      d.topic,
-			Choice:     d.choice,
-			Reasoning:  d.reasoning,
-			RecordedAt: d.recordedAt,
+			ID:             d.id,
+			Topic:          d.topic,
+			Choice:         d.choice,
+			Reasoning:      d.reasoning,
+			RecordedAt:     d.recordedAt,
+			RelatedFiles:   d.relatedFiles,
+			RelatedSymbols: d.relatedSymbols,
 		}
 	}
 	return out, nil
+}
+
+func (m *memDecisionStore) GetStaleDecisions(_ context.Context, limit int) ([]leonardmcp.StaleDecisionRecord, error) {
+	// Test fixture: nothing is ever stale. Real staleness logic lives in
+	// the store layer and is exercised by store-level tests.
+	return nil, nil
 }
 
 func (m *memDecisionStore) SupersedeDecision(_ context.Context, id int64, newChoice, newReasoning string) (int64, error) {

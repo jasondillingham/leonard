@@ -537,6 +537,102 @@ func TestClaimsLifecycle(t *testing.T) {
 	}
 }
 
+func TestDecisionRelatedRefsRoundTrip(t *testing.T) {
+	s, _ := newTestStore(t)
+	id, err := s.RecordDecision(Decision{
+		Topic:          "cleanup",
+		Choice:         "three-stage discard",
+		Reasoning:      "patch-id + tree-equal + merge-tree",
+		RelatedFiles:   []string{"cmd/bosun/cmd_cleanup.go"},
+		RelatedSymbols: []string{"wouldDiscard", "cmd_cleanup.wouldDiscard"},
+	})
+	if err != nil {
+		t.Fatalf("RecordDecision: %v", err)
+	}
+	got, err := s.GetDecisions("", 0, 10)
+	if err != nil {
+		t.Fatalf("GetDecisions: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != id {
+		t.Fatalf("rows = %+v", got)
+	}
+	d := got[0]
+	if !reflect.DeepEqual(d.RelatedFiles, []string{"cmd/bosun/cmd_cleanup.go"}) {
+		t.Errorf("RelatedFiles = %#v", d.RelatedFiles)
+	}
+	if !reflect.DeepEqual(d.RelatedSymbols, []string{"wouldDiscard", "cmd_cleanup.wouldDiscard"}) {
+		t.Errorf("RelatedSymbols = %#v", d.RelatedSymbols)
+	}
+}
+
+func TestDecisionRefsLessRoundTrip(t *testing.T) {
+	// Decisions without refs persist NULL columns and round-trip with nil
+	// slices — pre-v4 callers must keep working unchanged.
+	s, _ := newTestStore(t)
+	if _, err := s.RecordDecision(Decision{Topic: "t", Choice: "c", Reasoning: "r"}); err != nil {
+		t.Fatalf("RecordDecision: %v", err)
+	}
+	got, err := s.GetDecisions("", 0, 10)
+	if err != nil {
+		t.Fatalf("GetDecisions: %v", err)
+	}
+	if got[0].RelatedFiles != nil || got[0].RelatedSymbols != nil {
+		t.Errorf("expected nil refs, got files=%v symbols=%v",
+			got[0].RelatedFiles, got[0].RelatedSymbols)
+	}
+}
+
+func TestGetStaleDecisions(t *testing.T) {
+	s, _ := newTestStore(t)
+
+	if err := s.UpsertFile(File{Path: "live.go", Hash: "h", Language: "go", SizeBytes: 1}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+	if err := s.ReplaceSymbols("live.go", []Symbol{{
+		Name: "LiveSymbol", QualifiedName: "pkg.LiveSymbol", Kind: "function",
+		StartLine: 1, EndLine: 2, Exported: true,
+	}}); err != nil {
+		t.Fatalf("ReplaceSymbols: %v", err)
+	}
+
+	staleID, err := s.RecordDecision(Decision{
+		Topic:          "drift",
+		Choice:         "x",
+		Reasoning:      "y",
+		RelatedFiles:   []string{"live.go", "deleted.go"},
+		RelatedSymbols: []string{"LiveSymbol", "GoneSymbol", "pkg.LiveSymbol"},
+	})
+	if err != nil {
+		t.Fatalf("RecordDecision stale: %v", err)
+	}
+	if _, err := s.RecordDecision(Decision{
+		Topic: "clean", Choice: "x", Reasoning: "y",
+		RelatedFiles: []string{"live.go"}, RelatedSymbols: []string{"LiveSymbol"},
+	}); err != nil {
+		t.Fatalf("RecordDecision clean: %v", err)
+	}
+	if _, err := s.RecordDecision(Decision{Topic: "no-refs", Choice: "x", Reasoning: "y"}); err != nil {
+		t.Fatalf("RecordDecision norefs: %v", err)
+	}
+
+	stale, err := s.GetStaleDecisions(0)
+	if err != nil {
+		t.Fatalf("GetStaleDecisions: %v", err)
+	}
+	if len(stale) != 1 {
+		t.Fatalf("stale = %d, want 1: %+v", len(stale), stale)
+	}
+	if stale[0].Decision.ID != staleID {
+		t.Errorf("stale id = %d, want %d", stale[0].Decision.ID, staleID)
+	}
+	if !reflect.DeepEqual(stale[0].MissingFiles, []string{"deleted.go"}) {
+		t.Errorf("MissingFiles = %v", stale[0].MissingFiles)
+	}
+	if !reflect.DeepEqual(stale[0].MissingSymbols, []string{"GoneSymbol"}) {
+		t.Errorf("MissingSymbols = %v", stale[0].MissingSymbols)
+	}
+}
+
 func TestClaimsStructuredFieldsRoundTrip(t *testing.T) {
 	s, _ := newTestStore(t)
 	tru, fls := true, false

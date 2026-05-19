@@ -13,9 +13,11 @@ import (
 
 // RecordDecisionInput is the argument shape for record_decision.
 type RecordDecisionInput struct {
-	Topic     string `json:"topic" jsonschema:"the decision topic (e.g. 'auth library', 'caching strategy')"`
-	Choice    string `json:"choice" jsonschema:"what was chosen (one short line)"`
-	Reasoning string `json:"reasoning" jsonschema:"why it was chosen (a sentence or two)"`
+	Topic          string   `json:"topic" jsonschema:"the decision topic (e.g. 'auth library', 'caching strategy')"`
+	Choice         string   `json:"choice" jsonschema:"what was chosen (one short line)"`
+	Reasoning      string   `json:"reasoning" jsonschema:"why it was chosen (a sentence or two)"`
+	RelatedFiles   []string `json:"related_files,omitempty" jsonschema:"file paths this decision reasons about; get_stale_decisions flags the decision when any listed file disappears from the index"`
+	RelatedSymbols []string `json:"related_symbols,omitempty" jsonschema:"symbol names or qualified names this decision reasons about; get_stale_decisions flags the decision when any listed symbol disappears from the index"`
 }
 
 // RecordDecisionOutput returns the newly assigned decision id.
@@ -32,13 +34,36 @@ type GetDecisionsInput struct {
 	Limit int    `json:"limit,omitempty" jsonschema:"max results (default 20, capped at 200)"`
 }
 
-// DecisionEntry is the wire-format decision returned by get_decisions.
+// DecisionEntry is the wire-format decision returned by get_decisions and
+// embedded in StaleDecisionEntry. Related arrays are omitted from the JSON
+// when empty so callers that didn't supply refs still get the legacy shape.
 type DecisionEntry struct {
-	ID         int64  `json:"id"`
-	Topic      string `json:"topic"`
-	Choice     string `json:"choice"`
-	Reasoning  string `json:"reasoning"`
-	RecordedAt int64  `json:"recorded_at"`
+	ID             int64    `json:"id"`
+	Topic          string   `json:"topic"`
+	Choice         string   `json:"choice"`
+	Reasoning      string   `json:"reasoning"`
+	RelatedFiles   []string `json:"related_files,omitempty"`
+	RelatedSymbols []string `json:"related_symbols,omitempty"`
+	RecordedAt     int64    `json:"recorded_at"`
+}
+
+// GetStaleDecisionsInput is the argument shape for get_stale_decisions.
+type GetStaleDecisionsInput struct {
+	Limit int `json:"limit,omitempty" jsonschema:"max results (default 50, capped at 200)"`
+}
+
+// StaleDecisionEntry is the wire shape returned by get_stale_decisions: a
+// decision plus the specific files / symbols referenced by it that no
+// longer resolve against the live index.
+type StaleDecisionEntry struct {
+	Decision       DecisionEntry `json:"decision"`
+	MissingFiles   []string      `json:"missing_files,omitempty"`
+	MissingSymbols []string      `json:"missing_symbols,omitempty"`
+}
+
+// GetStaleDecisionsOutput wraps the entries array.
+type GetStaleDecisionsOutput struct {
+	Decisions []StaleDecisionEntry `json:"decisions"`
 }
 
 // GetDecisionsOutput wraps the decisions array. MCP requires structured
@@ -69,7 +94,7 @@ func recordDecision(ctx context.Context, ds DecisionStore, in RecordDecisionInpu
 	if in.Topic == "" {
 		return RecordDecisionOutput{}, errors.New("record_decision: topic is required")
 	}
-	id, err := ds.RecordDecision(ctx, in.Topic, in.Choice, in.Reasoning)
+	id, err := ds.RecordDecision(ctx, in.Topic, in.Choice, in.Reasoning, in.RelatedFiles, in.RelatedSymbols)
 	if err != nil {
 		return RecordDecisionOutput{}, fmt.Errorf("record_decision: %w", err)
 	}
@@ -90,15 +115,49 @@ func getDecisions(ctx context.Context, ds DecisionStore, in GetDecisionsInput) (
 	}
 	out := make([]DecisionEntry, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, DecisionEntry{
-			ID:         r.ID,
-			Topic:      r.Topic,
-			Choice:     r.Choice,
-			Reasoning:  r.Reasoning,
-			RecordedAt: r.RecordedAt,
-		})
+		out = append(out, decisionRecordToEntry(r))
 	}
 	return GetDecisionsOutput{Decisions: out}, nil
+}
+
+func decisionRecordToEntry(r DecisionRecord) DecisionEntry {
+	return DecisionEntry{
+		ID:             r.ID,
+		Topic:          r.Topic,
+		Choice:         r.Choice,
+		Reasoning:      r.Reasoning,
+		RelatedFiles:   r.RelatedFiles,
+		RelatedSymbols: r.RelatedSymbols,
+		RecordedAt:     r.RecordedAt,
+	}
+}
+
+const (
+	getStaleDecisionsDefaultLimit = 50
+	getStaleDecisionsMaxLimit     = 200
+)
+
+func getStaleDecisions(ctx context.Context, ds DecisionStore, in GetStaleDecisionsInput) (GetStaleDecisionsOutput, error) {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = getStaleDecisionsDefaultLimit
+	}
+	if limit > getStaleDecisionsMaxLimit {
+		limit = getStaleDecisionsMaxLimit
+	}
+	recs, err := ds.GetStaleDecisions(ctx, limit)
+	if err != nil {
+		return GetStaleDecisionsOutput{}, fmt.Errorf("get_stale_decisions: %w", err)
+	}
+	out := make([]StaleDecisionEntry, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, StaleDecisionEntry{
+			Decision:       decisionRecordToEntry(r.Decision),
+			MissingFiles:   r.MissingFiles,
+			MissingSymbols: r.MissingSymbols,
+		})
+	}
+	return GetStaleDecisionsOutput{Decisions: out}, nil
 }
 
 func supersedeDecision(ctx context.Context, ds DecisionStore, in SupersedeDecisionInput) (SupersedeDecisionOutput, error) {
@@ -117,7 +176,7 @@ func supersedeDecision(ctx context.Context, ds DecisionStore, in SupersedeDecisi
 func registerDecisionTools(srv *mcp.Server, ds DecisionStore) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "record_decision",
-		Description: "Record a project decision so future Claude Code sessions can see it. Takes a topic, the choice made, and the reasoning. Returns the new decision id.",
+		Description: "Record a project decision so future Claude Code sessions can see it. Takes a topic, the choice made, the reasoning, and optional related_files / related_symbols arrays — referenced files/symbols are cross-checked by get_stale_decisions so a decision whose target moves doesn't go silently stale. Returns the new decision id.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in RecordDecisionInput) (*mcp.CallToolResult, RecordDecisionOutput, error) {
 		out, err := recordDecision(ctx, ds, in)
 		if err != nil {
@@ -144,6 +203,17 @@ func registerDecisionTools(srv *mcp.Server, ds DecisionStore) {
 		out, err := supersedeDecision(ctx, ds, in)
 		if err != nil {
 			return nil, SupersedeDecisionOutput{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_stale_decisions",
+		Description: "Return decisions whose related_files or related_symbols no longer resolve against the live index. Each entry includes the decision plus the specific missing refs so a session-start review can spot narratives the codebase has outgrown. Limit defaults to 50 and caps at 200.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetStaleDecisionsInput) (*mcp.CallToolResult, GetStaleDecisionsOutput, error) {
+		out, err := getStaleDecisions(ctx, ds, in)
+		if err != nil {
+			return nil, GetStaleDecisionsOutput{}, err
 		}
 		return nil, out, nil
 	})

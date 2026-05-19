@@ -119,14 +119,16 @@ func (a *StoreAdapter) ListFiles(ctx context.Context, pattern, language string) 
 	return out, nil
 }
 
-func (a *StoreAdapter) RecordDecision(ctx context.Context, topic, choice, reasoning string) (int64, error) {
+func (a *StoreAdapter) RecordDecision(ctx context.Context, topic, choice, reasoning string, relatedFiles, relatedSymbols []string) (int64, error) {
 	if err := a.preflight(ctx); err != nil {
 		return 0, err
 	}
 	return a.S.RecordDecision(store.Decision{
-		Topic:     topic,
-		Choice:    choice,
-		Reasoning: reasoning,
+		Topic:          topic,
+		Choice:         choice,
+		Reasoning:      reasoning,
+		RelatedFiles:   relatedFiles,
+		RelatedSymbols: relatedSymbols,
 	})
 }
 
@@ -140,15 +142,40 @@ func (a *StoreAdapter) GetDecisions(ctx context.Context, topic string, since int
 	}
 	out := make([]DecisionRecord, len(ds))
 	for i, d := range ds {
-		out[i] = DecisionRecord{
-			ID:         d.ID,
-			Topic:      d.Topic,
-			Choice:     d.Choice,
-			Reasoning:  d.Reasoning,
-			RecordedAt: d.RecordedAt,
+		out[i] = decisionToRecord(d)
+	}
+	return out, nil
+}
+
+func (a *StoreAdapter) GetStaleDecisions(ctx context.Context, limit int) ([]StaleDecisionRecord, error) {
+	if err := a.preflight(ctx); err != nil {
+		return nil, err
+	}
+	ss, err := a.S.GetStaleDecisions(limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]StaleDecisionRecord, len(ss))
+	for i, s := range ss {
+		out[i] = StaleDecisionRecord{
+			Decision:       decisionToRecord(s.Decision),
+			MissingFiles:   s.MissingFiles,
+			MissingSymbols: s.MissingSymbols,
 		}
 	}
 	return out, nil
+}
+
+func decisionToRecord(d store.Decision) DecisionRecord {
+	return DecisionRecord{
+		ID:             d.ID,
+		Topic:          d.Topic,
+		Choice:         d.Choice,
+		Reasoning:      d.Reasoning,
+		RecordedAt:     d.RecordedAt,
+		RelatedFiles:   d.RelatedFiles,
+		RelatedSymbols: d.RelatedSymbols,
+	}
 }
 
 func (a *StoreAdapter) SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error) {
