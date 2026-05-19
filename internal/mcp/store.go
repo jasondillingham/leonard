@@ -18,11 +18,14 @@ type SymbolRecord struct {
 }
 
 // FileRecord is the subset of internal/store.File the MCP layer surfaces
-// through list_files.
+// through list_files and recent_changes. IndexedAt is unix seconds; it is
+// populated by the recent_changes path and left zero by list_files (which
+// has no need for it). Adding the field is a back-compat additive change.
 type FileRecord struct {
 	Path      string
 	Language  string
 	SizeBytes int64
+	IndexedAt int64
 }
 
 // SymbolStore is the read-side surface the MCP handlers depend on. The
@@ -76,4 +79,12 @@ type ClaimRecord struct {
 type ClaimStore interface {
 	RecordClaim(ctx context.Context, sessionID, claim, evidence string, verified bool) (int64, error)
 	GetUnverifiedClaims(ctx context.Context, sessionID string) ([]ClaimRecord, error)
+}
+
+// ChangesStore is the read surface the recent_changes tool depends on.
+// Sibling to SymbolStore/DecisionStore so test fixtures that don't care
+// about the changes tool aren't forced to implement it — register() type
+// asserts and only wires the tool when the assertion succeeds.
+type ChangesStore interface {
+	ListFilesIndexedSince(ctx context.Context, since int64, limit int) ([]FileRecord, error)
 }

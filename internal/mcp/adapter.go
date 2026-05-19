@@ -123,6 +123,26 @@ func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string
 	return out, nil
 }
 
+func (a *StoreAdapter) ListFilesIndexedSince(ctx context.Context, since int64, limit int) ([]FileRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	files, err := a.S.ListFilesIndexedSince(since, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FileRecord, len(files))
+	for i, f := range files {
+		out[i] = FileRecord{
+			Path:      f.Path,
+			Language:  f.Language,
+			SizeBytes: f.SizeBytes,
+			IndexedAt: f.IndexedAt,
+		}
+	}
+	return out, nil
+}
+
 func symbolsToRecords(syms []store.Symbol) []SymbolRecord {
 	out := make([]SymbolRecord, len(syms))
 	for i, s := range syms {

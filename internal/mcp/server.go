@@ -81,6 +81,12 @@ func register(srv *mcp.Server, store SymbolStore) {
 	if cs, ok := store.(ClaimStore); ok {
 		registerClaimTools(srv, cs)
 	}
+
+	// Same gated wiring for recent_changes: only the real StoreAdapter
+	// (and changes-aware test fixtures) implement ChangesStore.
+	if cs, ok := store.(ChangesStore); ok {
+		registerChangesTool(srv, cs)
+	}
 }
 
 // verifySymbol is the thin shim: name lookup + optional kind/language
