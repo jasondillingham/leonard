@@ -28,7 +28,7 @@ All three share a single SQLite store at `.leonard/leonard.db` in the project ro
 | Language | Parser | Status |
 |---|---|---|
 | Go | stdlib `go/parser` | Production. Self-dogfooded on this repo; vet+test invariant enforced via the post-edit hook. |
-| TypeScript / TSX | hand-rolled (`internal/parse/typescript.go`) | Real-world tested. Indexed cleanly on first run against a 22-file Next.js App-Router project — functions, classes, interfaces, type aliases, const/let/var, all extracted with accurate file/line. |
+| TypeScript / TSX | hand-rolled (`internal/parse/typescript.go`) | Real-world tested on 401-file / 7k-symbol Zod corpus plus a 22-file Next.js App-Router project. Functions, classes (including generic defaults, abstract, methods named after keywords like `default`/`type`, and inline `{ a: T }`-shaped return types), interfaces, type aliases, const/let/var all extract with accurate file/line. Known limitation: `export const X = () => …` arrow-function exports are classified as `kind=const` rather than `kind=function` — the signature still carries enough to recognize them, but `find_symbol(kind=function)` filters won't match. Tracked as `selfhost F2`. |
 | Python | `gpython` AST | Fixture-tested only. The parser passes the `testdata/python/` cases but hasn't been driven by a live Python project. Report issues against real repos so we can harden it before v0.2. |
 
 ## Install

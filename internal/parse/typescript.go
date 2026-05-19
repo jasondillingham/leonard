@@ -653,11 +653,19 @@ func (p *tsParser) parseClass(exported bool, startLine int) bool {
 func (p *tsParser) parseClassMember(className string, parentExported bool) bool {
 	saved := p.pos
 	startLine := p.peek().line
-	// Modifiers.
+	// Modifiers. Several of these keywords (`async`, `declare`, `get`, `set`,
+	// `static`, ...) are also legal as method names — a `declare()` method
+	// looks the same as the `declare` modifier prefix until you peek at the
+	// next token. A keyword immediately followed by `(` is being used as the
+	// method name, not as a modifier; stop the loop so the name-parsing
+	// branch can pick it up.
 	sawStatic := false
 	for p.pos < len(p.tokens) {
 		t := p.peek()
 		if t.kind != "kw" {
+			break
+		}
+		if p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].val == "(" {
 			break
 		}
 		switch t.val {
@@ -691,14 +699,41 @@ func (p *tsParser) parseClassMember(className string, parentExported bool) bool 
 	if p.peek().val == "*" {
 		p.pos++ // generator method
 	}
+	// Member name. Identifiers are the common case, but JS/TS allow reserved
+	// words and string literals as method names too. When the name is a
+	// keyword we treat it as a textual identifier; when it's a stripped
+	// string-literal (the original source had `"foo"(...)` and stripping
+	// blanked the literal away) we still parse the member's structure so
+	// the class brace counter stays aligned, but skip emitting a symbol.
 	nameTok := p.peek()
-	if nameTok.kind != "ident" {
-		// Computed property names (`[Symbol.iterator]()`), semicolons, etc.
-		// Leave them for the caller's skip-one fallback.
+	memberName := ""
+	switch {
+	case nameTok.kind == "ident":
+		memberName = nameTok.val
+		p.pos++
+	case nameTok.kind == "kw":
+		// Common case in the wild: methods named `default`, `type`,
+		// `declare`, `import`, etc. Without this branch the class-body
+		// loop walked past the unnamed member token-by-token and
+		// eventually swallowed an inner `}` as the class end.
+		memberName = nameTok.val
+		p.pos++
+	case nameTok.val == "[":
+		// Computed property name (`[Symbol.iterator]()`). Consume the
+		// brackets so the rest of the member parses correctly; emit no
+		// symbol since we don't have a textual handle.
+		if p.captureBalanced("[", "]") == nil {
+			p.pos = saved
+			return false
+		}
+	case nameTok.val == "(":
+		// String-literal method name (`"~validate"(...)`) — the literal
+		// stripped to whitespace, leaving the `(` exposed. Fall through to
+		// the params/return-type/body skip with no name to emit.
+	default:
 		p.pos = saved
 		return false
 	}
-	p.pos++
 	if p.peek().val == "?" {
 		p.pos++ // optional member
 	}
@@ -730,12 +765,18 @@ func (p *tsParser) parseClassMember(className string, parentExported bool) bool 
 		endLine = p.peek().line
 		p.pos++
 	}
+	if memberName == "" {
+		// Member was a stripped string literal or computed name. We
+		// consumed its structure so the brace counter stays aligned, but
+		// emit no symbol since the index has no textual handle for it.
+		return true
+	}
 	p.syms = append(p.syms, store.Symbol{
 		FilePath:      p.path,
-		Name:          nameTok.val,
-		QualifiedName: className + "." + nameTok.val,
+		Name:          memberName,
+		QualifiedName: className + "." + memberName,
 		Kind:          "method",
-		Signature:     nameTok.val + "(" + extractParamNames(params) + ")",
+		Signature:     memberName + "(" + extractParamNames(params) + ")",
 		StartLine:     startLine,
 		EndLine:       endLine,
 		Exported:      parentExported,
@@ -990,24 +1031,35 @@ func (p *tsParser) captureBalanced(open, close string) []tsToken {
 // skipReturnType: from just after the `)` of a function parameter list,
 // consume an optional `: T` return type annotation. Stops at the function
 // body `{` at depth 0, at `;` (declaration-only), or at a top-level keyword.
-// Tracks `()`, `[]`, and `<>` as delimiters but intentionally does NOT track
-// `{}` — that lets us treat the first `{` at depth 0 as the function body.
-// As a side effect, object-type-literal return types (`function f(): { a: T }
-// { body }`) are mis-extracted: the first `{` is treated as the body. This is
-// uncommon in real code and the parser still emits the function symbol; the
-// only consequence is the wrong EndLine on those declarations. Documented
-// trade-off for v0.
+//
+// Object-type-literal returns (`method(): { a: T } { body }`) are the
+// reason this routine needs a state machine instead of plain depth
+// tracking. The `{` of the type literal looks identical to the body `{`,
+// so we distinguish by whether we're "expecting a type atom" — which is
+// true after `:`, `,`, `|`, `&`, `=>`, `?`, `extends`, and other type
+// connectives, and false after we've consumed an identifier or closed a
+// balanced bracket group. A `{` at depth 0 in atom-expecting position is
+// part of the type and increments depth; a `{` at depth 0 in
+// post-atom position is the function body and ends the scan.
+//
+// Getting this wrong in v0 caused silent class-body truncation in
+// real-world TS: the type literal was eaten as the method body, then the
+// real method body's closing brace ended the enclosing class
+// prematurely, losing every method declared after it.
 func (p *tsParser) skipReturnType() {
 	if p.peek().val != ":" {
 		return
 	}
 	p.pos++
+	expectingAtom := true
 	depth := 0
 	for p.pos < len(p.tokens) {
 		t := p.peek()
 		if depth == 0 {
-			switch t.val {
-			case "{", ";":
+			if t.val == "{" && !expectingAtom {
+				return
+			}
+			if t.val == ";" {
 				return
 			}
 			if t.kind == "kw" {
@@ -1020,13 +1072,28 @@ func (p *tsParser) skipReturnType() {
 			}
 		}
 		switch t.val {
-		case "(", "[", "<":
+		case "(", "[", "<", "{":
 			depth++
-		case ")", "]", ">":
+			expectingAtom = true
+		case ")", "]", ">", "}":
 			if depth > 0 {
 				depth--
+				expectingAtom = false
 			} else {
 				return
+			}
+		case ",", "|", "&", "=>", "?", ":":
+			expectingAtom = true
+		default:
+			if t.kind == "kw" {
+				switch t.val {
+				case "keyof", "typeof", "readonly", "extends", "infer", "in", "out":
+					expectingAtom = true
+				default:
+					expectingAtom = false
+				}
+			} else {
+				expectingAtom = false
 			}
 		}
 		p.pos++

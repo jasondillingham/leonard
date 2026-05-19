@@ -136,6 +136,141 @@ func TestExtractTypeScript_Symbols(t *testing.T) {
 	}
 }
 
+// TestExtractTypeScript_ObjectTypeLiteralReturn locks in the fix for the
+// real-world bug found dogfooding the parser against Zod: a class method
+// whose return type is an inline `{ ... }` object type literal used to
+// confuse the brace counter. The type literal was treated as the body,
+// the real body's closing brace was mistaken for the class end, and every
+// class member declared after that method was silently dropped from the
+// index.
+//
+// This fixture mirrors the shape in Zod's v3/types.ts ZodType class.
+func TestExtractTypeScript_ObjectTypeLiteralReturn(t *testing.T) {
+	t.Parallel()
+	src := `export class C {
+  early(): string {
+    return "";
+  }
+  inline(input: number): {
+    status: string;
+    ctx: number;
+  } {
+    return { status: "", ctx: input };
+  }
+  late(): number {
+    return 1;
+  }
+  unionShape(): { a: number } | string {
+    return "";
+  }
+  arrowShape(): (x: number) => string {
+    return (_x) => "";
+  }
+}
+`
+	syms, err := ExtractTypeScript("c.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	want := []string{
+		"method:C.early",
+		"method:C.inline",
+		"method:C.late",
+		"method:C.unionShape",
+		"method:C.arrowShape",
+	}
+	got := map[string]bool{}
+	var classEndLine int
+	for _, s := range syms {
+		got[s.Kind+":"+s.QualifiedName] = true
+		if s.QualifiedName == "C" && s.Kind == "type" {
+			classEndLine = s.EndLine
+		}
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("missing symbol %s; the object-type-literal return type bug truncated the class", w)
+		}
+	}
+	// The class spans from line 1 to the final `}` on line 20.
+	if classEndLine < 19 {
+		t.Errorf("class C end_line = %d, want >= 19 (truncation indicates skipReturnType regression)", classEndLine)
+	}
+}
+
+// TestExtractTypeScript_KeywordAsMethodName locks in the fix for the
+// Zod-dogfood bug: methods whose name is a TS keyword token (`default`,
+// `type`, `import`, `declare`, ...) were not recognized by parseClassMember,
+// the class-body loop walked through their tokens one at a time, and the
+// real body's closing `}` was eventually mistaken for the class end —
+// silently dropping every method declared after the keyword-named one.
+func TestExtractTypeScript_KeywordAsMethodName(t *testing.T) {
+	t.Parallel()
+	src := `export class C {
+  before(): void {}
+  default(x: number): C {
+    return this;
+  }
+  type(): string { return ""; }
+  declare(): void {}
+  after(): void {}
+}
+`
+	syms, err := ExtractTypeScript("c.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	wantMethods := []string{"before", "default", "type", "declare", "after"}
+	got := map[string]bool{}
+	for _, s := range syms {
+		if s.Kind == "method" {
+			got[s.Name] = true
+		}
+	}
+	for _, w := range wantMethods {
+		if !got[w] {
+			t.Errorf("method %s missing (keyword-as-method-name regression?)", w)
+		}
+	}
+}
+
+// TestExtractTypeScript_StringLiteralMethodName covers `"foo"(...) { ... }`.
+// The literal strips to whitespace before tokenizing, so the parser sees a
+// bare `(` with no identifier. We can't emit a symbol (no textual handle)
+// but we still need to consume the member's structure so the class brace
+// counter stays aligned — otherwise the body's closing brace gets
+// interpreted as the class end and subsequent members are lost.
+func TestExtractTypeScript_StringLiteralMethodName(t *testing.T) {
+	t.Parallel()
+	src := `export class C {
+  before(): void {}
+  "~validate"(data: unknown): string {
+    return "";
+  }
+  after(): void {}
+}
+`
+	syms, err := ExtractTypeScript("c.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	var hasBefore, hasAfter bool
+	for _, s := range syms {
+		if s.Kind == "method" && s.Name == "before" {
+			hasBefore = true
+		}
+		if s.Kind == "method" && s.Name == "after" {
+			hasAfter = true
+		}
+	}
+	if !hasBefore {
+		t.Error("method 'before' missing")
+	}
+	if !hasAfter {
+		t.Error("method 'after' missing — string-literal method name caused class-body truncation")
+	}
+}
+
 func TestExtractTypeScript_Signatures(t *testing.T) {
 	t.Parallel()
 
