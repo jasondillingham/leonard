@@ -27,15 +27,19 @@ func ExtractTypeScript(path string, src []byte) ([]store.Symbol, error) {
 }
 
 // stripTSLiterals returns a byte slice the same length as src in which string
-// literals (single, double, template), comments (line and block), and the
-// interior of template-literal expressions are replaced with spaces. Newlines
-// are preserved so token line numbers continue to match src. Regex literals
-// are intentionally not stripped — top-level regex is rare in real TS code
-// and disambiguating regex from division would require full expression
-// parsing; the false-positive risk for symbol extraction is acceptable for v0.
+// literals (single, double, template), regex literals, comments (line and
+// block), and the interior of template-literal expressions are replaced with
+// spaces. Newlines are preserved so token line numbers continue to match src.
+//
+// Regex literals are disambiguated from division by tracking the class of the
+// previous significant token: after a value-yielding token (ident, number,
+// `)`, `]`, string/template/regex literal), a `/` is division; after an
+// operator, punctuator, expression-starting keyword, or start-of-file, a `/`
+// starts a regex.
 func stripTSLiterals(src []byte) ([]byte, error) {
 	out := make([]byte, len(src))
 	i := 0
+	regexPossible := true
 	for i < len(src) {
 		c := src[i]
 		switch {
@@ -64,17 +68,115 @@ func stripTSLiterals(src []byte) ([]byte, error) {
 				out[i] = ' '
 				i++
 			}
+		case c == '/' && regexPossible:
+			i = stripRegex(src, out, i)
+			regexPossible = false
 		case c == '"' || c == '\'':
 			i = stripQuoted(src, out, i, c)
+			regexPossible = false
 		case c == '`':
 			out[i] = ' '
 			i = stripTSTemplate(src, out, i+1)
+			regexPossible = false
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+			out[i] = c
+			i++
+		case isTSIdentStart(c):
+			start := i
+			out[i] = c
+			i++
+			for i < len(src) && isTSIdentCont(src[i]) {
+				out[i] = src[i]
+				i++
+			}
+			regexPossible = isExprStartKeyword(string(src[start:i]))
+		case c >= '0' && c <= '9':
+			out[i] = c
+			i++
+			for i < len(src) && (isTSIdentCont(src[i]) || src[i] == '.') {
+				out[i] = src[i]
+				i++
+			}
+			regexPossible = false
 		default:
 			out[i] = c
 			i++
+			// `)` and `]` end a value (next `/` is division); all other
+			// punctuators (`=`, `,`, `(`, `[`, `{`, `}`, `;`, `:`, `?`, `!`,
+			// `&`, `|`, `^`, `~`, `+`, `-`, `*`, `%`, `<`, `>`, `.`, `@`,
+			// `#`) leave us in an expression-start position.
+			regexPossible = c != ')' && c != ']'
 		}
 	}
 	return out, nil
+}
+
+// isExprStartKeyword reports whether the given identifier, when it appears
+// as a keyword, is followed by an expression — so a `/` after it starts a
+// regex literal rather than a division operator. Non-keyword identifiers
+// and value-keywords (`this`, `true`, etc.) are values, so a `/` after them
+// is division.
+func isExprStartKeyword(ident string) bool {
+	switch ident {
+	case "return", "typeof", "instanceof", "in", "of", "new", "delete",
+		"void", "throw", "yield", "await", "case", "do", "else", "if",
+		"while", "for", "switch", "default":
+		return true
+	}
+	return false
+}
+
+// stripRegex blanks the body of a regex literal starting at i (the opening
+// `/`). Character classes `[...]` are tracked so a `/` inside them doesn't
+// terminate the regex. Trailing flag characters (e.g. `gimsuy`) are also
+// blanked. Returns the index just past the last flag (or the end of the
+// line on an unterminated regex).
+func stripRegex(src, out []byte, i int) int {
+	out[i] = ' '
+	i++
+	inClass := false
+	for i < len(src) {
+		c := src[i]
+		if c == '\\' && i+1 < len(src) {
+			out[i] = ' '
+			if src[i+1] == '\n' {
+				out[i+1] = '\n'
+			} else {
+				out[i+1] = ' '
+			}
+			i += 2
+			continue
+		}
+		if c == '\n' {
+			// Unterminated regex; bail so line counters stay aligned.
+			out[i] = '\n'
+			return i + 1
+		}
+		if c == '[' && !inClass {
+			inClass = true
+			out[i] = ' '
+			i++
+			continue
+		}
+		if c == ']' && inClass {
+			inClass = false
+			out[i] = ' '
+			i++
+			continue
+		}
+		if c == '/' && !inClass {
+			out[i] = ' '
+			i++
+			for i < len(src) && isTSIdentCont(src[i]) {
+				out[i] = ' '
+				i++
+			}
+			return i
+		}
+		out[i] = ' '
+		i++
+	}
+	return i
 }
 
 // stripQuoted blanks the body of a "..." or '...' string starting at i (the
@@ -537,18 +639,39 @@ func (p *tsParser) parseClassMember(className string, parentExported bool) bool 
 	saved := p.pos
 	startLine := p.peek().line
 	// Modifiers.
+	sawStatic := false
 	for p.pos < len(p.tokens) {
 		t := p.peek()
 		if t.kind != "kw" {
 			break
 		}
 		switch t.val {
-		case "public", "private", "protected", "static", "readonly",
+		case "static":
+			sawStatic = true
+			p.pos++
+			continue
+		case "public", "private", "protected", "readonly",
 			"async", "abstract", "override", "get", "set", "declare":
 			p.pos++
 			continue
 		}
 		break
+	}
+	// `static { ... }` initializer block (TS 4.4+). The body is balanced
+	// internally; the class continues after it. No symbol is emitted.
+	if sawStatic && p.peek().val == "{" {
+		p.skipBalanced()
+		return true
+	}
+	// Decorators on class members (`@log foo() { ... }`). Consume the
+	// decorator's tokens — `@<expression>` optionally followed by an
+	// argument list — then continue normal member parsing.
+	if p.peek().val == "@" {
+		p.skipDecorators()
+		// Re-enter parseClassMember on the post-decorator tokens so any
+		// modifiers (public/private/static/…) on the decorated member are
+		// picked up correctly.
+		return p.parseClassMember(className, parentExported)
 	}
 	if p.peek().val == "*" {
 		p.pos++ // generator method
@@ -980,6 +1103,35 @@ func (p *tsParser) skipUntilSemiOrEnd() {
 			depth--
 		}
 		p.pos++
+	}
+}
+
+// skipDecorators consumes a leading run of `@<expression>` decorators and
+// their optional `(args)` lists. After it returns, the cursor is at the
+// first token that is not part of a decorator (typically the next modifier
+// or member name). The decorator expression is recognized as an identifier
+// chain (`@a.b.c`); anything more exotic is left for the caller's
+// skip-one-token fallback.
+func (p *tsParser) skipDecorators() {
+	for p.peek().val == "@" {
+		p.pos++ // '@'
+		t := p.peek()
+		if t.kind != "ident" && t.kind != "kw" {
+			// Not a recognizable decorator name; bail so we don't loop.
+			return
+		}
+		p.pos++
+		for p.peek().val == "." {
+			p.pos++
+			t := p.peek()
+			if t.kind != "ident" && t.kind != "kw" {
+				break
+			}
+			p.pos++
+		}
+		if p.peek().val == "(" {
+			p.skipBalanced()
+		}
 	}
 }
 

@@ -32,6 +32,7 @@ claims" category that the phase-1 brief explicitly tries to prevent.
 
 ### H1 — Regex literal with `}` causes false-positive symbols and truncated function bodies
 
+- **Status:** fixed (bosun/fix-typescript) — `stripTSLiterals` now disambiguates regex from division via a previous-token-class tracker and blanks the regex body (and trailing flags). Covered by `TestExtractTypeScript_RegexLiteralsStripped`.
 - **Severity:** high
 - **Reproducer:**
   ```ts
@@ -78,6 +79,7 @@ claims" category that the phase-1 brief explicitly tries to prevent.
 
 ### H2 — Class with `static {}` block: wrong endLine and silent loss of all methods after the block
 
+- **Status:** fixed (bosun/fix-typescript) — `parseClassMember` recognizes `static {` as a static-init block and `skipBalanced`s past it without emitting a symbol; subsequent members parse normally. Covered by `TestExtractTypeScript_StaticInitBlock`.
 - **Severity:** high (silent symbol loss in a construct shipping in TS 4.4+)
 - **Reproducer:**
   ```ts
@@ -106,6 +108,7 @@ claims" category that the phase-1 brief explicitly tries to prevent.
 
 ### H3 — Decorators on class members cause every subsequent member to be silently lost
 
+- **Status:** fixed (bosun/fix-typescript) — `parseClassMember` calls a new `skipDecorators` helper that consumes `@<ident-chain>` plus any optional `(args)` list, then re-enters member parsing on the decorated declaration. This also resolves F1 (the fabricated `D.log` method from parenthesized decorators). Covered by `TestExtractTypeScript_DecoratedClassMembers`.
 - **Severity:** high (decorators ship in real TS code today; ecosystems like Angular/NestJS/TypeORM rely on them heavily)
 - **Reproducer:**
   ```ts

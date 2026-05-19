@@ -441,3 +441,221 @@ func TestExtractTypeScript_EmptyAndMalformedSafe(t *testing.T) {
 	}
 }
 
+// H1: regex literals must not contribute tokens to the parser, even when
+// they contain `}` or `)`. Otherwise the brace counter mis-terminates the
+// enclosing body and nested decls get hoisted to top-level.
+func TestExtractTypeScript_RegexLiteralsStripped(t *testing.T) {
+	t.Parallel()
+
+	t.Run("function body containing regex with }", func(t *testing.T) {
+		src := `export function outer() {
+    const re = /\}/;
+    function fakeNested() { return 99; }
+    return re;
+}
+`
+		syms, err := ExtractTypeScript("regex.ts", []byte(src))
+		if err != nil {
+			t.Fatalf("ExtractTypeScript: %v", err)
+		}
+		names := map[string]string{}
+		for _, s := range syms {
+			names[s.Name] = s.Kind
+		}
+		if names["fakeNested"] != "" {
+			t.Errorf("fakeNested was hoisted as a top-level symbol: %v", names)
+		}
+		if names["outer"] != "function" {
+			t.Errorf("outer not extracted as function: %v", names)
+		}
+		for _, s := range syms {
+			if s.Name == "outer" && s.EndLine < 5 {
+				t.Errorf("outer.EndLine = %d, want >= 5 (real closing brace)", s.EndLine)
+			}
+		}
+	})
+
+	t.Run("class method containing regex with }", func(t *testing.T) {
+		src := `export class C {
+    m() {
+        const re = /\}/;
+        return 1;
+    }
+    n() { return 2; }
+}
+`
+		syms, err := ExtractTypeScript("regex.ts", []byte(src))
+		if err != nil {
+			t.Fatalf("ExtractTypeScript: %v", err)
+		}
+		names := map[string]string{}
+		for _, s := range syms {
+			names[s.QualifiedName] = s.Kind
+		}
+		if names["C.m"] != "method" {
+			t.Errorf("C.m missing: %v", names)
+		}
+		if names["C.n"] != "method" {
+			t.Errorf("C.n silently lost: %v", names)
+		}
+	})
+
+	t.Run("module-level regex with fake function inside", func(t *testing.T) {
+		src := `const re = /\}function NotReal(){}/;
+export const real = 1;
+`
+		syms, err := ExtractTypeScript("regex.ts", []byte(src))
+		if err != nil {
+			t.Fatalf("ExtractTypeScript: %v", err)
+		}
+		for _, s := range syms {
+			if s.Name == "NotReal" {
+				t.Errorf("NotReal fabricated from inside regex literal: %+v", s)
+			}
+		}
+		names := map[string]bool{}
+		for _, s := range syms {
+			names[s.Name] = true
+		}
+		if !names["re"] || !names["real"] {
+			t.Errorf("missing expected symbols: %v", names)
+		}
+	})
+
+	t.Run("division is not confused for regex", func(t *testing.T) {
+		src := `export const ratio = a / b / c;
+export function divide(x: number, y: number): number { return x / y; }
+`
+		syms, err := ExtractTypeScript("div.ts", []byte(src))
+		if err != nil {
+			t.Fatalf("ExtractTypeScript: %v", err)
+		}
+		names := map[string]string{}
+		for _, s := range syms {
+			names[s.Name] = s.Kind
+		}
+		if names["ratio"] != "const" {
+			t.Errorf("ratio not extracted as const: %v", names)
+		}
+		if names["divide"] != "function" {
+			t.Errorf("divide not extracted as function: %v", names)
+		}
+	})
+}
+
+// H2: `static { ... }` initializer blocks (TS 4.4+) must be skipped as a
+// whole construct so the matching `}` isn't mistaken for the class body
+// terminator.
+func TestExtractTypeScript_StaticInitBlock(t *testing.T) {
+	t.Parallel()
+
+	src := `export class Foo {
+    static count = 0;
+    static {
+        Foo.count = 1;
+    }
+    static incr() { Foo.count++; }
+    method() { return Foo.count; }
+}
+`
+	syms, err := ExtractTypeScript("static.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	byQName := map[string]string{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = s.Kind
+	}
+	if byQName["Foo"] != "type" {
+		t.Errorf("Foo class missing: %v", byQName)
+	}
+	if byQName["Foo.incr"] != "method" {
+		t.Errorf("Foo.incr lost after static block: %v", byQName)
+	}
+	if byQName["Foo.method"] != "method" {
+		t.Errorf("Foo.method lost after static block: %v", byQName)
+	}
+	for _, s := range syms {
+		if s.Name == "Foo" && s.EndLine < 7 {
+			t.Errorf("Foo.EndLine = %d, want >= 7 (real closing brace)", s.EndLine)
+		}
+	}
+}
+
+// H3: decorators on class members must be bounded — every method after the
+// first decorated one was being eaten by skipUntilSemiOrEnd.
+func TestExtractTypeScript_DecoratedClassMembers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bare decorators", func(t *testing.T) {
+		src := `export class Foo {
+    @log a() { return 1; }
+    @log b() { return 2; }
+    @log c() { return 3; }
+}
+`
+		syms, err := ExtractTypeScript("dec.ts", []byte(src))
+		if err != nil {
+			t.Fatalf("ExtractTypeScript: %v", err)
+		}
+		byQName := map[string]string{}
+		for _, s := range syms {
+			byQName[s.QualifiedName] = s.Kind
+		}
+		for _, name := range []string{"Foo.a", "Foo.b", "Foo.c"} {
+			if byQName[name] != "method" {
+				t.Errorf("%s missing or wrong kind: %v", name, byQName)
+			}
+		}
+	})
+
+	t.Run("parenthesized decorators", func(t *testing.T) {
+		src := `export class D {
+    @readonly name = 'x';
+    @log() greet(): string { return this.name; }
+    @log({ level: 'info' }) shout(): string { return this.name; }
+}
+`
+		syms, err := ExtractTypeScript("dec.ts", []byte(src))
+		if err != nil {
+			t.Fatalf("ExtractTypeScript: %v", err)
+		}
+		byQName := map[string]string{}
+		for _, s := range syms {
+			byQName[s.QualifiedName] = s.Kind
+		}
+		if byQName["D.greet"] != "method" {
+			t.Errorf("D.greet missing: %v", byQName)
+		}
+		if byQName["D.shout"] != "method" {
+			t.Errorf("D.shout missing: %v", byQName)
+		}
+		// The parenthesized form was fabricating a `log` method (F1).
+		if _, leaked := byQName["D.log"]; leaked {
+			t.Errorf("D.log fabricated from decorator name: %v", byQName)
+		}
+	})
+
+	t.Run("decorator stacks with modifiers", func(t *testing.T) {
+		src := `export class E {
+    @log @cache static compute(): number { return 1; }
+    @log async fetchOne(): Promise<number> { return 1; }
+}
+`
+		syms, err := ExtractTypeScript("dec.ts", []byte(src))
+		if err != nil {
+			t.Fatalf("ExtractTypeScript: %v", err)
+		}
+		byQName := map[string]string{}
+		for _, s := range syms {
+			byQName[s.QualifiedName] = s.Kind
+		}
+		if byQName["E.compute"] != "method" {
+			t.Errorf("E.compute missing: %v", byQName)
+		}
+		if byQName["E.fetchOne"] != "method" {
+			t.Errorf("E.fetchOne missing: %v", byQName)
+		}
+	})
+}
+
