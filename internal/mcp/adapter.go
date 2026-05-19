@@ -90,6 +90,39 @@ func (a *StoreAdapter) SupersedeDecision(ctx context.Context, decisionID int64, 
 	return a.S.SupersedeDecision(decisionID, newChoice, newReasoning)
 }
 
+func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, evidence string, verified bool) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return a.S.RecordClaim(store.Claim{
+		SessionID: sessionID,
+		Claim:     claim,
+		Evidence:  evidence,
+		Verified:  verified,
+	})
+}
+
+func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string) ([]ClaimRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cs, err := a.S.GetUnverifiedClaims(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ClaimRecord, len(cs))
+	for i, c := range cs {
+		out[i] = ClaimRecord{
+			ID:         c.ID,
+			SessionID:  c.SessionID,
+			Claim:      c.Claim,
+			Evidence:   c.Evidence,
+			RecordedAt: c.RecordedAt,
+		}
+	}
+	return out, nil
+}
+
 func symbolsToRecords(syms []store.Symbol) []SymbolRecord {
 	out := make([]SymbolRecord, len(syms))
 	for i, s := range syms {

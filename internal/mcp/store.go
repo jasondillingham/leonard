@@ -57,3 +57,23 @@ type DecisionStore interface {
 	GetDecisions(ctx context.Context, topic string, since int64, limit int) ([]DecisionRecord, error)
 	SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error)
 }
+
+// ClaimRecord is the subset of internal/store.Claim that the MCP layer
+// surfaces through the claim tools. RecordedAt is unix seconds.
+type ClaimRecord struct {
+	ID         int64
+	SessionID  string
+	Claim      string
+	Evidence   string
+	RecordedAt int64
+}
+
+// ClaimStore is the read/write surface the claim tools depend on. Sibling
+// to SymbolStore / DecisionStore — register() type-asserts the SymbolStore
+// it receives and only wires the claim tools when the assertion succeeds.
+// The real StoreAdapter satisfies all three so leonard-mcp exposes the
+// full surface; in-memory test fixtures pick and choose.
+type ClaimStore interface {
+	RecordClaim(ctx context.Context, sessionID, claim, evidence string, verified bool) (int64, error)
+	GetUnverifiedClaims(ctx context.Context, sessionID string) ([]ClaimRecord, error)
+}

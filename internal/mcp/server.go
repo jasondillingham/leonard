@@ -76,6 +76,11 @@ func register(srv *mcp.Server, store SymbolStore) {
 	if ds, ok := store.(DecisionStore); ok {
 		registerDecisionTools(srv, ds)
 	}
+
+	// Claim tools follow the same opt-in pattern as the decision tools.
+	if cs, ok := store.(ClaimStore); ok {
+		registerClaimTools(srv, cs)
+	}
 }
 
 // verifySymbol is the thin shim: name lookup + optional kind/language
