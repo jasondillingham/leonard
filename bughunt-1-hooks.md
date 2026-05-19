@@ -39,6 +39,7 @@ gets a panic on every Edit until they re-read the README.
 ## Findings
 
 ### F1 — pre-edit block response uses the wrong field for PreToolUse, and `continue: false` halts the whole agent
+- **Status:** fixed on `bosun/fix-hooks` (2026-05-19). `PreEditResponse` no longer carries `decision`/`reason`/`stopReason`/`continue:false`; the deny path emits `hookSpecificOutput.permissionDecision: "deny"` + `permissionDecisionReason`, allow paths just emit `{"continue":true}`. Reproducer covered by `TestPreEditCmd_DenyWireShape` and `TestHandlePreEdit_BlocksFabricatedTrackedSymbol` (both assert the JSON does NOT contain `continue:false` or `decision`).
 - **Severity:** high
 - **Reproducer:**
   ```bash
@@ -104,6 +105,7 @@ gets a panic on every Edit until they re-read the README.
   behavior and the `continue: false` halt is independently broken.
 
 ### F2 — every decode-error path returns exit 1, which Claude Code treats as **non-blocking**: fabrication guard fails open on malformed input
+- **Status:** fixed on `bosun/fix-hooks` (2026-05-19). Decode errors in the four handlers now wrap a new `hooks.ErrDecode` sentinel; the cobra layer's `blockOnDecode` maps those to a typed `*exitErr{code: 2}` for pre-edit and post-edit, and `main.go` calls `os.Exit(exitCodeFor(err))`. Session-start and stop deliberately don't wrap (advisory hooks, exit 1 is correct). Reproducers: `TestPreEditCmd_DecodeFailureExitsBlocking`, `TestPostEditCmd_StdinErrorBubblesUp`, plus unit-level `TestBlockOnDecode_*`.
 - **Severity:** high
 - **Reproducer:**
   ```bash
@@ -143,6 +145,7 @@ gets a panic on every Edit until they re-read the README.
   selfhost lane's concurrent-access probe.
 
 ### F3 — `post-edit` panics with a Go stack trace when `.leonard/leonard.db` is missing instead of exiting cleanly
+- **Status:** fixed on `bosun/fix-hooks` (2026-05-19). The post-edit cobra RunE now stat-checks `.leonard/leonard.db` before touching the Backend; missing DB short-circuits with `{"continue": true}` on stdout, `"leonard: post-edit skipped — run \`leonard init\` first"` on stderr, and exit 0. `mustOpenStore`'s remaining call sites (DB exists but `store.Open` fails) keep the panic — the brief explicitly out-of-scopes that case. Reproducer: `TestPostEditCmd_MissingDBNoOps` exercises the production `realBackend` against a fresh tmpdir to prove the panic path is unreachable.
 - **Severity:** high
 - **Reproducer:**
   ```bash

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -107,10 +106,10 @@ func decodeSessionStartPayload(r io.Reader) (SessionStartPayload, error) {
 		return p, fmt.Errorf("hooks: read stdin: %w", err)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return p, errors.New("hooks: empty SessionStart payload on stdin")
+		return p, fmt.Errorf("%w: empty SessionStart payload on stdin", ErrDecode)
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
-		return p, fmt.Errorf("hooks: decode SessionStart payload: %w", err)
+		return p, fmt.Errorf("%w: decode SessionStart payload: %v", ErrDecode, err)
 	}
 	return p, nil
 }

@@ -47,15 +47,28 @@ type PreEditToolInput struct {
 }
 
 // PreEditResponse is the JSON document the pre-edit hook emits on stdout.
-// Allow leaves Decision/Reason empty and Continue=true. Block sets
-// Decision="block", a Reason that Claude Code surfaces to the model, and
-// Continue=false so the tool call is rejected.
+// PreToolUse responses have their own shape per the Claude Code hook docs —
+// the deny path lives inside hookSpecificOutput, not in the top-level
+// decision/reason fields that PostToolUse uses. The allow path emits
+// {"continue": true} and omits hookSpecificOutput; the deny path emits a
+// hookSpecificOutput with permissionDecision=deny and omits the top-level
+// continue field entirely so the session keeps running after the single
+// tool call is rejected.
 type PreEditResponse struct {
-	Continue       bool   `json:"continue"`
-	SuppressOutput bool   `json:"suppressOutput,omitempty"`
-	Decision       string `json:"decision,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	StopReason     string `json:"stopReason,omitempty"`
+	Continue           bool                      `json:"continue,omitempty"`
+	SuppressOutput     bool                      `json:"suppressOutput,omitempty"`
+	HookSpecificOutput *PreToolUseSpecificOutput `json:"hookSpecificOutput,omitempty"`
+}
+
+// PreToolUseSpecificOutput carries the PreToolUse-specific deny payload.
+// HookEventName self-identifies the response to Claude Code; PermissionDecision
+// is the documented "allow"/"deny"/"ask" enum (the pre-edit hook only emits
+// "deny" — allows skip hookSpecificOutput entirely); PermissionDecisionReason
+// is surfaced to the model so it can choose a different edit.
+type PreToolUseSpecificOutput struct {
+	HookEventName            string `json:"hookEventName"`
+	PermissionDecision       string `json:"permissionDecision,omitempty"`
+	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
 }
 
 // PreEditOptions wires the handler to its collaborators. ModulePath is the
@@ -98,10 +111,10 @@ func decodePreToolUsePayload(r io.Reader) (PreToolUsePayload, error) {
 		return p, fmt.Errorf("hooks: read stdin: %w", err)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return p, errors.New("hooks: empty PreToolUse payload on stdin")
+		return p, fmt.Errorf("%w: empty PreToolUse payload on stdin", ErrDecode)
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
-		return p, fmt.Errorf("hooks: decode PreToolUse payload: %w", err)
+		return p, fmt.Errorf("%w: decode PreToolUse payload: %v", ErrDecode, err)
 	}
 	return p, nil
 }
@@ -312,9 +325,10 @@ func blockResponse(fabricated []string) PreEditResponse {
 		strings.Join(fabricated, ", "),
 	)
 	return PreEditResponse{
-		Continue:   false,
-		Decision:   "block",
-		Reason:     reason,
-		StopReason: reason,
+		HookSpecificOutput: &PreToolUseSpecificOutput{
+			HookEventName:            "PreToolUse",
+			PermissionDecision:       "deny",
+			PermissionDecisionReason: reason,
+		},
 	}
 }

@@ -47,7 +47,7 @@ func newPreEditCmdWithDeps(open preEditOpener, readModule modulePathReader) *cob
 				ModulePath: readModule(root),
 			}
 			if err := hooks.HandlePreEdit(cmd.Context(), opts, cmd.InOrStdin(), cmd.OutOrStdout()); err != nil {
-				return fmt.Errorf("pre-edit: %w", err)
+				return blockOnDecode(fmt.Errorf("pre-edit: %w", err))
 			}
 			return nil
 		},

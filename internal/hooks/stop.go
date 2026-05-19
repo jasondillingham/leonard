@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -119,10 +118,10 @@ func decodeStopPayload(r io.Reader) (StopPayload, error) {
 		return p, fmt.Errorf("hooks: read stdin: %w", err)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return p, errors.New("hooks: empty Stop payload on stdin")
+		return p, fmt.Errorf("%w: empty Stop payload on stdin", ErrDecode)
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
-		return p, fmt.Errorf("hooks: decode Stop payload: %w", err)
+		return p, fmt.Errorf("%w: decode Stop payload: %v", ErrDecode, err)
 	}
 	return p, nil
 }

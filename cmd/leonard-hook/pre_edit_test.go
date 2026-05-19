@@ -100,7 +100,7 @@ import "fmt"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Continue || resp.Decision == "block" {
+	if !resp.Continue || resp.HookSpecificOutput != nil {
 		t.Fatalf("expected allow, got %+v", resp)
 	}
 	if closedCount != 1 {
@@ -132,11 +132,86 @@ import "github.com/jasondillingham/leonard/internal/store"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Continue || resp.Decision != "block" {
-		t.Fatalf("expected block, got %+v", resp)
+	if resp.HookSpecificOutput == nil || resp.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("expected deny, got %+v", resp)
 	}
-	if !strings.Contains(resp.Reason, "store.PhantomFunction") {
-		t.Errorf("reason missing phantom: %q", resp.Reason)
+	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "store.PhantomFunction") {
+		t.Errorf("permissionDecisionReason missing phantom: %q",
+			resp.HookSpecificOutput.PermissionDecisionReason)
+	}
+}
+
+// F1 reproducer at the cobra layer: a fabricated symbol reference in a
+// PreToolUse payload must yield a deny-shaped response (permissionDecision
+// inside hookSpecificOutput) and must NOT carry the legacy `decision` field
+// or `continue: false` — the latter would halt the entire Claude Code agent
+// instead of just rejecting this one tool call.
+func TestPreEditCmd_DenyWireShape(t *testing.T) {
+	root := setupProjectRoot(t)
+	target := writeProjectFile(t, root, "foo.go", `package foo
+
+import "github.com/jasondillingham/leonard/internal/store"
+`)
+	open := func(string) (hooks.SymbolStore, func() error, error) {
+		return &fakePreEditStore{has: map[string]bool{}}, func() error { return nil }, nil
+	}
+	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
+
+	cmd := &cobra.Command{Use: "leonard-hook"}
+	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
+	payload, _ := json.Marshal(hooks.PreToolUsePayload{
+		SessionID:     "s",
+		HookEventName: "PreToolUse",
+		ToolName:      "Edit",
+		ToolInput:     hooks.PreEditToolInput{FilePath: target, NewString: "store.NonExistent()"},
+	})
+	cmd.SetIn(bytes.NewReader(payload))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetContext(context.Background())
+	cmd.SetArgs([]string{"pre-edit"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v\nstdout=%s", err, out.String())
+	}
+	raw := out.Bytes()
+	if !bytes.Contains(raw, []byte(`"permissionDecision":"deny"`)) {
+		t.Errorf("response missing permissionDecision=deny: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"hookEventName":"PreToolUse"`)) {
+		t.Errorf("response missing hookEventName=PreToolUse: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"continue":false`)) {
+		t.Errorf("deny response must not carry continue:false (halts agent): %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"decision"`)) {
+		t.Errorf("deny response must not carry the PostToolUse-style decision field: %s", raw)
+	}
+}
+
+// F2 reproducer: garbage on stdin to pre-edit must exit with code 2 (block)
+// so the fabrication guard doesn't fail open on a malformed payload.
+func TestPreEditCmd_DecodeFailureExitsBlocking(t *testing.T) {
+	setupProjectRoot(t)
+	open := func(string) (hooks.SymbolStore, func() error, error) {
+		return &fakePreEditStore{has: map[string]bool{}}, func() error { return nil }, nil
+	}
+	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
+	cmd := &cobra.Command{Use: "leonard-hook"}
+	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
+	cmd.SetIn(strings.NewReader("not json{"))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetContext(context.Background())
+	cmd.SetArgs([]string{"pre-edit"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected decode error on garbage stdin")
+	}
+	if got := exitCodeFor(err); got != 2 {
+		t.Errorf("decode failure exit code = %d, want 2 (block)", got)
 	}
 }
 

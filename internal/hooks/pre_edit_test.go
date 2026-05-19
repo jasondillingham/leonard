@@ -67,6 +67,16 @@ func encodePreToolUsePayload(t *testing.T, p PreToolUsePayload) []byte {
 
 func runPreEdit(t *testing.T, s SymbolStore, payload []byte) PreEditResponse {
 	t.Helper()
+	resp, _ := runPreEditWithRaw(t, s, payload)
+	return resp
+}
+
+// runPreEditWithRaw returns the decoded response plus the exact JSON bytes
+// emitted. Tests that care about wire-shape ("does the JSON contain
+// continue: false?") need the raw bytes — Go's bool zero value is
+// ambiguous with an omitted field after a round-trip.
+func runPreEditWithRaw(t *testing.T, s SymbolStore, payload []byte) (PreEditResponse, []byte) {
+	t.Helper()
 	var out bytes.Buffer
 	err := HandlePreEdit(context.Background(), PreEditOptions{
 		Store:      s,
@@ -75,11 +85,19 @@ func runPreEdit(t *testing.T, s SymbolStore, payload []byte) PreEditResponse {
 	if err != nil {
 		t.Fatalf("HandlePreEdit: %v", err)
 	}
+	raw := append([]byte(nil), out.Bytes()...)
 	var resp PreEditResponse
-	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("decode response: %v\nstdout=%q", err, out.String())
 	}
-	return resp
+	return resp, raw
+}
+
+// preEditDenied reports whether resp carries a "deny" permission decision.
+// Centralising the check keeps callsites readable when the test only cares
+// about block-vs-allow and not the exact reason string.
+func preEditDenied(resp PreEditResponse) bool {
+	return resp.HookSpecificOutput != nil && resp.HookSpecificOutput.PermissionDecision == "deny"
 }
 
 func TestHandlePreEdit_AllowsExistingTrackedSymbol(t *testing.T) {
@@ -96,7 +114,7 @@ func Foo() {}
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: target, NewString: `s, _ := store.Open("x"); _ = s`},
 	}))
-	if !resp.Continue || resp.Decision == "block" {
+	if !resp.Continue || preEditDenied(resp) {
 		t.Fatalf("expected allow, got %+v", resp)
 	}
 }
@@ -111,18 +129,29 @@ import "github.com/jasondillingham/leonard/internal/store"
 func Foo() {}
 `)
 	s := newFakeSymStore("Open") // NoSuchFunction not in index
-	resp := runPreEdit(t, s, encodePreToolUsePayload(t, PreToolUsePayload{
+	resp, raw := runPreEditWithRaw(t, s, encodePreToolUsePayload(t, PreToolUsePayload{
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: target, NewString: "store.NoSuchFunction()"},
 	}))
-	if resp.Continue || resp.Decision != "block" {
-		t.Fatalf("expected block, got %+v", resp)
+	if !preEditDenied(resp) {
+		t.Fatalf("expected PreToolUse deny, got %+v", resp)
 	}
-	if !strings.Contains(resp.Reason, "store.NoSuchFunction") {
-		t.Errorf("reason missing fabricated symbol: %q", resp.Reason)
+	if resp.HookSpecificOutput.HookEventName != "PreToolUse" {
+		t.Errorf("hookEventName = %q, want PreToolUse", resp.HookSpecificOutput.HookEventName)
 	}
-	if resp.StopReason == "" {
-		t.Errorf("StopReason should mirror Reason for cli surfacing")
+	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "store.NoSuchFunction") {
+		t.Errorf("permissionDecisionReason missing fabricated symbol: %q",
+			resp.HookSpecificOutput.PermissionDecisionReason)
+	}
+	// F1 regression: emitting `continue: false` on a deny halts the whole
+	// agent. Verified at the JSON level because Go's bool default is false
+	// and the omitted-vs-explicit distinction only exists in the bytes.
+	if bytes.Contains(raw, []byte(`"continue":false`)) {
+		t.Errorf("deny response must not carry `continue: false`: %s", raw)
+	}
+	// And it must not lean on the legacy PostToolUse-style decision field.
+	if bytes.Contains(raw, []byte(`"decision"`)) {
+		t.Errorf("deny response must not carry the PostToolUse `decision` field: %s", raw)
 	}
 }
 
@@ -140,7 +169,7 @@ func Foo() {}
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: target, NewString: `fmt.Println("hi")`},
 	}))
-	if !resp.Continue || resp.Decision == "block" {
+	if !resp.Continue || preEditDenied(resp) {
 		t.Fatalf("expected allow for stdlib ref, got %+v", resp)
 	}
 	if got := s.Queries(); len(got) > 0 {
@@ -162,7 +191,7 @@ func Foo() {}
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: target, NewString: "_ = cobra.Command{}"},
 	}))
-	if !resp.Continue || resp.Decision == "block" {
+	if !resp.Continue || preEditDenied(resp) {
 		t.Fatalf("expected allow for external ref, got %+v", resp)
 	}
 }
@@ -191,7 +220,7 @@ func TestHandlePreEdit_PassesThroughForOtherTools(t *testing.T) {
 		ToolName:  "Read",
 		ToolInput: PreEditToolInput{FilePath: "anything.go"},
 	}))
-	if !resp.Continue || resp.Decision == "block" {
+	if !resp.Continue || preEditDenied(resp) {
 		t.Fatalf("expected allow for non-edit tool, got %+v", resp)
 	}
 }
@@ -203,7 +232,7 @@ func TestHandlePreEdit_PassesThroughForNonGoFiles(t *testing.T) {
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: "/tmp/x.py", NewString: "store.NoSuchFunction()"},
 	}))
-	if !resp.Continue || resp.Decision == "block" {
+	if !resp.Continue || preEditDenied(resp) {
 		t.Fatalf("expected allow for non-go file, got %+v", resp)
 	}
 }
@@ -223,11 +252,12 @@ func Foo() {}
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: target, NewString: snippet},
 	}))
-	if resp.Continue || resp.Decision != "block" {
-		t.Fatalf("expected block for fabricated ref in body snippet, got %+v", resp)
+	if !preEditDenied(resp) {
+		t.Fatalf("expected deny for fabricated ref in body snippet, got %+v", resp)
 	}
-	if !strings.Contains(resp.Reason, "store.Open") {
-		t.Errorf("reason should mention store.Open: %q", resp.Reason)
+	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "store.Open") {
+		t.Errorf("permissionDecisionReason should mention store.Open: %q",
+			resp.HookSpecificOutput.PermissionDecisionReason)
 	}
 }
 
@@ -246,11 +276,12 @@ func Bar() { store.Ghost() }
 		ToolName:  "Write",
 		ToolInput: PreEditToolInput{FilePath: target, Content: content},
 	}))
-	if resp.Continue || resp.Decision != "block" {
-		t.Fatalf("expected block for fabricated ref in write content, got %+v", resp)
+	if !preEditDenied(resp) {
+		t.Fatalf("expected deny for fabricated ref in write content, got %+v", resp)
 	}
-	if !strings.Contains(resp.Reason, "store.Ghost") {
-		t.Errorf("reason should mention store.Ghost: %q", resp.Reason)
+	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "store.Ghost") {
+		t.Errorf("permissionDecisionReason should mention store.Ghost: %q",
+			resp.HookSpecificOutput.PermissionDecisionReason)
 	}
 }
 
@@ -268,8 +299,12 @@ func Foo() {}
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: target, NewString: "store.A(); store.B(); store.A()"},
 	}))
-	if !strings.Contains(resp.Reason, "store.A") || !strings.Contains(resp.Reason, "store.B") {
-		t.Errorf("expected both store.A and store.B in reason: %q", resp.Reason)
+	if !preEditDenied(resp) {
+		t.Fatalf("expected deny, got %+v", resp)
+	}
+	reason := resp.HookSpecificOutput.PermissionDecisionReason
+	if !strings.Contains(reason, "store.A") || !strings.Contains(reason, "store.B") {
+		t.Errorf("expected both store.A and store.B in reason: %q", reason)
 	}
 	a, b := 0, 0
 	for _, q := range s.Queries() {
@@ -376,11 +411,12 @@ func Foo() {}
 		ToolName:  "Edit",
 		ToolInput: PreEditToolInput{FilePath: target, NewString: "s.PhantomCall()"},
 	}))
-	if resp.Continue || resp.Decision != "block" {
-		t.Fatalf("expected block via aliased import, got %+v", resp)
+	if !preEditDenied(resp) {
+		t.Fatalf("expected deny via aliased import, got %+v", resp)
 	}
-	if !strings.Contains(resp.Reason, "s.PhantomCall") {
-		t.Errorf("reason should mention aliased ref: %q", resp.Reason)
+	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "s.PhantomCall") {
+		t.Errorf("permissionDecisionReason should mention aliased ref: %q",
+			resp.HookSpecificOutput.PermissionDecisionReason)
 	}
 }
 

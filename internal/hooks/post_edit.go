@@ -118,7 +118,7 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 	}
 	filePath := strings.TrimSpace(payload.ToolInput.FilePath)
 	if filePath == "" {
-		return errors.New("hooks: tool_input.file_path missing from PostToolUse payload")
+		return fmt.Errorf("%w: tool_input.file_path missing from PostToolUse payload", ErrDecode)
 	}
 
 	root := opts.ProjectRoot
@@ -158,10 +158,10 @@ func decodePayload(r io.Reader) (PostToolUsePayload, error) {
 		return p, fmt.Errorf("hooks: read stdin: %w", err)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return p, errors.New("hooks: empty PostToolUse payload on stdin")
+		return p, fmt.Errorf("%w: empty PostToolUse payload on stdin", ErrDecode)
 	}
 	if err := json.Unmarshal(body, &p); err != nil {
-		return p, fmt.Errorf("hooks: decode PostToolUse payload: %w", err)
+		return p, fmt.Errorf("%w: decode PostToolUse payload: %v", ErrDecode, err)
 	}
 	return p, nil
 }

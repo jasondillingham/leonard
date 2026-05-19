@@ -26,11 +26,13 @@ func (realBackend) Claims(projectRoot string) hooks.ClaimRecorder {
 
 func (realBackend) Close() error { return nil }
 
-// mustOpenStore is intentionally panicky — a hook running with a missing
-// .leonard/leonard.db has nothing useful to do, and exit-1 with a clear
-// reason is more debuggable than a silent malformed claim row. The Backend
-// is built on demand for each hook invocation so the panic surfaces at the
-// callsite.
+// mustOpenStore is reached only after the cobra layer has verified that
+// .leonard/leonard.db exists on disk; the missing-DB case is handled at the
+// callsite by emitting a no-op {"continue":true} response. A panic here
+// therefore means store.Open failed for an *unrelated* reason (corruption,
+// permission denied, fs error) — surfacing it loudly is the right call
+// because a hook silently malforming claim rows is worse than a noisy
+// failure.
 func mustOpenStore(projectRoot string) *store.Store {
 	s, err := store.Open(filepath.Join(projectRoot, ".leonard", "leonard.db"))
 	if err != nil {

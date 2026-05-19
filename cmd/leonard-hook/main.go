@@ -22,6 +22,6 @@ func main() {
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "leonard-hook:", err)
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 }
