@@ -83,7 +83,7 @@ All three operate on the same `.leonard/leonard.db` SQLite file in the project r
 
 **Goal:** answer "does symbol X exist? where? what's its signature?" in <10ms.
 
-- **Parser:** tree-sitter via `github.com/smacker/go-tree-sitter` (or `tree-sitter/go-tree-sitter` if more current).
+- **Parser:** per-language. Phase 1 uses Go's standard `go/parser` + `go/ast` for Go (see §7 q2). Phase 2 introduces tree-sitter for Python and TypeScript; binding choice deferred until then.
 - **Languages (MVP):** Go, Python, TypeScript/JavaScript.
 - **Granularity:** functions, methods, types/classes, top-level constants/vars, exported symbols. Skip locals.
 - **Incremental:** per-file SHA256; only re-parse files whose hash changed.
@@ -266,7 +266,7 @@ leonard/
 ## 7. Open questions
 
 1. **OSS positioning** — does Leonard get released? If so, the BBT-named brand needs a strong README narrative. If not, hardcode opinions and skip the abstraction layer.
-2. **Tree-sitter binding choice** — `smacker/go-tree-sitter` is most popular but has CGo. Pure-Go alternatives exist but are less complete per-language. Decide before phase 1 starts.
+2. **Tree-sitter binding choice** — ~~`smacker/go-tree-sitter` is most popular but has CGo. Pure-Go alternatives exist but are less complete per-language. Decide before phase 1 starts.~~ **Resolved (phase 1):** the Go extractor uses the standard library's `go/parser` + `go/ast` instead of a tree-sitter binding. Phase 1 is Go-only and the stdlib is pure-Go (no CGo build pain), faster than tree-sitter for Go specifically, and handles generics, type aliases, and method receivers without extra grammar work. Tree-sitter remains the right call for phase 2 (Python, TypeScript) where the stdlib does not help — binding choice (CGo `smacker/go-tree-sitter` vs a pure-Go WASM-based alternative) is deferred until that work starts.
 3. **Hook performance budget** — `post-edit` runs on every Write/Edit. What's the latency ceiling before it feels bad? (Target: <200ms p95 for re-index of one file.)
 4. **Claim model fidelity** — does Claude actually have to *call* `record_claim`, or do we infer claims from its prose? The former is enforceable but requires Claude's cooperation; the latter needs an LLM-based extraction step (defeats the purpose).
 5. **Override path** — when `pre-edit` blocks a fabricated reference, how does Claude force through? CLI flag? Special MCP tool (`override_block(reason)`)? No override (strict)?

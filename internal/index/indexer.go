@@ -1,0 +1,258 @@
+// Package index walks the project tree, dispatches files to language-specific
+// parsers in internal/parse, and persists extracted symbols into the store.
+// Incremental: each file's sha256 is compared against the prior store entry,
+// and parsing is skipped when the hash is unchanged.
+package index
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	ignore "github.com/sabhiram/go-gitignore"
+
+	"github.com/jasondillingham/leonard/internal/parse"
+	"github.com/jasondillingham/leonard/internal/store"
+)
+
+// defaultSkipDirs are directory names always skipped, regardless of ignore
+// files. These exist before .gitignore can be read on most projects.
+var defaultSkipDirs = map[string]bool{
+	"vendor":       true,
+	"node_modules": true,
+	"dist":         true,
+	"build":        true,
+	".git":         true,
+}
+
+// extractor extracts symbols for a single file's source. Returning an error
+// is treated as a parse failure for that file — the indexer logs and moves on.
+type extractor func(path string, src []byte) ([]store.Symbol, error)
+
+// langExtractors maps a file extension (with leading dot) to the language tag
+// stored on the file row and the extractor used to pull symbols. Phase 1 is
+// Go-only; phase 2 adds python and typescript here.
+var langExtractors = map[string]struct {
+	lang    string
+	extract extractor
+}{
+	".go": {lang: "go", extract: parse.ExtractGo},
+}
+
+// Indexer walks Root and persists symbols into Store. Construct with New.
+type Indexer struct {
+	Store *store.Store
+	Root  string
+
+	// parseCount tracks how many files actually triggered a re-parse since
+	// the indexer was created. Exposed via ParseCount() — tests assert that
+	// a second IndexAll on an unchanged tree increments the counter by zero.
+	parseCount atomic.Int64
+}
+
+// New returns an Indexer rooted at root. The root is cleaned and converted
+// to an absolute path so subsequent walk results are stored consistently
+// regardless of how the caller spelled it.
+func New(s *store.Store, root string) *Indexer {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	return &Indexer{Store: s, Root: filepath.Clean(abs)}
+}
+
+// ParseCount returns the number of files re-parsed since construction.
+// Intended for tests; cheap enough to call in prod if useful for metrics.
+func (i *Indexer) ParseCount() int64 { return i.parseCount.Load() }
+
+// IndexAll walks the root, applying ignore rules, and indexes every
+// supported file. Returns the first walk error encountered, but parse errors
+// for individual files are swallowed so one bad file doesn't poison the run.
+func (i *Indexer) IndexAll() error {
+	matcher, err := loadIgnore(i.Root)
+	if err != nil {
+		return err
+	}
+
+	walkErr := filepath.WalkDir(i.Root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+
+		rel, err := filepath.Rel(i.Root, path)
+		if err != nil {
+			return nil
+		}
+		if rel == "." {
+			return nil
+		}
+
+		if d.IsDir() {
+			if defaultSkipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			if matcher != nil && matcher.MatchesPath(rel+"/") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if matcher != nil && matcher.MatchesPath(rel) {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(path))
+		if _, ok := langExtractors[ext]; !ok {
+			return nil
+		}
+
+		if err := i.indexAbs(path); err != nil {
+			// Log-and-continue: a parse failure on one file shouldn't abort
+			// the whole walk. v1 has no logger wired in, so we eat it.
+			_ = err
+		}
+		return nil
+	})
+
+	return walkErr
+}
+
+// IndexFile indexes a single file. The path may be absolute or relative to
+// the indexer's root. Files outside the root, missing files, or files whose
+// extension has no registered extractor are all silent no-ops returning nil,
+// matching the brief's loose contract for the post-edit hook caller.
+func (i *Indexer) IndexFile(path string) error {
+	abs, err := i.absPath(path)
+	if err != nil {
+		return err
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		return nil
+	}
+
+	ext := strings.ToLower(filepath.Ext(abs))
+	if _, ok := langExtractors[ext]; !ok {
+		return nil
+	}
+
+	return i.indexAbs(abs)
+}
+
+// absPath resolves p to an absolute, cleaned path under Root if it's relative.
+func (i *Indexer) absPath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	return filepath.Clean(filepath.Join(i.Root, p)), nil
+}
+
+// indexAbs is the per-file workhorse: hash, decide whether to re-parse,
+// extract, and persist. The path argument is always absolute.
+func (i *Indexer) indexAbs(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	hash := hashBytes(data)
+
+	rel := i.storeKey(path)
+	prior, found, err := i.Store.GetFile(rel)
+	if err != nil {
+		return fmt.Errorf("store.GetFile: %w", err)
+	}
+	if found && prior.Hash == hash {
+		return nil
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+	spec, ok := langExtractors[ext]
+	if !ok {
+		return nil
+	}
+
+	i.parseCount.Add(1)
+	syms, err := spec.extract(rel, data)
+	if err != nil {
+		// Persist the file row so an unchanged-but-broken file is not re-parsed
+		// every walk; clear out any prior symbols for it.
+		_ = i.Store.ReplaceSymbols(rel, nil)
+		_ = i.Store.UpsertFile(store.File{
+			Path:      rel,
+			Hash:      hash,
+			Language:  spec.lang,
+			SizeBytes: int64(len(data)),
+			IndexedAt: time.Now().Unix(),
+		})
+		return fmt.Errorf("extract %s: %w", rel, err)
+	}
+
+	if err := i.Store.UpsertFile(store.File{
+		Path:      rel,
+		Hash:      hash,
+		Language:  spec.lang,
+		SizeBytes: int64(len(data)),
+		IndexedAt: time.Now().Unix(),
+	}); err != nil {
+		return fmt.Errorf("store.UpsertFile: %w", err)
+	}
+	if err := i.Store.ReplaceSymbols(rel, syms); err != nil {
+		return fmt.Errorf("store.ReplaceSymbols: %w", err)
+	}
+	return nil
+}
+
+// storeKey is the path key written to the store. Paths under Root are stored
+// as forward-slash relative paths so the index is portable across platforms
+// and stable when the root is moved.
+func (i *Indexer) storeKey(abs string) string {
+	rel, err := filepath.Rel(i.Root, abs)
+	if err != nil {
+		return filepath.ToSlash(abs)
+	}
+	return filepath.ToSlash(rel)
+}
+
+func hashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// loadIgnore reads .gitignore and .leonardignore at root and compiles them
+// into a single matcher. Returns nil (no-op matcher) if neither file exists.
+func loadIgnore(root string) (*ignore.GitIgnore, error) {
+	var lines []string
+	for _, name := range []string{".gitignore", ".leonardignore"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			lines = append(lines, strings.TrimRight(line, "\r"))
+		}
+	}
+	if len(lines) == 0 {
+		return nil, nil
+	}
+	return ignore.CompileIgnoreLines(lines...), nil
+}
