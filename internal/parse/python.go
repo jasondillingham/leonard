@@ -22,7 +22,8 @@ import (
 func ExtractPython(path string, src []byte) ([]store.Symbol, error) {
 	mod, err := parser.Parse(bytes.NewReader(src), path, py.ExecMode)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		// Bare summary — the indexer wraps with the path, so don't double it.
+		return nil, fmt.Errorf("%s", summarizePythonParseError(err))
 	}
 	module, ok := mod.(*ast.Module)
 	if !ok {
@@ -34,6 +35,48 @@ func ExtractPython(path string, src []byte) ([]store.Symbol, error) {
 		syms = append(syms, pythonTopLevelStmt(path, stmt)...)
 	}
 	return syms, nil
+}
+
+// summarizePythonParseError flattens gpython's multi-line *py.Exception
+// rendering into a single useful line. The raw form embeds the file path
+// (redundant — the caller already has it), a code excerpt, several blank
+// lines, and the actual error type/message. Callers usually want
+// "<line>: <message>" so CLI summaries fit on one screen line.
+func summarizePythonParseError(err error) string {
+	raw := strings.TrimSpace(err.Error())
+	var locLine, errLine string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "File ") && locLine == "" {
+			locLine = line
+		}
+		// Python error types end in "Error" and look like
+		// "SyntaxError: 'invalid syntax'" or "IndentationError: ...".
+		if errLine == "" && strings.Contains(line, "Error:") {
+			errLine = line
+		}
+	}
+	switch {
+	case locLine != "" && errLine != "":
+		// "File ..., line 121, offset 36" → "line 121"
+		loc := locLine
+		if i := strings.Index(loc, "line "); i >= 0 {
+			loc = loc[i:]
+			if j := strings.Index(loc, ","); j >= 0 {
+				loc = loc[:j]
+			}
+		}
+		return loc + ": " + errLine
+	case errLine != "":
+		return errLine
+	case locLine != "":
+		return locLine
+	default:
+		return raw
+	}
 }
 
 // pythonTopLevelStmt extracts symbols from a module-level statement. The brief

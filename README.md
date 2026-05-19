@@ -29,7 +29,7 @@ All three share a single SQLite store at `.leonard/leonard.db` in the project ro
 |---|---|---|
 | Go | stdlib `go/parser` | Production. Self-dogfooded on this repo; vet+test invariant enforced via the post-edit hook. |
 | TypeScript / TSX | hand-rolled (`internal/parse/typescript.go`) | Real-world tested on 401-file / 7k-symbol Zod corpus plus a 22-file Next.js App-Router project. Functions, classes (including generic defaults, abstract, methods named after keywords like `default`/`type`, and inline `{ a: T }`-shaped return types), interfaces, type aliases, const/let/var all extract with accurate file/line. Known limitation: `export const X = () => …` arrow-function exports are classified as `kind=const` rather than `kind=function` — the signature still carries enough to recognize them, but `find_symbol(kind=function)` filters won't match. Tracked as `selfhost F2`. |
-| Python | `gpython` AST | Fixture-tested only. The parser passes the `testdata/python/` cases but hasn't been driven by a live Python project. Report issues against real repos so we can harden it before v0.2. |
+| Python | `gpython` AST | **Limited to pre-3.5 syntax.** Indexed `requests` and 16 of 19 source files failed to parse: gpython rejects f-strings, PEP 585 generic aliases (`dict[str, int]`), PEP 604 unions (`X \| None`), PEP 526 class-level annotations, `Final`, positional-only `/`, and other Python 3.5+ features. Files that do parse extract symbols correctly. The indexer surfaces per-file parse failures in CLI output rather than silently dropping symbols — `leonard index` reports both the green count and a sample of the failures. Replacing gpython is a v0.2 candidate. |
 
 ## Install
 

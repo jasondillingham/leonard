@@ -16,11 +16,12 @@ type fakeRuntime struct {
 	indexCalls  []indexCall
 	verifyCalls []verifyCall
 
-	initErr    error
-	indexErr   error
-	indexCount int
-	verifyOut  []SymbolMatch
-	verifyErr  error
+	initErr       error
+	indexErr      error
+	indexCount    int
+	indexFailures []ParseFailure
+	verifyOut     []SymbolMatch
+	verifyErr     error
 }
 
 type initCall struct {
@@ -44,9 +45,9 @@ func (f *fakeRuntime) Init(_ context.Context, root, data string) error {
 	return f.initErr
 }
 
-func (f *fakeRuntime) IndexAll(_ context.Context, root, data string) (int, error) {
+func (f *fakeRuntime) IndexAll(_ context.Context, root, data string) (IndexResult, error) {
 	f.indexCalls = append(f.indexCalls, indexCall{root, data})
-	return f.indexCount, f.indexErr
+	return IndexResult{FilesIndexed: f.indexCount, ParseFailures: f.indexFailures}, f.indexErr
 }
 
 func (f *fakeRuntime) VerifySymbol(_ context.Context, data, name, kind string) ([]SymbolMatch, error) {
@@ -156,6 +157,37 @@ func TestIndexCmd_PrintsCount(t *testing.T) {
 	}
 	if !strings.Contains(out, "indexed 42") {
 		t.Errorf("stdout = %q", out)
+	}
+}
+
+func TestIndexCmd_SurfacesParseFailures(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, dataDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root)
+	rt := &fakeRuntime{
+		indexCount: 10,
+		indexFailures: []ParseFailure{
+			{Path: "src/api.py", Message: "line 121: SyntaxError: 'invalid syntax'"},
+			{Path: "src/auth.py", Message: "line 30: SyntaxError: 'invalid syntax'"},
+		},
+	}
+	out, err := runRoot(t, rt, "index")
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	// Both the summary line and the per-file sample must reach the output.
+	// Without this surfacing, a user sees "indexed 10 files" and has no
+	// hint that 2 files silently dropped their symbols.
+	if !strings.Contains(out, "indexed 10") {
+		t.Errorf("missing indexed count: %q", out)
+	}
+	if !strings.Contains(out, "2 file(s) failed to parse") {
+		t.Errorf("missing failure summary line: %q", out)
+	}
+	if !strings.Contains(out, "src/api.py") || !strings.Contains(out, "line 121") {
+		t.Errorf("missing per-file detail: %q", out)
 	}
 }
 

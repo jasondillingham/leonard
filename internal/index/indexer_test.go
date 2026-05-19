@@ -249,6 +249,33 @@ func TestIndexFile_ParseError(t *testing.T) {
 	}
 }
 
+// TestIndexAll_SurfacesParseFailures locks in the contract that parse
+// errors are exposed via ParseFailures() rather than silently swallowed.
+// Before this surfacing existed, the indexer counted a file as "indexed"
+// even when its symbols were dropped — exactly the false-done-claim
+// pattern Leonard exists to prevent.
+func TestIndexAll_SurfacesParseFailures(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, map[string]string{
+		"ok.go":  "package p\nfunc Good() {}\n",
+		"bad.go": "package p\nfunc {\n",
+	})
+	idx := New(fx.store, fx.root)
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+	failures := idx.ParseFailures()
+	if len(failures) != 1 {
+		t.Fatalf("ParseFailures = %d, want 1; got %+v", len(failures), failures)
+	}
+	if failures[0].Path != "bad.go" {
+		t.Errorf("ParseFailures[0].Path = %q, want bad.go", failures[0].Path)
+	}
+	if failures[0].Message == "" {
+		t.Errorf("ParseFailures[0].Message empty — caller has nothing to surface")
+	}
+}
+
 func pathSet(files []store.File) []string {
 	out := make([]string, 0, len(files))
 	for _, f := range files {

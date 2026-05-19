@@ -49,6 +49,15 @@ var langExtractors = map[string]struct {
 	".tsx": {lang: "typescript", extract: parse.ExtractTypeScript},
 }
 
+// ParseFailure is a per-file record of an extractor returning a non-nil
+// error. The path is project-relative (the same form used as a store key)
+// and Message is the parse error's first line — enough for a CLI summary,
+// not so much that a chatty parser floods the output.
+type ParseFailure struct {
+	Path    string
+	Message string
+}
+
 // Indexer walks Root and persists symbols into Store. Construct with New.
 type Indexer struct {
 	Store *store.Store
@@ -58,6 +67,11 @@ type Indexer struct {
 	// the indexer was created. Exposed via ParseCount() — tests assert that
 	// a second IndexAll on an unchanged tree increments the counter by zero.
 	parseCount atomic.Int64
+
+	// parseFailures collects per-file parser errors so callers can surface
+	// them in CLI/MCP output instead of having them silently swallowed. The
+	// indexer walks sequentially so a plain slice with no mutex is fine.
+	parseFailures []ParseFailure
 }
 
 // New returns an Indexer rooted at root. The root is cleaned and converted
@@ -74,6 +88,15 @@ func New(s *store.Store, root string) *Indexer {
 // ParseCount returns the number of files re-parsed since construction.
 // Intended for tests; cheap enough to call in prod if useful for metrics.
 func (i *Indexer) ParseCount() int64 { return i.parseCount.Load() }
+
+// ParseFailures returns a copy of the per-file parse errors accumulated
+// since construction. Empty slice when every file parsed cleanly. Callers
+// own the result and can format/log it however they like.
+func (i *Indexer) ParseFailures() []ParseFailure {
+	out := make([]ParseFailure, len(i.parseFailures))
+	copy(out, i.parseFailures)
+	return out
+}
 
 // IndexAll walks the root, applying ignore rules, and indexes every
 // supported file. Returns the first walk error encountered, but parse errors
@@ -121,7 +144,9 @@ func (i *Indexer) IndexAll() error {
 
 		if err := i.indexAbs(path); err != nil {
 			// Log-and-continue: a parse failure on one file shouldn't abort
-			// the whole walk. v1 has no logger wired in, so we eat it.
+			// the whole walk. The error is captured on the indexer (see
+			// indexAbs) so the CLI can surface it after the walk instead of
+			// silently swallowing it.
 			_ = err
 		}
 		return nil
@@ -204,6 +229,14 @@ func (i *Indexer) indexAbs(path string) error {
 			SizeBytes: int64(len(data)),
 			IndexedAt: time.Now().Unix(),
 		})
+		// Record the failure so the CLI can surface it. Keep just the first
+		// line of the error to stay terse — parsers like gpython emit
+		// multi-line diagnostics that would otherwise spam the summary.
+		msg := err.Error()
+		if nl := strings.Index(msg, "\n"); nl >= 0 {
+			msg = msg[:nl]
+		}
+		i.parseFailures = append(i.parseFailures, ParseFailure{Path: rel, Message: msg})
 		return fmt.Errorf("extract %s: %w", rel, err)
 	}
 

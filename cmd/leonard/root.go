@@ -16,8 +16,11 @@ type Runtime interface {
 	Init(ctx context.Context, projectRoot, dataDir string) error
 
 	// IndexAll opens the store, drives a full re-index of projectRoot, and
-	// reports the number of files touched.
-	IndexAll(ctx context.Context, projectRoot, dataDir string) (filesIndexed int, err error)
+	// reports the number of files touched plus any per-file parse failures
+	// surfaced by the extractors. A non-nil error indicates the walk itself
+	// failed (couldn't open the store, etc.) — individual parse failures
+	// land in the ParseFailures slice instead.
+	IndexAll(ctx context.Context, projectRoot, dataDir string) (IndexResult, error)
 
 	// VerifySymbol opens the store and returns matches by name. kind is
 	// optional ("" means any).
@@ -34,6 +37,22 @@ type SymbolMatch struct {
 	Signature     string
 	Kind          string
 	QualifiedName string
+}
+
+// IndexResult summarizes one IndexAll invocation. ParseFailures is the
+// per-file extractor errors — important to expose because silently
+// dropping symbols for files we couldn't parse is the exact category of
+// "false done claim" Leonard exists to prevent.
+type IndexResult struct {
+	FilesIndexed  int
+	ParseFailures []ParseFailure
+}
+
+// ParseFailure mirrors index.ParseFailure but is re-declared here so the
+// cmd/leonard surface stays decoupled from internal/index.
+type ParseFailure struct {
+	Path    string
+	Message string
 }
 
 // newRootCmd assembles the cobra tree. The Runtime is injected so unit tests

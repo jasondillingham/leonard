@@ -31,21 +31,26 @@ func (realRuntime) Init(_ context.Context, projectRoot, dataDir string) error {
 	return config.Save(config.Default(), cfgPath)
 }
 
-func (realRuntime) IndexAll(_ context.Context, projectRoot, dataDir string) (int, error) {
+func (realRuntime) IndexAll(_ context.Context, projectRoot, dataDir string) (IndexResult, error) {
 	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
 	if err != nil {
-		return 0, err
+		return IndexResult{}, err
 	}
 	defer s.Close()
 	idx := index.New(s, projectRoot)
 	if err := idx.IndexAll(); err != nil {
-		return 0, err
+		return IndexResult{}, err
 	}
 	files, err := s.ListFiles("", "")
 	if err != nil {
-		return 0, err
+		return IndexResult{}, err
 	}
-	return len(files), nil
+	rawFailures := idx.ParseFailures()
+	failures := make([]ParseFailure, len(rawFailures))
+	for i, f := range rawFailures {
+		failures[i] = ParseFailure{Path: f.Path, Message: f.Message}
+	}
+	return IndexResult{FilesIndexed: len(files), ParseFailures: failures}, nil
 }
 
 func (realRuntime) VerifySymbol(_ context.Context, dataDir, name, kind string) ([]SymbolMatch, error) {

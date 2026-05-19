@@ -258,3 +258,28 @@ func TestExtractPython_ParseError(t *testing.T) {
 		t.Fatal("expected parse error")
 	}
 }
+
+// TestExtractPython_ParseErrorIsSingleLine verifies the parser's error
+// string is the single-line summary expected by indexer ParseFailures
+// surfacing. gpython's raw error is a multi-line Python-style traceback;
+// we collapse it so the CLI can render one line per failed file.
+func TestExtractPython_ParseErrorIsSingleLine(t *testing.T) {
+	t.Parallel()
+	// `dict[str, int]` is PEP 585 generic alias syntax (Python 3.9+) —
+	// gpython rejects it with a SyntaxError. Using this gives the test a
+	// realistic modern-Python failure mode to capture.
+	_, err := ExtractPython("x.py", []byte("x: dict[str, int] = {}\n"))
+	if err == nil {
+		t.Fatal("expected parse error on modern-Python annotation")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "\n") {
+		t.Errorf("error message contains a newline (should be single-line for CLI): %q", msg)
+	}
+	if !strings.Contains(msg, "SyntaxError") {
+		t.Errorf("expected SyntaxError in message, got %q", msg)
+	}
+	if !strings.Contains(msg, "line ") {
+		t.Errorf("expected a line number in message, got %q", msg)
+	}
+}
