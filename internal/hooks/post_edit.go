@@ -21,12 +21,30 @@ type Indexer interface {
 	IndexFile(path string) error
 }
 
+// ClaimRecord carries the structured fields the post-edit hook derives, so
+// adapters can persist them as real columns instead of leaving callers to
+// re-parse the claim/evidence blobs later. IndexOK and VetOK are pointers
+// because they're tri-state ({nil, true, false}) — VetOK is nil when no
+// go.mod was found and vet was skipped; IndexOK is nil only when the hook
+// short-circuited before the index step (currently never, but reserved).
+type ClaimRecord struct {
+	SessionID       string
+	Claim           string
+	Evidence        string
+	FilePath        string
+	Verified        bool
+	Tool            string
+	IndexOK         *bool
+	VetOK           *bool
+	VetErrorSummary string
+}
+
 // ClaimRecorder is the minimum surface internal/store.Store must satisfy for
 // the post-edit hook. RecordClaim persists the row; SupersedeClaimsForFile
 // links prior unverified rows for filePath to a fresh vet=ok claim so
 // stop-time output focuses on failures the next edit didn't already fix.
 type ClaimRecorder interface {
-	RecordClaim(sessionID, claim, evidence, filePath string, verified bool) (int64, error)
+	RecordClaim(rec ClaimRecord) (int64, error)
 	SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error)
 }
 
@@ -139,7 +157,19 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 	evidence := buildEvidence(filePath, indexErr, vet, opts.EvidenceCap)
 	verified := indexErr == nil && (!vet.Ran || vet.Passed)
 
-	claimID, err := opts.Claims.RecordClaim(payload.SessionID, claim, evidence, filePath, verified)
+	indexOK := indexErr == nil
+	rec := ClaimRecord{
+		SessionID:       payload.SessionID,
+		Claim:           claim,
+		Evidence:        evidence,
+		FilePath:        filePath,
+		Verified:        verified,
+		Tool:            payload.ToolName,
+		IndexOK:         &indexOK,
+		VetOK:           vetOKPtr(vet),
+		VetErrorSummary: vetErrorSummary(vet),
+	}
+	claimID, err := opts.Claims.RecordClaim(rec)
 	if err != nil {
 		return fmt.Errorf("hooks: record claim: %w", err)
 	}
@@ -202,6 +232,56 @@ func runVet(ctx context.Context, opts PostEditOptions, root string) VetResult {
 // real vet failure under boilerplate that's identical across runs.
 var vetNoisePackages = []string{
 	"github.com/shoenig/go-m1cpu",
+}
+
+// vetErrorSummaryCap bounds how much of the first vet error line we keep
+// in claims.vet_error_summary. Vet messages are usually a single short
+// line ("declared and not used: foo") but some include a long type path —
+// 200 chars is enough for the meaningful prefix without bloating the row.
+const vetErrorSummaryCap = 200
+
+// vetOKPtr returns a *bool for the v3-schema vet_ok column. Nil when vet
+// didn't run; otherwise a pointer to vet.Passed. Forwards the same
+// tri-state the Claim row uses.
+func vetOKPtr(vet VetResult) *bool {
+	if !vet.Ran {
+		return nil
+	}
+	b := vet.Passed
+	return &b
+}
+
+// vetErrorSummary picks the first actionable line out of (already-filtered)
+// vet output: skips `# <pkg>` headers, the duplicate `# [<pkg>]` marker Go
+// 1.20+ emits, and blank lines. Returns "" when vet passed or didn't run —
+// the column is meant to be human-scannable, not a full failure record.
+func vetErrorSummary(vet VetResult) string {
+	if !vet.Ran || vet.Passed {
+		return ""
+	}
+	for _, raw := range strings.Split(vet.Output, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "# ") {
+			continue
+		}
+		if len(line) > vetErrorSummaryCap {
+			line = line[:vetErrorSummaryCap]
+		}
+		return line
+	}
+	// Output was nothing but headers — fall back to the exit error string
+	// so the column isn't empty for an obviously-failed vet run.
+	if vet.ExitErr != "" {
+		s := vet.ExitErr
+		if len(s) > vetErrorSummaryCap {
+			s = s[:vetErrorSummaryCap]
+		}
+		return s
+	}
+	return ""
 }
 
 // filterVetNoise removes diagnostic blocks for packages in vetNoisePackages

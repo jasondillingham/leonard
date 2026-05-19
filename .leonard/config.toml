@@ -1,0 +1,13 @@
+[index]
+languages = ['go', 'python', 'typescript']
+ignore = ['vendor/', 'node_modules/', 'dist/', 'build/']
+
+[verifiers]
+go = ['go build ./...', 'go vet ./...']
+python = ['ruff check .']
+typescript = ['tsc --noEmit']
+
+[hooks]
+inject_decisions_at_session_start = 10
+block_on_fabricated_symbol = true
+surface_unverified_claims_at_stop = 20

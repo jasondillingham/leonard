@@ -34,14 +34,6 @@ func (f *fakeIndexer) Calls() []string {
 	return out
 }
 
-type recordedClaim struct {
-	SessionID string
-	Claim     string
-	Evidence  string
-	FilePath  string
-	Verified  bool
-}
-
 type supersedeCall struct {
 	FilePath           string
 	SupersedingClaimID int64
@@ -49,21 +41,21 @@ type supersedeCall struct {
 
 type fakeClaims struct {
 	mu             sync.Mutex
-	rows           []recordedClaim
+	rows           []ClaimRecord
 	nextID         int64
 	recordErr      error
 	supersedeCalls []supersedeCall
 	supersedeErr   error
 }
 
-func (f *fakeClaims) RecordClaim(sessionID, claim, evidence, filePath string, verified bool) (int64, error) {
+func (f *fakeClaims) RecordClaim(rec ClaimRecord) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recordErr != nil {
 		return 0, f.recordErr
 	}
 	f.nextID++
-	f.rows = append(f.rows, recordedClaim{SessionID: sessionID, Claim: claim, Evidence: evidence, FilePath: filePath, Verified: verified})
+	f.rows = append(f.rows, rec)
 	return f.nextID, nil
 }
 
@@ -77,10 +69,10 @@ func (f *fakeClaims) SupersedeClaimsForFile(filePath string, supersedingClaimID 
 	return 0, nil
 }
 
-func (f *fakeClaims) Rows() []recordedClaim {
+func (f *fakeClaims) Rows() []ClaimRecord {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]recordedClaim, len(f.rows))
+	out := make([]ClaimRecord, len(f.rows))
 	copy(out, f.rows)
 	return out
 }
@@ -373,6 +365,120 @@ func TestHandlePostEdit_EvidenceTruncated(t *testing.T) {
 	}
 	if !strings.HasSuffix(rows[0].Evidence, "(truncated)") {
 		t.Errorf("evidence missing truncation marker: %q", rows[0].Evidence[len(rows[0].Evidence)-40:])
+	}
+}
+
+func TestVetErrorSummary(t *testing.T) {
+	t.Parallel()
+	tru := true
+	_ = tru
+	cases := []struct {
+		name string
+		vet  VetResult
+		want string
+	}{
+		{name: "vet skipped", vet: VetResult{Ran: false}, want: ""},
+		{name: "vet passed", vet: VetResult{Ran: true, Passed: true, Output: ""}, want: ""},
+		{
+			name: "fail with project error",
+			vet: VetResult{Ran: true, Passed: false,
+				Output:  "# example.com/project\n# [example.com/project]\nvet: project.go:10: declared and not used: foo",
+				ExitErr: "exit status 1"},
+			want: "vet: project.go:10: declared and not used: foo",
+		},
+		{
+			name: "fail with only headers falls back to exit error",
+			vet: VetResult{Ran: true, Passed: false,
+				Output:  "# example.com/project\n# [example.com/project]",
+				ExitErr: "exit status 1"},
+			want: "exit status 1",
+		},
+		{
+			name: "long error truncated",
+			vet: VetResult{Ran: true, Passed: false,
+				Output:  "vet: " + strings.Repeat("x", 500),
+				ExitErr: "exit 1"},
+			want: ("vet: " + strings.Repeat("x", 500))[:vetErrorSummaryCap],
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := vetErrorSummary(tc.vet)
+			if got != tc.want {
+				t.Errorf("vetErrorSummary:\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandlePostEdit_PopulatesStructuredFields(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeGoMod(t, root)
+	target := filepath.Join(root, "broken.go")
+	stubVet := func(ctx context.Context, dir string) (string, error) {
+		return "# example.com/project\nvet: broken.go:1: declared and not used: foo", errors.New("exit 1")
+	}
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-struct",
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: target},
+		CWD:       root,
+	}))
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: &fakeIndexer{},
+		Claims:  claims,
+		Vet:     stubVet,
+	}, stdin, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	rows := claims.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	r := rows[0]
+	if r.Tool != "Edit" {
+		t.Errorf("Tool = %q, want Edit", r.Tool)
+	}
+	if r.IndexOK == nil || !*r.IndexOK {
+		t.Errorf("IndexOK = %v, want pointer to true", r.IndexOK)
+	}
+	if r.VetOK == nil || *r.VetOK {
+		t.Errorf("VetOK = %v, want pointer to false", r.VetOK)
+	}
+	if r.VetErrorSummary != "vet: broken.go:1: declared and not used: foo" {
+		t.Errorf("VetErrorSummary = %q", r.VetErrorSummary)
+	}
+}
+
+func TestHandlePostEdit_VetSkippedLeavesVetOKNil(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir() // no go.mod
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-nogo",
+		ToolName:  "Write",
+		ToolInput: ToolInput{FilePath: filepath.Join(root, "README.md")},
+		CWD:       root,
+	}))
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: &fakeIndexer{},
+		Claims:  claims,
+		Vet:     func(ctx context.Context, dir string) (string, error) { return "", nil },
+	}, stdin, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	rows := claims.Rows()
+	if rows[0].VetOK != nil {
+		t.Errorf("VetOK = %v, want nil (vet skipped)", rows[0].VetOK)
+	}
+	if rows[0].IndexOK == nil || !*rows[0].IndexOK {
+		t.Errorf("IndexOK = %v, want pointer to true", rows[0].IndexOK)
 	}
 }
 

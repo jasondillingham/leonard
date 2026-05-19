@@ -64,14 +64,21 @@ type DecisionStore interface {
 // ClaimRecord is the subset of internal/store.Claim that the MCP layer
 // surfaces through the claim tools. RecordedAt is unix seconds. FilePath
 // is empty for claims recorded before migration v2 or by record_claim
-// callers that didn't supply one.
+// callers that didn't supply one. Tool / IndexOK / VetOK / VetErrorSummary
+// are populated by the post-edit hook (v3+); record_claim from a model
+// leaves them empty. IndexOK and VetOK are *bool because v3 distinguishes
+// "didn't run" (nil) from "ran and failed" (pointer to false).
 type ClaimRecord struct {
-	ID         int64
-	SessionID  string
-	Claim      string
-	Evidence   string
-	RecordedAt int64
-	FilePath   string
+	ID              int64
+	SessionID       string
+	Claim           string
+	Evidence        string
+	RecordedAt      int64
+	FilePath        string
+	Tool            string
+	IndexOK         *bool
+	VetOK           *bool
+	VetErrorSummary string
 }
 
 // ClaimStore is the read/write surface the claim tools depend on. Sibling

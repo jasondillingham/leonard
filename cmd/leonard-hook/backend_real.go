@@ -43,16 +43,20 @@ func mustOpenStore(projectRoot string) *store.Store {
 
 type storeClaimsAdapter struct{ s *store.Store }
 
-// RecordClaim adapts hooks.ClaimRecorder onto store.Store.RecordClaim, which
-// takes a struct. We pass time.Now via the store layer (it owns the clock
-// per the brief), so the adapter just forwards the fields.
-func (a storeClaimsAdapter) RecordClaim(sessionID, claim, evidence, filePath string, verified bool) (int64, error) {
+// RecordClaim adapts hooks.ClaimRecorder onto store.Store.RecordClaim. The
+// store owns the clock (per the brief), so we leave RecordedAt zero and let
+// the store stamp it.
+func (a storeClaimsAdapter) RecordClaim(rec hooks.ClaimRecord) (int64, error) {
 	return a.s.RecordClaim(store.Claim{
-		SessionID: sessionID,
-		Claim:     claim,
-		Evidence:  evidence,
-		Verified:  verified,
-		FilePath:  filePath,
+		SessionID:       rec.SessionID,
+		Claim:           rec.Claim,
+		Evidence:        rec.Evidence,
+		Verified:        rec.Verified,
+		FilePath:        rec.FilePath,
+		Tool:            rec.Tool,
+		IndexOK:         rec.IndexOK,
+		VetOK:           rec.VetOK,
+		VetErrorSummary: rec.VetErrorSummary,
 	})
 }
 

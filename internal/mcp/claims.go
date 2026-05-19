@@ -37,15 +37,20 @@ type GetUnverifiedClaimsInput struct {
 
 // ClaimEntry is the wire-format claim returned by get_unverified_claims.
 // Evidence is intentionally omitted from this read shape because it can be
-// large — a future per-id read tool can surface it on demand. FilePath is
-// included so callers can group/sort by file without parsing the claim
-// summary string.
+// large — a future per-id read tool can surface it on demand. FilePath,
+// Tool, IndexOK, VetOK, and VetErrorSummary are populated by the post-edit
+// hook (schema v3+); claims recorded via the record_claim MCP tool from a
+// model leave them empty.
 type ClaimEntry struct {
-	ID         int64  `json:"id"`
-	SessionID  string `json:"session_id"`
-	Claim      string `json:"claim"`
-	FilePath   string `json:"file_path,omitempty"`
-	RecordedAt int64  `json:"recorded_at"`
+	ID              int64  `json:"id"`
+	SessionID       string `json:"session_id"`
+	Claim           string `json:"claim"`
+	FilePath        string `json:"file_path,omitempty"`
+	Tool            string `json:"tool,omitempty"`
+	IndexOK         *bool  `json:"index_ok,omitempty"`
+	VetOK           *bool  `json:"vet_ok,omitempty"`
+	VetErrorSummary string `json:"vet_error_summary,omitempty"`
+	RecordedAt      int64  `json:"recorded_at"`
 }
 
 // GetUnverifiedClaimsOutput wraps the claims array. MCP requires structured
@@ -74,11 +79,15 @@ func getUnverifiedClaims(ctx context.Context, cs ClaimStore, in GetUnverifiedCla
 	out := make([]ClaimEntry, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, ClaimEntry{
-			ID:         r.ID,
-			SessionID:  r.SessionID,
-			Claim:      r.Claim,
-			FilePath:   r.FilePath,
-			RecordedAt: r.RecordedAt,
+			ID:              r.ID,
+			SessionID:       r.SessionID,
+			Claim:           r.Claim,
+			FilePath:        r.FilePath,
+			Tool:            r.Tool,
+			IndexOK:         r.IndexOK,
+			VetOK:           r.VetOK,
+			VetErrorSummary: r.VetErrorSummary,
+			RecordedAt:      r.RecordedAt,
 		})
 	}
 	return GetUnverifiedClaimsOutput{Claims: out}, nil

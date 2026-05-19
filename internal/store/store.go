@@ -14,7 +14,7 @@ import (
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // File describes an indexed source file.
 type File struct {
@@ -54,6 +54,11 @@ type Decision struct {
 // SupersededByClaimID points at the later claim that resolved this one (a
 // vet=ok run on the same FilePath, recorded by the post-edit hook). Nil
 // while the claim is still the latest signal for its file.
+//
+// Tool, IndexOK, VetOK, and VetErrorSummary are the structured fields the
+// post-edit hook derives. *bool fields are nil for legacy rows recorded
+// before migration v3 and for rows the hook didn't populate (e.g.
+// record_claim calls from a model where there's no index/vet step).
 type Claim struct {
 	ID                  int64
 	SessionID           string
@@ -63,6 +68,10 @@ type Claim struct {
 	RecordedAt          int64
 	FilePath            string
 	SupersededByClaimID *int64
+	Tool                string
+	IndexOK             *bool
+	VetOK               *bool
+	VetErrorSummary     string
 }
 
 // Store is the SQLite-backed Leonard data layer. The zero value is not usable;
@@ -119,6 +128,7 @@ func buildDSN(path string) string {
 var migrations = []func(*sql.Tx) error{
 	migrateV1,
 	migrateV2,
+	migrateV3,
 }
 
 func (s *Store) migrate() error {
@@ -233,6 +243,27 @@ func migrateV2(tx *sql.Tx) error {
 		`ALTER TABLE claims ADD COLUMN file_path TEXT`,
 		`ALTER TABLE claims ADD COLUMN superseded_by_claim_id INTEGER REFERENCES claims(id)`,
 		`CREATE INDEX idx_claims_file_path ON claims(file_path)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
+		}
+	}
+	return nil
+}
+
+// migrateV3 promotes the structured fields the post-edit hook already
+// derives (tool, index_ok, vet_ok, vet_error_summary) into columns so they
+// can be queried directly instead of LIKE-grepping the claim/evidence
+// blobs. Pre-migration rows leave all four NULL — readers must treat NULL
+// as "unknown" and fall back to the verified column for older history.
+func migrateV3(tx *sql.Tx) error {
+	stmts := []string{
+		`ALTER TABLE claims ADD COLUMN tool TEXT`,
+		`ALTER TABLE claims ADD COLUMN index_ok INTEGER`,
+		`ALTER TABLE claims ADD COLUMN vet_ok INTEGER`,
+		`ALTER TABLE claims ADD COLUMN vet_error_summary TEXT`,
+		`CREATE INDEX idx_claims_vet_ok ON claims(vet_ok)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -545,9 +576,13 @@ func (s *Store) RecordClaim(c Claim) (int64, error) {
 	if c.RecordedAt == 0 {
 		c.RecordedAt = time.Now().Unix()
 	}
-	res, err := s.db.Exec(`INSERT INTO claims(session_id, claim, evidence, verified, recorded_at, file_path)
-		VALUES(?, ?, ?, ?, ?, ?)`,
-		c.SessionID, c.Claim, c.Evidence, boolToInt(c.Verified), c.RecordedAt, nullableString(c.FilePath))
+	res, err := s.db.Exec(`INSERT INTO claims(
+		session_id, claim, evidence, verified, recorded_at,
+		file_path, tool, index_ok, vet_ok, vet_error_summary
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.SessionID, c.Claim, c.Evidence, boolToInt(c.Verified), c.RecordedAt,
+		nullableString(c.FilePath), nullableString(c.Tool),
+		nullableBool(c.IndexOK), nullableBool(c.VetOK), nullableString(c.VetErrorSummary))
 	if err != nil {
 		return 0, fmt.Errorf("store: RecordClaim: %w", err)
 	}
@@ -599,7 +634,8 @@ func (s *Store) GetUnverifiedClaimsAll(sessionID string) ([]Claim, error) {
 }
 
 func (s *Store) queryUnverifiedClaims(sessionID string, includeSuperseded bool) ([]Claim, error) {
-	const selectCols = `SELECT id, session_id, claim, evidence, verified, recorded_at, file_path, superseded_by_claim_id`
+	const selectCols = `SELECT id, session_id, claim, evidence, verified, recorded_at,
+		file_path, superseded_by_claim_id, tool, index_ok, vet_ok, vet_error_summary`
 	var (
 		clauses = []string{"verified = 0"}
 		args    []any
@@ -622,13 +658,18 @@ func (s *Store) queryUnverifiedClaims(sessionID string, includeSuperseded bool) 
 	var out []Claim
 	for rows.Next() {
 		var (
-			c         Claim
-			verified  int
-			filePath  sql.NullString
-			superseded sql.NullInt64
+			c           Claim
+			verified    int
+			filePath    sql.NullString
+			superseded  sql.NullInt64
+			tool        sql.NullString
+			indexOK     sql.NullInt64
+			vetOK       sql.NullInt64
+			vetErrSum   sql.NullString
 		)
 		if err := rows.Scan(&c.ID, &c.SessionID, &c.Claim, &c.Evidence,
-			&verified, &c.RecordedAt, &filePath, &superseded); err != nil {
+			&verified, &c.RecordedAt, &filePath, &superseded,
+			&tool, &indexOK, &vetOK, &vetErrSum); err != nil {
 			return nil, fmt.Errorf("store: GetUnverifiedClaims scan: %w", err)
 		}
 		c.Verified = verified != 0
@@ -638,6 +679,20 @@ func (s *Store) queryUnverifiedClaims(sessionID string, includeSuperseded bool) 
 		if superseded.Valid {
 			v := superseded.Int64
 			c.SupersededByClaimID = &v
+		}
+		if tool.Valid {
+			c.Tool = tool.String
+		}
+		if indexOK.Valid {
+			b := indexOK.Int64 != 0
+			c.IndexOK = &b
+		}
+		if vetOK.Valid {
+			b := vetOK.Int64 != 0
+			c.VetOK = &b
+		}
+		if vetErrSum.Valid {
+			c.VetErrorSummary = vetErrSum.String
 		}
 		out = append(out, c)
 	}
@@ -695,6 +750,16 @@ func nullableString(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullableBool(p *bool) any {
+	if p == nil {
+		return nil
+	}
+	if *p {
+		return 1
+	}
+	return 0
 }
 
 // escapeLike escapes the SQL LIKE wildcards %, _, and the backslash escape

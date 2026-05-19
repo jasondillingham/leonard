@@ -537,6 +537,70 @@ func TestClaimsLifecycle(t *testing.T) {
 	}
 }
 
+func TestClaimsStructuredFieldsRoundTrip(t *testing.T) {
+	s, _ := newTestStore(t)
+	tru, fls := true, false
+	id, err := s.RecordClaim(Claim{
+		SessionID:       "sess",
+		Claim:           "vet failed",
+		Evidence:        "blob",
+		FilePath:        "/repo/x.go",
+		Tool:            "Edit",
+		IndexOK:         &tru,
+		VetOK:           &fls,
+		VetErrorSummary: "vet: x.go:1: bad",
+	})
+	if err != nil {
+		t.Fatalf("RecordClaim: %v", err)
+	}
+	got, err := s.GetUnverifiedClaims("")
+	if err != nil {
+		t.Fatalf("GetUnverifiedClaims: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %d", len(got))
+	}
+	c := got[0]
+	if c.ID != id {
+		t.Errorf("ID = %d, want %d", c.ID, id)
+	}
+	if c.Tool != "Edit" {
+		t.Errorf("Tool = %q, want Edit", c.Tool)
+	}
+	if c.IndexOK == nil || !*c.IndexOK {
+		t.Errorf("IndexOK = %v, want pointer to true", c.IndexOK)
+	}
+	if c.VetOK == nil || *c.VetOK {
+		t.Errorf("VetOK = %v, want pointer to false", c.VetOK)
+	}
+	if c.VetErrorSummary != "vet: x.go:1: bad" {
+		t.Errorf("VetErrorSummary = %q", c.VetErrorSummary)
+	}
+}
+
+func TestClaimsStructuredFieldsNullForLegacyShape(t *testing.T) {
+	// A Claim that doesn't populate the v3 fields (mirroring a legacy
+	// record_claim call from the MCP layer) must round-trip with the
+	// pointers nil, not zero-valued pointers — readers rely on the
+	// distinction.
+	s, _ := newTestStore(t)
+	if _, err := s.RecordClaim(Claim{Claim: "manual", Evidence: "ev"}); err != nil {
+		t.Fatalf("RecordClaim: %v", err)
+	}
+	got, err := s.GetUnverifiedClaims("")
+	if err != nil {
+		t.Fatalf("GetUnverifiedClaims: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %d", len(got))
+	}
+	c := got[0]
+	if c.Tool != "" || c.IndexOK != nil || c.VetOK != nil || c.VetErrorSummary != "" {
+		t.Errorf("expected zero/nil structured fields, got tool=%q index=%v vet=%v summary=%q",
+			c.Tool, c.IndexOK, c.VetOK, c.VetErrorSummary)
+	}
+}
+
 func TestClaimsSupersession(t *testing.T) {
 	s, _ := newTestStore(t)
 	const path = "/repo/cmd/init.go"

@@ -189,12 +189,16 @@ func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string
 	out := make([]ClaimRecord, len(cs))
 	for i, c := range cs {
 		out[i] = ClaimRecord{
-			ID:         c.ID,
-			SessionID:  c.SessionID,
-			Claim:      c.Claim,
-			Evidence:   c.Evidence,
-			RecordedAt: c.RecordedAt,
-			FilePath:   c.FilePath,
+			ID:              c.ID,
+			SessionID:       c.SessionID,
+			Claim:           c.Claim,
+			Evidence:        c.Evidence,
+			RecordedAt:      c.RecordedAt,
+			FilePath:        c.FilePath,
+			Tool:            c.Tool,
+			IndexOK:         c.IndexOK,
+			VetOK:           c.VetOK,
+			VetErrorSummary: c.VetErrorSummary,
 		}
 	}
 	return out, nil
