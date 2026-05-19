@@ -68,6 +68,14 @@ func register(srv *mcp.Server, store SymbolStore) {
 		}
 		return nil, out, nil
 	})
+
+	// Decision tools are only wired when the store also implements the
+	// DecisionStore surface. The real StoreAdapter satisfies both — the
+	// phase-1 in-memory test fixture (MemStore) intentionally doesn't, so
+	// existing tests don't have to grow decision plumbing.
+	if ds, ok := store.(DecisionStore); ok {
+		registerDecisionTools(srv, ds)
+	}
 }
 
 // verifySymbol is the thin shim: name lookup + optional kind/language

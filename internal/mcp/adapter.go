@@ -51,6 +51,45 @@ func (a *StoreAdapter) ListFiles(ctx context.Context, pattern, language string) 
 	return out, nil
 }
 
+func (a *StoreAdapter) RecordDecision(ctx context.Context, topic, choice, reasoning string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return a.S.RecordDecision(store.Decision{
+		Topic:     topic,
+		Choice:    choice,
+		Reasoning: reasoning,
+	})
+}
+
+func (a *StoreAdapter) GetDecisions(ctx context.Context, topic string, since int64, limit int) ([]DecisionRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ds, err := a.S.GetDecisions(topic, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DecisionRecord, len(ds))
+	for i, d := range ds {
+		out[i] = DecisionRecord{
+			ID:         d.ID,
+			Topic:      d.Topic,
+			Choice:     d.Choice,
+			Reasoning:  d.Reasoning,
+			RecordedAt: d.RecordedAt,
+		}
+	}
+	return out, nil
+}
+
+func (a *StoreAdapter) SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return a.S.SupersedeDecision(decisionID, newChoice, newReasoning)
+}
+
 func symbolsToRecords(syms []store.Symbol) []SymbolRecord {
 	out := make([]SymbolRecord, len(syms))
 	for i, s := range syms {

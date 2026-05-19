@@ -33,3 +33,27 @@ type SymbolStore interface {
 	FindSymbolsByQuery(ctx context.Context, query string, limit int) ([]SymbolRecord, error)
 	ListFiles(ctx context.Context, pattern, language string) ([]FileRecord, error)
 }
+
+// DecisionRecord is the subset of internal/store.Decision that the MCP
+// layer surfaces through the decision tools. RecordedAt is unix seconds.
+type DecisionRecord struct {
+	ID         int64
+	Topic      string
+	Choice     string
+	Reasoning  string
+	RecordedAt int64
+}
+
+// DecisionStore is the read/write surface the decision tools depend on.
+//
+// Kept as a sibling interface to SymbolStore (rather than embedded into
+// it) so the in-memory phase-1 test fixture in mem_store.go and the
+// errStore in mcp_test.go don't have to grow decision methods. register()
+// type-asserts the SymbolStore it receives and only wires the decision
+// tools when the assertion succeeds — the real StoreAdapter satisfies
+// both interfaces, so leonard-mcp always exposes the full surface.
+type DecisionStore interface {
+	RecordDecision(ctx context.Context, topic, choice, reasoning string) (int64, error)
+	GetDecisions(ctx context.Context, topic string, since int64, limit int) ([]DecisionRecord, error)
+	SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error)
+}
