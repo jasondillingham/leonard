@@ -18,10 +18,18 @@ Leonard targets four recurring Claude Code failure modes:
 ## Components
 
 - **`leonard`** — CLI: `init`, `index`, `verify`, `mcp` (passthrough).
-- **`leonard-mcp`** — stdio MCP server. Tools: `verify_symbol`, `find_symbol`, `list_files`, `record_decision`, `get_decisions`, `supersede_decision`, `record_claim`, `get_unverified_claims`, `recent_changes`.
+- **`leonard-mcp`** — stdio MCP server. Tools: `verify_symbol`, `find_symbol`, `list_files`, `record_decision`, `get_decisions`, `supersede_decision`, `get_stale_decisions`, `record_claim`, `get_unverified_claims`, `recent_changes`.
 - **`leonard-hook`** — hook dispatcher with `pre-edit`, `post-edit`, `session-start`, `stop` subcommands.
 
 All three share a single SQLite store at `.leonard/leonard.db` in the project root.
+
+## Language support
+
+| Language | Parser | Status |
+|---|---|---|
+| Go | stdlib `go/parser` | Production. Self-dogfooded on this repo; vet+test invariant enforced via the post-edit hook. |
+| TypeScript / TSX | hand-rolled (`internal/parse/typescript.go`) | Real-world tested. Indexed cleanly on first run against a 22-file Next.js App-Router project — functions, classes, interfaces, type aliases, const/let/var, all extracted with accurate file/line. |
+| Python | `gpython` AST | Fixture-tested only. The parser passes the `testdata/python/` cases but hasn't been driven by a live Python project. Report issues against real repos so we can harden it before v0.2. |
 
 ## Install
 
