@@ -254,6 +254,7 @@ leonard/
 - [ ] `Stop` hook surfacing unverified claims
 - [ ] TypeScript parser
 - [ ] `recent_changes` MCP tool wired in
+- [ ] **pre-edit follow-ups** (deferred from phase 2): cross-module symbol resolution; generic type-parameter checking; verifying *method signatures* in addition to name existence; Python pre-edit (Python coverage matures first); an override path / `--force` flag (Claude Code's existing hook-deny override is enough for v0).
 
 ### Future / explicit non-MVP
 
