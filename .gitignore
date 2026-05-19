@@ -14,7 +14,14 @@ coverage.out
 *.test
 *.out
 
+# Personal Claude Code config (per-user wiring, not project-shared)
+.claude/settings.local.json
+
 # macOS
 .DS_Store
 phase-1-brief.md
 .bosun/
+phase-2-brief.md
+phase-3-brief.md
+bughunt-1-brief.md
+fix-1-brief.md

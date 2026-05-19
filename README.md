@@ -4,28 +4,66 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status:** Pre-alpha, design phase. See [`DESIGN.md`](./DESIGN.md) for the architecture.
+**Status:** v0.1, self-dogfooded on this repo as of 2026-05-19. See [`DESIGN.md`](./DESIGN.md) for the architecture and [`bughunt-1-triage.md`](./bughunt-1-triage.md) for the deferred MEDIUM-severity known gaps.
 
-## What it does (planned)
+## What it does
 
 Leonard targets four recurring Claude Code failure modes:
 
-1. **Fabricated APIs/symbols** — pre-edit hook rejects references to symbols that don't exist in the project.
-2. **Drift from prior decisions** — durable decision log surfaced into every new session.
-3. **False "done" claims** — post-edit hook runs project's lint/test and writes the outcome into a claim ledger.
-4. **Stale codebase facts** — incremental re-index on every edit keeps the symbol map fresh.
+1. **Fabricated APIs/symbols** — pre-edit hook rejects references to symbols that don't exist in any tracked package.
+2. **Drift from prior decisions** — durable decision log surfaced into every new session via the SessionStart hook.
+3. **False "done" claims** — post-edit hook runs `go vet ./...` after each Edit/Write and writes the outcome into a claims ledger; the Stop hook surfaces any unverified claims at session end.
+4. **Stale codebase facts** — incremental re-index on every edit keeps the symbol map fresh; the `recent_changes` MCP tool lets Claude ask "what's moved since I last looked?" instead of relying on memory.
 
 ## Components
 
-- **`leonard`** — CLI for setup, manual indexing, decision recording, doctor.
-- **`leonard-mcp`** — stdio MCP server registered with Claude Code.
-- **`leonard-hook`** — hook dispatcher invoked from `.claude/settings.json`.
+- **`leonard`** — CLI: `init`, `index`, `verify`, `mcp` (passthrough).
+- **`leonard-mcp`** — stdio MCP server. Tools: `verify_symbol`, `find_symbol`, `list_files`, `record_decision`, `get_decisions`, `supersede_decision`, `record_claim`, `get_unverified_claims`, `recent_changes`.
+- **`leonard-hook`** — hook dispatcher with `pre-edit`, `post-edit`, `session-start`, `stop` subcommands.
 
 All three share a single SQLite store at `.leonard/leonard.db` in the project root.
 
 ## Install
 
-Not yet — see DESIGN.md for the build plan.
+```bash
+git clone <this repo>
+cd leonard
+go install ./cmd/...   # puts leonard, leonard-mcp, leonard-hook in $GOPATH/bin
+```
+
+Requires Go 1.25+ (auto-fetched via toolchain directive if you have 1.21+).
+
+## Dogfood wiring (this repo)
+
+Leonard is wired into its own development through `.claude/settings.local.json` (gitignored — personal config, not shared). The shape:
+
+```jsonc
+{
+  "mcpServers": {
+    "leonard": { "command": "/path/to/go/bin/leonard-mcp" }
+  },
+  "hooks": {
+    "PreToolUse":  [{ "matcher": "Edit|Write", "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook pre-edit"  }]}],
+    "PostToolUse": [{ "matcher": "Edit|Write", "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook post-edit" }]}],
+    "SessionStart":[{ "matcher": "",            "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook session-start" }]}],
+    "Stop":        [{ "matcher": "",            "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook stop" }]}]
+  }
+}
+```
+
+Enable Leonard in a new project: `leonard init .`, then drop the same JSON into that project's `.claude/settings.local.json` and restart Claude Code in the directory.
+
+## Project layout
+
+```
+cmd/{leonard,leonard-mcp,leonard-hook}   # the three binaries
+internal/store                            # SQLite-backed data layer
+internal/index                            # file walker + incremental dispatch
+internal/parse                            # Go (stdlib), Python (gpython), TypeScript (hand-rolled) extractors
+internal/mcp                              # MCP tool handlers + StoreAdapter
+internal/hooks                            # hook handler implementations
+internal/config                           # .leonard/config.toml loader
+```
 
 ## License
 
