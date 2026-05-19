@@ -27,5 +27,6 @@ func newRootCmd(b Backend) *cobra.Command {
 	root.AddCommand(newPostEditCmd(b))
 	root.AddCommand(newSessionStartCmd())
 	root.AddCommand(newPreEditCmd())
+	root.AddCommand(newStopCmd())
 	return root
 }

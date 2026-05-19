@@ -41,8 +41,9 @@ type VerifiersConfig struct {
 
 // HooksConfig holds tunables for the Claude Code hook dispatchers.
 type HooksConfig struct {
-	InjectDecisionsAtSessionStart int  `toml:"inject_decisions_at_session_start"`
-	BlockOnFabricatedSymbol       bool `toml:"block_on_fabricated_symbol"`
+	InjectDecisionsAtSessionStart  int  `toml:"inject_decisions_at_session_start"`
+	BlockOnFabricatedSymbol        bool `toml:"block_on_fabricated_symbol"`
+	SurfaceUnverifiedClaimsAtStop  int  `toml:"surface_unverified_claims_at_stop"`
 }
 
 // Default returns the config Leonard writes during `leonard init`. The values
@@ -61,6 +62,7 @@ func Default() Config {
 		Hooks: HooksConfig{
 			InjectDecisionsAtSessionStart: 10,
 			BlockOnFabricatedSymbol:       true,
+			SurfaceUnverifiedClaimsAtStop: 20,
 		},
 	}
 }
