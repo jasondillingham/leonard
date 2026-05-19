@@ -204,6 +204,61 @@ func TestExtractTypeScript_ObjectTypeLiteralReturn(t *testing.T) {
 // the class-body loop walked through their tokens one at a time, and the
 // real body's closing `}` was eventually mistaken for the class end —
 // silently dropping every method declared after the keyword-named one.
+// TestExtractTypeScript_ArrowFunctionExports covers selfhost F2. Each of
+// these shapes should produce kind=function (not kind=const) so that a
+// `find_symbol(kind=function)` query against a real-world TS codebase
+// matches them. Dogfooded against Zod where 166 of these were previously
+// hidden in the const namespace.
+func TestExtractTypeScript_ArrowFunctionExports(t *testing.T) {
+	t.Parallel()
+	src := `export const plain = () => 1;
+export const oneArg = (x: number) => x * 2;
+export const typed: (x: number) => number = (x) => x + 1;
+export const asynced = async () => Promise.resolve(1);
+export const generic = <T,>(x: T): T => x;
+export const sugar = x => x + 1;
+export const asyncSugar = async x => x + 1;
+export const block = (n: number) => {
+  const doubled = n * 2;
+  return doubled;
+};
+export const NOT_A_FUNCTION = 42;
+export const obj = { a: 1, b: 2 };
+`
+	syms, err := ExtractTypeScript("a.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	want := map[string]string{
+		"plain":          "function",
+		"oneArg":         "function",
+		"typed":          "function",
+		"asynced":        "function",
+		"generic":        "function",
+		"sugar":          "function",
+		"asyncSugar":     "function",
+		"block":          "function",
+		"NOT_A_FUNCTION": "const",
+		"obj":            "const",
+	}
+	got := map[string]string{}
+	for _, s := range syms {
+		got[s.Name] = s.Kind
+	}
+	for name, kind := range want {
+		if got[name] != kind {
+			t.Errorf("%s: kind=%q, want %q", name, got[name], kind)
+		}
+	}
+	// Signature for arrow-function symbols should look like the function
+	// form so verify_symbol output is consistent across declaration styles.
+	for _, s := range syms {
+		if s.Kind == "function" && !strings.HasPrefix(s.Signature, "function "+s.Name+"(") {
+			t.Errorf("%s signature = %q, want prefix `function %s(`", s.Name, s.Signature, s.Name)
+		}
+	}
+}
+
 func TestExtractTypeScript_KeywordAsMethodName(t *testing.T) {
 	t.Parallel()
 	src := `export class C {
@@ -344,7 +399,10 @@ export default Greeting;
 	want := map[string]string{
 		"Props":    "interface",
 		"Greeting": "function",
-		"Counter":  "const",
+		// selfhost F2: arrow-function exports are now classified as
+		// `function`, not `const`. Counter is `const Counter = (...) => …` —
+		// same shape every React component file in the wild uses.
+		"Counter": "function",
 	}
 	got := map[string]string{}
 	for _, s := range syms {

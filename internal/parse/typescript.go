@@ -949,9 +949,21 @@ func (p *tsParser) parseVarDecl(kw string, exported bool, startLine int) bool {
 		if p.peek().val == ":" {
 			p.skipTypeAnnotation(true)
 		}
+		// Detect arrow-function initializers BEFORE skipping the body so
+		// `export const foo = (x) => ...` lands as kind=function (matching
+		// `function foo(x) { ... }`) rather than kind=const. Without this
+		// branch, every helper written in modern TS style hides from
+		// `find_symbol(kind=function)` queries.
+		entryKind := kind
+		signature := kw + " " + nameTok.val
 		if p.peek().val == "=" {
 			p.pos++
-			p.skipInitializer()
+			if params, ok := p.tryParseArrowInit(); ok {
+				entryKind = "function"
+				signature = "function " + nameTok.val + "(" + extractParamNames(params) + ")"
+			} else {
+				p.skipInitializer()
+			}
 		}
 		endLine := nameTok.line
 		if p.pos > 0 {
@@ -961,8 +973,8 @@ func (p *tsParser) parseVarDecl(kw string, exported bool, startLine int) bool {
 			FilePath:      p.path,
 			Name:          nameTok.val,
 			QualifiedName: nameTok.val,
-			Kind:          kind,
-			Signature:     kw + " " + nameTok.val,
+			Kind:          entryKind,
+			Signature:     signature,
 			StartLine:     startLine,
 			EndLine:       endLine,
 			Exported:      exported,
@@ -978,6 +990,122 @@ func (p *tsParser) parseVarDecl(kw string, exported bool, startLine int) bool {
 		p.pos++
 	}
 	return true
+}
+
+// tryParseArrowInit recognizes an arrow-function initializer starting at
+// the current position (just past the `=` of a var-decl) and, if it
+// matches, consumes the entire function expression including its body.
+// Returns the parameter tokens (for signature derivation) and ok=true
+// when an arrow function was detected. On a non-match, the cursor is
+// restored to where it started — the caller then falls back to the
+// generic skipInitializer.
+//
+// Shapes handled:
+//   - (x, y) => expr               — paren-wrapped, expression body
+//   - (x, y) => { stmts }          — paren-wrapped, block body
+//   - (x: T): U => expr            — typed params + return type
+//   - async (x) => expr            — async arrow
+//   - <T>(x: T) => x               — generic arrow
+//   - async <T>(x) => x            — generic async arrow
+//   - x => expr                    — single-param sugar
+//   - async x => expr              — single-param async sugar
+//
+// Anything else (a function expression `function() {}`, a call
+// expression, an object literal) restores the position and returns
+// ok=false.
+func (p *tsParser) tryParseArrowInit() (params []tsToken, ok bool) {
+	saved := p.pos
+	if p.peek().val == "async" {
+		p.pos++
+	}
+	if p.peek().val == "<" {
+		p.skipGenericParams()
+	}
+	switch p.peek().val {
+	case "(":
+		captured := p.captureBalanced("(", ")")
+		if captured == nil {
+			p.pos = saved
+			return nil, false
+		}
+		params = captured
+		if p.peek().val == ":" {
+			// Return-type annotation between `()` and `=>`. Use the
+			// arrow-specific helper — skipTypeAnnotation walks past
+			// `=>` (which is fine for variable-type annotations
+			// terminating at `=`/`;`) and would eat the body separator.
+			p.skipArrowReturnType()
+		}
+	default:
+		if p.peek().kind != "ident" {
+			p.pos = saved
+			return nil, false
+		}
+		params = []tsToken{p.peek()}
+		p.pos++
+	}
+	if p.peek().val != "=>" {
+		p.pos = saved
+		return nil, false
+	}
+	p.pos++ // consume =>
+	if p.peek().val == "{" {
+		if p.captureBalanced("{", "}") == nil {
+			p.pos = saved
+			return nil, false
+		}
+		return params, true
+	}
+	// Expression-bodied arrow: scan to the var-decl boundary the same way
+	// skipInitializer does. We can't call skipInitializer directly because
+	// it doesn't handle the case where the expression itself contains
+	// nested commas inside parens/brackets.
+	p.skipInitializer()
+	return params, true
+}
+
+// skipArrowReturnType consumes a `: T` return-type annotation between an
+// arrow function's parameter list and its `=>` body separator. Stops at
+// the first `=>` at depth 0 that isn't preceded by `)` — a `=>` preceded
+// by `)` is part of a function-type return like `(): (n: T) => U`, where
+// the *second* `=>` is the real body separator. Tracks `()[]{}<>` so a
+// nested type literal doesn't trip the scan.
+//
+// Limitation: doubly-nested function-type returns like `(): ((x) => U)
+// => body` get mis-bounded — the second `=>` is still preceded by `)` so
+// we'd skip past it. Real-world TS never writes that shape.
+func (p *tsParser) skipArrowReturnType() {
+	if p.peek().val != ":" {
+		return
+	}
+	p.pos++
+	depth := 0
+	for p.pos < len(p.tokens) {
+		v := p.peek().val
+		if depth == 0 {
+			if v == "=>" {
+				prev := ""
+				if p.pos > 0 {
+					prev = p.tokens[p.pos-1].val
+				}
+				if prev != ")" {
+					return
+				}
+			}
+			if v == ";" || v == "," {
+				return
+			}
+		}
+		switch v {
+		case "(", "[", "<", "{":
+			depth++
+		case ")", "]", ">", "}":
+			if depth > 0 {
+				depth--
+			}
+		}
+		p.pos++
+	}
 }
 
 // skipGenericParams: if the next token is `<`, consume through the matching

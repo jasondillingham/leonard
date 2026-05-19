@@ -77,7 +77,10 @@ func TestIndexAll_TypeScript(t *testing.T) {
 		// From component.tsx
 		{"Props", "interface", "Props"},
 		{"Greeting", "function", "Greeting"},
-		{"Counter", "const", "Counter"},
+		// selfhost F2: Counter is `const Counter = (...) => …` — arrow
+		// exports are classified as function, matching how a hand-written
+		// `function Counter(...)` would be recorded.
+		{"Counter", "function", "Counter"},
 		{"Panel", "type", "Panel"},
 		{"render", "method", "Panel.render"},
 	}
