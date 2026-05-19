@@ -43,8 +43,10 @@ var langExtractors = map[string]struct {
 	lang    string
 	extract extractor
 }{
-	".go": {lang: "go", extract: parse.ExtractGo},
-	".py": {lang: "python", extract: parse.ExtractPython},
+	".go":  {lang: "go", extract: parse.ExtractGo},
+	".py":  {lang: "python", extract: parse.ExtractPython},
+	".ts":  {lang: "typescript", extract: parse.ExtractTypeScript},
+	".tsx": {lang: "typescript", extract: parse.ExtractTypeScript},
 }
 
 // Indexer walks Root and persists symbols into Store. Construct with New.
