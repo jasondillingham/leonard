@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/jasondillingham/leonard/internal/config"
@@ -15,6 +17,9 @@ type realRuntime struct{}
 func newDefaultRuntime() Runtime { return realRuntime{} }
 
 func (realRuntime) Init(_ context.Context, projectRoot, dataDir string) error {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dataDir, err)
+	}
 	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
 	if err != nil {
 		return err
