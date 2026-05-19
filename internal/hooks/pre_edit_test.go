@@ -237,6 +237,91 @@ func TestHandlePreEdit_PassesThroughForNonGoFiles(t *testing.T) {
 	}
 }
 
+// TestHandlePreEdit_MultiEditBlocksFabricated closes the F6 bypass: the
+// pre-edit guard used to scan only Edit + Write payloads, so a MultiEdit
+// (which is what Claude Code reaches for whenever it has two changes in
+// one file) could fabricate symbols freely. Each edit's new_string is
+// concatenated into a single snippet; a fabricated reference in any one
+// edit must trigger a deny.
+func TestHandlePreEdit_MultiEditBlocksFabricated(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := writeTarget(t, root, "foo.go", `package foo
+
+import "github.com/jasondillingham/leonard/internal/store"
+
+func Foo() {}
+`)
+	s := newFakeSymStore() // empty: any store.X reference is fabricated
+	payload := encodePreToolUsePayload(t, PreToolUsePayload{
+		ToolName: "MultiEdit",
+		ToolInput: PreEditToolInput{
+			FilePath: target,
+			Edits: []PreEditMultiEdit{
+				{OldString: "func Foo() {}", NewString: "func Foo() { _ = 1 }"},
+				{OldString: "// placeholder", NewString: "s, _ := store.GhostFunction()\n_ = s\n"},
+			},
+		},
+	})
+	resp := runPreEdit(t, s, payload)
+	if !preEditDenied(resp) {
+		t.Fatalf("MultiEdit with fabricated ref should be denied, got %+v", resp)
+	}
+	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "store.GhostFunction") {
+		t.Errorf("reason should mention the fabricated symbol: %q",
+			resp.HookSpecificOutput.PermissionDecisionReason)
+	}
+}
+
+// TestHandlePreEdit_MultiEditAllowsCleanBatch keeps the symmetric case
+// honest: a MultiEdit whose edits all reference known symbols passes
+// through. Without this assertion a regression that made MultiEdit
+// blanket-deny would look correct against the failure test above.
+func TestHandlePreEdit_MultiEditAllowsCleanBatch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := writeTarget(t, root, "foo.go", `package foo
+
+import "github.com/jasondillingham/leonard/internal/store"
+
+func Foo() {}
+`)
+	s := newFakeSymStore("Open") // store.Open exists
+	payload := encodePreToolUsePayload(t, PreToolUsePayload{
+		ToolName: "MultiEdit",
+		ToolInput: PreEditToolInput{
+			FilePath: target,
+			Edits: []PreEditMultiEdit{
+				{OldString: "func Foo() {}", NewString: "func Foo() { _ = 1 }"},
+				{OldString: "// placeholder", NewString: "s, _ := store.Open(\"x\")\n_ = s\n"},
+			},
+		},
+	})
+	resp := runPreEdit(t, s, payload)
+	if preEditDenied(resp) {
+		t.Fatalf("clean MultiEdit should be allowed, got deny: %+v", resp.HookSpecificOutput)
+	}
+}
+
+// TestHandlePreEdit_NotebookEditPassesThroughNonGo verifies the
+// NotebookEdit payload decodes cleanly and short-circuits at the .go
+// suffix gate (notebooks are .ipynb). The guard is a no-op for notebooks
+// but mustn't crash or fail open on a malformed envelope.
+func TestHandlePreEdit_NotebookEditPassesThroughNonGo(t *testing.T) {
+	t.Parallel()
+	s := newFakeSymStore()
+	resp := runPreEdit(t, s, encodePreToolUsePayload(t, PreToolUsePayload{
+		ToolName: "NotebookEdit",
+		ToolInput: PreEditToolInput{
+			NotebookPath: "/tmp/notebook.ipynb",
+			NewSource:    "import store\nstore.Ghost()\n",
+		},
+	}))
+	if !resp.Continue || preEditDenied(resp) {
+		t.Fatalf("NotebookEdit on .ipynb should pass through, got %+v", resp)
+	}
+}
+
 func TestHandlePreEdit_WrapsFunctionBodySnippet(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

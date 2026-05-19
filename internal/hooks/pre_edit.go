@@ -37,13 +37,38 @@ type PreToolUsePayload struct {
 	CWD           string           `json:"cwd"`
 }
 
-// PreEditToolInput captures the subset of Edit/Write tool_input we read.
-// Unknown fields (old_string, replace_all, etc.) deserialize harmlessly and
-// we drop them.
+// PreEditToolInput captures the subset of tool_input we read for the
+// write-shaped tools the fabrication guard covers:
+//
+//   - Edit  — uses file_path + new_string
+//   - Write — uses file_path + content
+//   - MultiEdit — uses file_path + edits[], each carrying its own
+//     new_string; we concatenate them into a single snippet so a
+//     reference fabricated in any one edit still trips the guard
+//   - NotebookEdit — uses notebook_path + new_source. Notebooks aren't
+//     Go files, so the `.go` suffix gate below will short-circuit
+//     them, but we still decode the payload cleanly so the handler
+//     doesn't fail open or crash on a malformed envelope.
+//
+// Unknown fields (old_string, replace_all, etc.) deserialize harmlessly
+// and we drop them.
 type PreEditToolInput struct {
-	FilePath  string `json:"file_path"`
-	NewString string `json:"new_string"`
-	Content   string `json:"content"`
+	FilePath     string             `json:"file_path"`
+	NotebookPath string             `json:"notebook_path"`
+	NewString    string             `json:"new_string"`
+	Content      string             `json:"content"`
+	NewSource    string             `json:"new_source"`
+	Edits        []PreEditMultiEdit `json:"edits"`
+}
+
+// PreEditMultiEdit mirrors one entry of the MultiEdit `edits` array.
+// Only new_string is load-bearing for the fabrication guard — the rest is
+// decoded for completeness so a future check (e.g., warning when
+// replace_all=true on a tracked file) has the fields available.
+type PreEditMultiEdit struct {
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all"`
 }
 
 // PreEditResponse is the JSON document the pre-edit hook emits on stdout.
@@ -120,51 +145,92 @@ func decodePreToolUsePayload(r io.Reader) (PreToolUsePayload, error) {
 }
 
 func decidePreEdit(opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, error) {
-	snippet, targeted := snippetForTool(p.ToolName, p.ToolInput)
+	snippets, targeted := snippetsForTool(p.ToolName, p.ToolInput)
 	if !targeted {
 		return allowResponse(), nil
 	}
 	filePath := strings.TrimSpace(p.ToolInput.FilePath)
+	if filePath == "" {
+		// NotebookEdit names the target as notebook_path. Fall back to it so
+		// future non-.go work (or any caller swapping field names) doesn't
+		// silently bypass the guard.
+		filePath = strings.TrimSpace(p.ToolInput.NotebookPath)
+	}
 	if filePath == "" || !strings.HasSuffix(filePath, ".go") {
 		return allowResponse(), nil
 	}
-	if strings.TrimSpace(snippet) == "" {
-		return allowResponse(), nil
-	}
-	snippetFile := parseSnippet(filePath, snippet)
-	if snippetFile == nil {
-		// Unparseable snippets — let downstream tooling (go vet, go build)
-		// catch them; the pre-edit hook deliberately doesn't fabricate
-		// syntax errors of its own.
-		return allowResponse(), nil
-	}
-	imports := collectImportsFromFile(snippetFile)
-	for alias, path := range readFileImports(filePath) {
-		if _, exists := imports[alias]; !exists {
-			imports[alias] = path
+	// Pre-load the target file's imports once so each snippet can resolve
+	// aliases declared elsewhere in the same source file (Edit-to-a-body
+	// snippets typically don't carry their own import block).
+	fileImports := readFileImports(filePath)
+	seen := make(map[string]bool)
+	var fabricated []string
+	for _, snippet := range snippets {
+		if strings.TrimSpace(snippet) == "" {
+			continue
 		}
-	}
-	fabricated, err := findFabricatedReferences(snippetFile, imports, opts)
-	if err != nil {
-		return PreEditResponse{}, err
+		snippetFile := parseSnippet(filePath, snippet)
+		if snippetFile == nil {
+			// Unparseable snippet — let downstream tooling (go vet, go build)
+			// catch it; the pre-edit hook deliberately doesn't fabricate
+			// syntax errors of its own.
+			continue
+		}
+		imports := collectImportsFromFile(snippetFile)
+		for alias, path := range fileImports {
+			if _, exists := imports[alias]; !exists {
+				imports[alias] = path
+			}
+		}
+		refs, err := findFabricatedReferences(snippetFile, imports, opts)
+		if err != nil {
+			return PreEditResponse{}, err
+		}
+		for _, r := range refs {
+			if !seen[r] {
+				seen[r] = true
+				fabricated = append(fabricated, r)
+			}
+		}
 	}
 	if len(fabricated) == 0 {
 		return allowResponse(), nil
 	}
+	sort.Strings(fabricated)
 	return blockResponse(fabricated), nil
 }
 
-// snippetForTool returns the proposed source the handler has to scan: the
-// Edit payload's new_string or the Write payload's content. Tools we don't
-// recognize (Bash, Read, MultiEdit, …) get targeted=false and pass through.
-func snippetForTool(toolName string, in PreEditToolInput) (string, bool) {
+// snippetsForTool returns the proposed source slices the handler has to
+// scan for each write-shaped tool: one snippet per Edit/Write/NotebookEdit
+// call, one per element of MultiEdit.edits. Tools the fabrication guard
+// doesn't cover (Bash, Read, …) get targeted=false and pass through.
+//
+// MultiEdit returns each edit as its own snippet rather than a single
+// concatenation: edits often target different syntactic positions in the
+// file (one a top-level decl, another a function body), and gluing them
+// together produces text that doesn't parse — letting the fabrication
+// guard silently fail open. Per-edit snippets let parseSnippet's wrapper
+// fallback do its job on each piece independently.
+//
+// Without MultiEdit coverage the guard was bypassable in practice — Claude
+// reaches for MultiEdit whenever it has two or more changes in the same
+// file, which is most non-trivial work.
+func snippetsForTool(toolName string, in PreEditToolInput) ([]string, bool) {
 	switch toolName {
 	case "Edit":
-		return in.NewString, true
+		return []string{in.NewString}, true
 	case "Write":
-		return in.Content, true
+		return []string{in.Content}, true
+	case "MultiEdit":
+		out := make([]string, 0, len(in.Edits))
+		for _, e := range in.Edits {
+			out = append(out, e.NewString)
+		}
+		return out, true
+	case "NotebookEdit":
+		return []string{in.NewSource}, true
 	default:
-		return "", false
+		return nil, false
 	}
 }
 
