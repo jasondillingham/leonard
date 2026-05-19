@@ -65,7 +65,15 @@ func stripTSLiterals(src []byte) ([]byte, error) {
 				out[i+1] = ' '
 				i += 2
 			} else if i < len(src) {
-				out[i] = ' '
+				// Unterminated block comment with one byte left: preserve a
+				// trailing newline so line counters stay aligned (otherwise
+				// the stripped output reports the wrong line for every
+				// symbol after the comment).
+				if src[i] == '\n' {
+					out[i] = '\n'
+				} else {
+					out[i] = ' '
+				}
 				i++
 			}
 		case c == '/' && regexPossible:
@@ -279,7 +287,14 @@ func stripTSTemplate(src, out []byte, i int) int {
 						out[i+1] = ' '
 						i += 2
 					} else if i < len(src) {
-						out[i] = ' '
+						// Unterminated block comment with one byte left:
+						// same newline-preservation rule as the top-level
+						// stripTSLiterals branch.
+						if src[i] == '\n' {
+							out[i] = '\n'
+						} else {
+							out[i] = ' '
+						}
 						i++
 					}
 				default:

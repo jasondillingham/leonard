@@ -58,7 +58,7 @@ func run() error {
 		return fmt.Errorf("watch database: %w", err)
 	}
 
-	go watchDatabase(ctx, stop, adapter, dbPath, os.Stderr)
+	go watchDatabase(ctx, stop, adapter, dbPath, os.Stderr, dbWatchInterval)
 
 	srv := leonardmcp.NewServer(adapter, leonardmcp.Implementation{
 		Name:    "leonard-mcp",
@@ -73,8 +73,11 @@ func run() error {
 // open handle. Lazy detection on each tool call (in StoreAdapter) is the
 // primary guard; this watcher tears the server down so a session that
 // goes idle after the swap doesn't keep returning stale reads.
-func watchDatabase(ctx context.Context, stop func(), a *leonardmcp.StoreAdapter, dbPath string, errOut io.Writer) {
-	ticker := time.NewTicker(dbWatchInterval)
+//
+// interval is parameterized so tests can poll at millisecond speed
+// without changing the production cadence.
+func watchDatabase(ctx context.Context, stop func(), a *leonardmcp.StoreAdapter, dbPath string, errOut io.Writer, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

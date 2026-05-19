@@ -67,12 +67,29 @@ type ToolInput struct {
 }
 
 // HookResponse is the JSON document we emit on stdout. The phase-1 hook never
-// blocks: it always sets Continue=true and exits 0. SystemMessage carries a
-// short summary that Claude Code surfaces to the user.
+// blocks: it always sets Continue=true and exits 0.
+//
+// SystemMessage is the short status line Claude Code surfaces to the human
+// user in the terminal — not visible to the model.
+//
+// HookSpecificOutput.AdditionalContext is the channel that *does* reach the
+// model: Claude Code prepends it to the next assistant turn. The post-edit
+// hook only populates this on failures (index error or vet=fail) so a green
+// run doesn't pollute the model's context with status pings.
 type HookResponse struct {
-	Continue       bool   `json:"continue"`
-	SuppressOutput bool   `json:"suppressOutput,omitempty"`
-	SystemMessage  string `json:"systemMessage,omitempty"`
+	Continue           bool                       `json:"continue"`
+	SuppressOutput     bool                       `json:"suppressOutput,omitempty"`
+	SystemMessage      string                     `json:"systemMessage,omitempty"`
+	HookSpecificOutput *PostToolUseSpecificOutput `json:"hookSpecificOutput,omitempty"`
+}
+
+// PostToolUseSpecificOutput is the hookSpecificOutput envelope Claude Code
+// expects for PostToolUse events. AdditionalContext is the only field that
+// reaches the model — this is what makes `false done claims` (Leonard's
+// failure-mode #3) actually self-correcting instead of silent.
+type PostToolUseSpecificOutput struct {
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext"`
 }
 
 // PostEditOptions wires the post-edit handler to its collaborators. ProjectRoot
@@ -188,10 +205,42 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 		Continue:      true,
 		SystemMessage: summaryMessage(filePath, vet, indexErr),
 	}
+	if ctx := modelContext(filePath, vet, indexErr); ctx != "" {
+		resp.HookSpecificOutput = &PostToolUseSpecificOutput{
+			HookEventName:     "PostToolUse",
+			AdditionalContext: ctx,
+		}
+	}
 	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 		return fmt.Errorf("hooks: encode response: %w", err)
 	}
 	return nil
+}
+
+// modelContext returns the text Claude should see on its next turn, or "" when
+// nothing's worth surfacing. A clean run returns "" so a green edit doesn't
+// pollute the model's context. An index or vet failure returns a short prefixed
+// block — Leonard-tagged so Claude can recognize it as ground-truth feedback
+// rather than user text.
+func modelContext(filePath string, vet VetResult, indexErr error) string {
+	if indexErr == nil && (!vet.Ran || vet.Passed) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Leonard post-edit check on ")
+	b.WriteString(filePath)
+	b.WriteString(":\n")
+	if indexErr != nil {
+		fmt.Fprintf(&b, "- symbol index refresh failed: %s\n", indexErr.Error())
+	}
+	if vet.Ran && !vet.Passed {
+		b.WriteString("- go vet ./... FAILED — the edit you just made did not pass vet. Do not claim this work is done until vet is clean.\n")
+		summary := vetErrorSummary(vet)
+		if summary != "" {
+			fmt.Fprintf(&b, "  first error: %s\n", summary)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func decodePayload(r io.Reader) (PostToolUsePayload, error) {

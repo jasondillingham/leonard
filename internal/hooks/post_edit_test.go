@@ -168,6 +168,11 @@ func TestHandlePostEdit_VetPasses(t *testing.T) {
 	if !strings.Contains(resp.SystemMessage, "go vet ok") {
 		t.Errorf("system message = %q", resp.SystemMessage)
 	}
+	// Green run must NOT inject context — a noisy "everything fine" on every
+	// edit would drown out the failure-path signal that actually matters.
+	if resp.HookSpecificOutput != nil {
+		t.Errorf("green run should not emit hookSpecificOutput, got %+v", resp.HookSpecificOutput)
+	}
 }
 
 func TestHandlePostEdit_VetFails(t *testing.T) {
@@ -211,6 +216,84 @@ func TestHandlePostEdit_VetFails(t *testing.T) {
 	}
 	if !strings.Contains(row.Evidence, "exit status 1") {
 		t.Errorf("evidence missing exit error: %q", row.Evidence)
+	}
+
+	// hooks F4: vet failure must reach the model via additionalContext, not
+	// just systemMessage (which Claude never sees). Without this, the whole
+	// "false done claim" guard becomes invisible to the agent.
+	var resp HookResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\nstdout=%q", err, stdout.String())
+	}
+	if resp.HookSpecificOutput == nil {
+		t.Fatal("vet failure must populate hookSpecificOutput.additionalContext")
+	}
+	if resp.HookSpecificOutput.HookEventName != "PostToolUse" {
+		t.Errorf("hookEventName = %q, want PostToolUse", resp.HookSpecificOutput.HookEventName)
+	}
+	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "go vet ./... FAILED") {
+		t.Errorf("additionalContext missing vet failure callout: %q", resp.HookSpecificOutput.AdditionalContext)
+	}
+	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "broken.go:1: nope") {
+		t.Errorf("additionalContext should include first vet error: %q", resp.HookSpecificOutput.AdditionalContext)
+	}
+}
+
+func TestHandlePostEdit_IndexFailureReachesModel(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	idx := &fakeIndexer{err: errors.New("parse blew up")}
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-idx-ctx",
+		ToolInput: ToolInput{FilePath: filepath.Join(root, "x.go")},
+		CWD:       root,
+	}))
+	var stdout bytes.Buffer
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: idx,
+		Claims:  claims,
+		Vet:     func(ctx context.Context, dir string) (string, error) { return "", nil },
+	}, stdin, &stdout)
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	var resp HookResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.HookSpecificOutput == nil {
+		t.Fatal("index failure must populate hookSpecificOutput.additionalContext")
+	}
+	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "parse blew up") {
+		t.Errorf("additionalContext missing index error: %q", resp.HookSpecificOutput.AdditionalContext)
+	}
+}
+
+func TestHandlePostEdit_NoModelContextWhenVetSkipped(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir() // no go.mod → vet skipped, nothing to surface
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-noctx",
+		ToolInput: ToolInput{FilePath: filepath.Join(root, "README.md")},
+		CWD:       root,
+	}))
+	var stdout bytes.Buffer
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: &fakeIndexer{},
+		Claims:  claims,
+		Vet:     func(ctx context.Context, dir string) (string, error) { return "", nil },
+	}, stdin, &stdout)
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	var resp HookResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.HookSpecificOutput != nil {
+		t.Errorf("vet-skipped run should not surface to the model, got %+v", resp.HookSpecificOutput)
 	}
 }
 
