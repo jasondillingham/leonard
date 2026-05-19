@@ -170,11 +170,19 @@ func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, eviden
 	})
 }
 
-func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string) ([]ClaimRecord, error) {
+func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string, includeSuperseded bool) ([]ClaimRecord, error) {
 	if err := a.preflight(ctx); err != nil {
 		return nil, err
 	}
-	cs, err := a.S.GetUnverifiedClaims(sessionID)
+	var (
+		cs  []store.Claim
+		err error
+	)
+	if includeSuperseded {
+		cs, err = a.S.GetUnverifiedClaimsAll(sessionID)
+	} else {
+		cs, err = a.S.GetUnverifiedClaims(sessionID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +194,7 @@ func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string
 			Claim:      c.Claim,
 			Evidence:   c.Evidence,
 			RecordedAt: c.RecordedAt,
+			FilePath:   c.FilePath,
 		}
 	}
 	return out, nil

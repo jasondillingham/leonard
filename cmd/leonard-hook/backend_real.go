@@ -45,12 +45,17 @@ type storeClaimsAdapter struct{ s *store.Store }
 
 // RecordClaim adapts hooks.ClaimRecorder onto store.Store.RecordClaim, which
 // takes a struct. We pass time.Now via the store layer (it owns the clock
-// per the brief), so the adapter just forwards the four fields.
-func (a storeClaimsAdapter) RecordClaim(sessionID, claim, evidence string, verified bool) (int64, error) {
+// per the brief), so the adapter just forwards the fields.
+func (a storeClaimsAdapter) RecordClaim(sessionID, claim, evidence, filePath string, verified bool) (int64, error) {
 	return a.s.RecordClaim(store.Claim{
 		SessionID: sessionID,
 		Claim:     claim,
 		Evidence:  evidence,
 		Verified:  verified,
+		FilePath:  filePath,
 	})
+}
+
+func (a storeClaimsAdapter) SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error) {
+	return a.s.SupersedeClaimsForFile(filePath, supersedingClaimID)
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -58,8 +59,8 @@ func TestOpenIdempotent(t *testing.T) {
 	if err := s2.db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&v); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if v != "1" {
-		t.Fatalf("schema_version=%q want 1", v)
+	if v != strconv.Itoa(schemaVersion) {
+		t.Fatalf("schema_version=%q want %d", v, schemaVersion)
 	}
 }
 
@@ -533,6 +534,75 @@ func TestClaimsLifecycle(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Fatalf("expected no rows, got %+v", empty)
+	}
+}
+
+func TestClaimsSupersession(t *testing.T) {
+	s, _ := newTestStore(t)
+	const path = "/repo/cmd/init.go"
+
+	fail1, err := s.RecordClaim(Claim{SessionID: "sess", Claim: "vet fail", Evidence: "x", FilePath: path, RecordedAt: 100})
+	if err != nil {
+		t.Fatalf("RecordClaim fail1: %v", err)
+	}
+	fail2, err := s.RecordClaim(Claim{SessionID: "sess", Claim: "vet fail again", Evidence: "y", FilePath: path, RecordedAt: 200})
+	if err != nil {
+		t.Fatalf("RecordClaim fail2: %v", err)
+	}
+	otherFile, err := s.RecordClaim(Claim{SessionID: "sess", Claim: "unrelated", Evidence: "z", FilePath: "/repo/other.go", RecordedAt: 300})
+	if err != nil {
+		t.Fatalf("RecordClaim otherFile: %v", err)
+	}
+	pass, err := s.RecordClaim(Claim{SessionID: "sess", Claim: "vet ok", Evidence: "ok", FilePath: path, Verified: true, RecordedAt: 400})
+	if err != nil {
+		t.Fatalf("RecordClaim pass: %v", err)
+	}
+
+	n, err := s.SupersedeClaimsForFile(path, pass)
+	if err != nil {
+		t.Fatalf("SupersedeClaimsForFile: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("supersede count = %d, want 2", n)
+	}
+
+	// Default list hides superseded rows; otherFile remains visible.
+	visible, err := s.GetUnverifiedClaims("")
+	if err != nil {
+		t.Fatalf("GetUnverifiedClaims: %v", err)
+	}
+	if len(visible) != 1 || visible[0].ID != otherFile {
+		t.Errorf("visible = %+v, want only id=%d", visible, otherFile)
+	}
+
+	// Include-history opt-in returns all three unverified rows.
+	all, err := s.GetUnverifiedClaimsAll("")
+	if err != nil {
+		t.Fatalf("GetUnverifiedClaimsAll: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("all rows = %d, want 3", len(all))
+	}
+	supersededIDs := map[int64]bool{fail1: true, fail2: true}
+	for _, c := range all {
+		if supersededIDs[c.ID] {
+			if c.SupersededByClaimID == nil || *c.SupersededByClaimID != pass {
+				t.Errorf("claim %d superseded_by = %v, want %d", c.ID, c.SupersededByClaimID, pass)
+			}
+		} else if c.SupersededByClaimID != nil {
+			t.Errorf("claim %d unexpectedly superseded by %d", c.ID, *c.SupersededByClaimID)
+		}
+	}
+
+	// Re-running supersede is a no-op (claims are already linked).
+	if n, err := s.SupersedeClaimsForFile(path, pass); err != nil || n != 0 {
+		t.Errorf("second SupersedeClaimsForFile = (%d, %v), want (0, nil)", n, err)
+	}
+
+	// Empty filePath is a defensive no-op (callers that don't know the path
+	// shouldn't accidentally supersede everything).
+	if n, err := s.SupersedeClaimsForFile("", 999); err != nil || n != 0 {
+		t.Errorf("empty filePath SupersedeClaimsForFile = (%d, %v), want (0, nil)", n, err)
 	}
 }
 

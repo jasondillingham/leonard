@@ -22,10 +22,12 @@ type Indexer interface {
 }
 
 // ClaimRecorder is the minimum surface internal/store.Store must satisfy for
-// the post-edit hook. The store lane owns a richer Claim struct; the hook
-// only cares about the four fields documented in DESIGN.md §4.2.
+// the post-edit hook. RecordClaim persists the row; SupersedeClaimsForFile
+// links prior unverified rows for filePath to a fresh vet=ok claim so
+// stop-time output focuses on failures the next edit didn't already fix.
 type ClaimRecorder interface {
-	RecordClaim(sessionID, claim, evidence string, verified bool) (int64, error)
+	RecordClaim(sessionID, claim, evidence, filePath string, verified bool) (int64, error)
+	SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error)
 }
 
 // PostToolUsePayload mirrors the Claude Code PostToolUse hook envelope. The
@@ -137,8 +139,19 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 	evidence := buildEvidence(filePath, indexErr, vet, opts.EvidenceCap)
 	verified := indexErr == nil && (!vet.Ran || vet.Passed)
 
-	if _, err := opts.Claims.RecordClaim(payload.SessionID, claim, evidence, verified); err != nil {
+	claimID, err := opts.Claims.RecordClaim(payload.SessionID, claim, evidence, filePath, verified)
+	if err != nil {
 		return fmt.Errorf("hooks: record claim: %w", err)
+	}
+	// A fresh vet=ok + index=ok run on a file resolves any earlier vet=fail
+	// claims still on its ledger — fix-and-forget noise stops re-surfacing
+	// at stop-time once the file is clean. Supersession failures are
+	// non-fatal; the claim row was recorded fine, and a missed supersession
+	// just means the older row stays visible until the next clean edit.
+	if verified && vet.Ran {
+		if _, supErr := opts.Claims.SupersedeClaimsForFile(filePath, claimID); supErr != nil {
+			fmt.Fprintf(os.Stderr, "leonard: supersede prior claims for %s: %v\n", filePath, supErr)
+		}
 	}
 
 	resp := HookResponse{

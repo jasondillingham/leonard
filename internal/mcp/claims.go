@@ -31,16 +31,20 @@ type RecordClaimOutput struct {
 
 // GetUnverifiedClaimsInput is the argument shape for get_unverified_claims.
 type GetUnverifiedClaimsInput struct {
-	SessionID string `json:"session_id,omitempty" jsonschema:"optional session filter; empty returns unverified claims across all sessions"`
+	SessionID         string `json:"session_id,omitempty" jsonschema:"optional session filter; empty returns unverified claims across all sessions"`
+	IncludeSuperseded bool   `json:"include_superseded,omitempty" jsonschema:"when true, also return prior failure claims that a later vet=ok run on the same file already resolved (default: false — superseded rows hidden so stop-time output stays focused)"`
 }
 
 // ClaimEntry is the wire-format claim returned by get_unverified_claims.
 // Evidence is intentionally omitted from this read shape because it can be
-// large — a future per-id read tool can surface it on demand.
+// large — a future per-id read tool can surface it on demand. FilePath is
+// included so callers can group/sort by file without parsing the claim
+// summary string.
 type ClaimEntry struct {
 	ID         int64  `json:"id"`
 	SessionID  string `json:"session_id"`
 	Claim      string `json:"claim"`
+	FilePath   string `json:"file_path,omitempty"`
 	RecordedAt int64  `json:"recorded_at"`
 }
 
@@ -63,7 +67,7 @@ func recordClaim(ctx context.Context, cs ClaimStore, in RecordClaimInput) (Recor
 }
 
 func getUnverifiedClaims(ctx context.Context, cs ClaimStore, in GetUnverifiedClaimsInput) (GetUnverifiedClaimsOutput, error) {
-	recs, err := cs.GetUnverifiedClaims(ctx, in.SessionID)
+	recs, err := cs.GetUnverifiedClaims(ctx, in.SessionID, in.IncludeSuperseded)
 	if err != nil {
 		return GetUnverifiedClaimsOutput{}, fmt.Errorf("get_unverified_claims: %w", err)
 	}
@@ -73,6 +77,7 @@ func getUnverifiedClaims(ctx context.Context, cs ClaimStore, in GetUnverifiedCla
 			ID:         r.ID,
 			SessionID:  r.SessionID,
 			Claim:      r.Claim,
+			FilePath:   r.FilePath,
 			RecordedAt: r.RecordedAt,
 		})
 	}
@@ -95,7 +100,7 @@ func registerClaimTools(srv *mcp.Server, cs ClaimStore) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_unverified_claims",
-		Description: "Return claims still flagged as unverified, newest first. Optional session_id filter scopes the query to a single session; empty returns claims across all sessions. Evidence is omitted from the response to keep the payload small.",
+		Description: "Return claims still flagged as unverified, newest first. Optional session_id filter scopes the query to a single session; empty returns claims across all sessions. By default, prior failure claims that a later vet=ok run on the same file already resolved are hidden — pass include_superseded=true to see the full history. Evidence is omitted from the response to keep the payload small.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetUnverifiedClaimsInput) (*mcp.CallToolResult, GetUnverifiedClaimsOutput, error) {
 		out, err := getUnverifiedClaims(ctx, cs, in)
 		if err != nil {

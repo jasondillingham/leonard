@@ -27,12 +27,13 @@ type memClaimStore struct {
 }
 
 type claimRow struct {
-	id         int64
-	sessionID  string
-	claim      string
-	evidence   string
-	verified   bool
-	recordedAt int64
+	id           int64
+	sessionID    string
+	claim        string
+	evidence     string
+	verified     bool
+	recordedAt   int64
+	supersededBy *int64
 }
 
 func newMemClaimStore() *memClaimStore {
@@ -71,13 +72,16 @@ func (m *memClaimStore) recordAt(sessionID, claim, evidence string, verified boo
 	return m.nextID
 }
 
-func (m *memClaimStore) GetUnverifiedClaims(_ context.Context, sessionID string) ([]leonardmcp.ClaimRecord, error) {
+func (m *memClaimStore) GetUnverifiedClaims(_ context.Context, sessionID string, includeSuperseded bool) ([]leonardmcp.ClaimRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	filtered := make([]claimRow, 0, len(m.claims))
 	for _, c := range m.claims {
 		if c.verified {
+			continue
+		}
+		if !includeSuperseded && c.supersededBy != nil {
 			continue
 		}
 		if sessionID != "" && c.sessionID != sessionID {

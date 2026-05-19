@@ -38,25 +38,43 @@ type recordedClaim struct {
 	SessionID string
 	Claim     string
 	Evidence  string
+	FilePath  string
 	Verified  bool
 }
 
-type fakeClaims struct {
-	mu       sync.Mutex
-	rows     []recordedClaim
-	nextID   int64
-	recordErr error
+type supersedeCall struct {
+	FilePath           string
+	SupersedingClaimID int64
 }
 
-func (f *fakeClaims) RecordClaim(sessionID, claim, evidence string, verified bool) (int64, error) {
+type fakeClaims struct {
+	mu             sync.Mutex
+	rows           []recordedClaim
+	nextID         int64
+	recordErr      error
+	supersedeCalls []supersedeCall
+	supersedeErr   error
+}
+
+func (f *fakeClaims) RecordClaim(sessionID, claim, evidence, filePath string, verified bool) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recordErr != nil {
 		return 0, f.recordErr
 	}
 	f.nextID++
-	f.rows = append(f.rows, recordedClaim{SessionID: sessionID, Claim: claim, Evidence: evidence, Verified: verified})
+	f.rows = append(f.rows, recordedClaim{SessionID: sessionID, Claim: claim, Evidence: evidence, FilePath: filePath, Verified: verified})
 	return f.nextID, nil
+}
+
+func (f *fakeClaims) SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.supersedeErr != nil {
+		return 0, f.supersedeErr
+	}
+	f.supersedeCalls = append(f.supersedeCalls, supersedeCall{FilePath: filePath, SupersedingClaimID: supersedingClaimID})
+	return 0, nil
 }
 
 func (f *fakeClaims) Rows() []recordedClaim {
@@ -64,6 +82,14 @@ func (f *fakeClaims) Rows() []recordedClaim {
 	defer f.mu.Unlock()
 	out := make([]recordedClaim, len(f.rows))
 	copy(out, f.rows)
+	return out
+}
+
+func (f *fakeClaims) SupersedeCalls() []supersedeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]supersedeCall, len(f.supersedeCalls))
+	copy(out, f.supersedeCalls)
 	return out
 }
 
@@ -347,6 +373,92 @@ func TestHandlePostEdit_EvidenceTruncated(t *testing.T) {
 	}
 	if !strings.HasSuffix(rows[0].Evidence, "(truncated)") {
 		t.Errorf("evidence missing truncation marker: %q", rows[0].Evidence[len(rows[0].Evidence)-40:])
+	}
+}
+
+func TestHandlePostEdit_SupersedesOnVetPass(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeGoMod(t, root)
+	target := filepath.Join(root, "x.go")
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-sup",
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: target},
+		CWD:       root,
+	}))
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: &fakeIndexer{},
+		Claims:  claims,
+		Vet:     func(ctx context.Context, dir string) (string, error) { return "", nil },
+	}, stdin, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	calls := claims.SupersedeCalls()
+	if len(calls) != 1 {
+		t.Fatalf("SupersedeCalls = %d, want 1", len(calls))
+	}
+	if calls[0].FilePath != target {
+		t.Errorf("SupersedeCalls[0].FilePath = %q, want %q", calls[0].FilePath, target)
+	}
+	if calls[0].SupersedingClaimID != 1 {
+		t.Errorf("SupersedeCalls[0].SupersedingClaimID = %d, want 1", calls[0].SupersedingClaimID)
+	}
+	rows := claims.Rows()
+	if len(rows) != 1 || rows[0].FilePath != target {
+		t.Errorf("recorded FilePath = %q, want %q", rows[0].FilePath, target)
+	}
+}
+
+func TestHandlePostEdit_DoesNotSupersedeOnVetFail(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeGoMod(t, root)
+	stubVet := func(ctx context.Context, dir string) (string, error) {
+		return "broken.go:1: nope", errors.New("exit 1")
+	}
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-fail",
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: filepath.Join(root, "broken.go")},
+		CWD:       root,
+	}))
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: &fakeIndexer{},
+		Claims:  claims,
+		Vet:     stubVet,
+	}, stdin, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	if calls := claims.SupersedeCalls(); len(calls) != 0 {
+		t.Errorf("vet=fail should not trigger supersession, got %d calls", len(calls))
+	}
+}
+
+func TestHandlePostEdit_DoesNotSupersedeWhenVetSkipped(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir() // no go.mod
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-skip",
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: filepath.Join(root, "doc.md")},
+		CWD:       root,
+	}))
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: &fakeIndexer{},
+		Claims:  claims,
+		Vet:     func(ctx context.Context, dir string) (string, error) { return "", nil },
+	}, stdin, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	if calls := claims.SupersedeCalls(); len(calls) != 0 {
+		t.Errorf("vet=skipped should not trigger supersession (file might still be broken in other ways), got %d calls", len(calls))
 	}
 }
 

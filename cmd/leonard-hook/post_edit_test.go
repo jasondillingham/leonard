@@ -26,22 +26,36 @@ func (r *recordedIndex) IndexFile(path string) error {
 }
 
 type recordedClaims struct {
-	mu   sync.Mutex
-	rows []hookClaim
+	mu         sync.Mutex
+	rows       []hookClaim
+	supersedes []hookSupersede
 }
 
 type hookClaim struct {
 	SessionID string
 	Claim     string
 	Evidence  string
+	FilePath  string
 	Verified  bool
 }
 
-func (r *recordedClaims) RecordClaim(sessionID, claim, evidence string, verified bool) (int64, error) {
+type hookSupersede struct {
+	FilePath           string
+	SupersedingClaimID int64
+}
+
+func (r *recordedClaims) RecordClaim(sessionID, claim, evidence, filePath string, verified bool) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.rows = append(r.rows, hookClaim{sessionID, claim, evidence, verified})
+	r.rows = append(r.rows, hookClaim{sessionID, claim, evidence, filePath, verified})
 	return int64(len(r.rows)), nil
+}
+
+func (r *recordedClaims) SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.supersedes = append(r.supersedes, hookSupersede{filePath, supersedingClaimID})
+	return 0, nil
 }
 
 type stubBackendWithSpies struct {

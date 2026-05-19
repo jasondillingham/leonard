@@ -62,13 +62,16 @@ type DecisionStore interface {
 }
 
 // ClaimRecord is the subset of internal/store.Claim that the MCP layer
-// surfaces through the claim tools. RecordedAt is unix seconds.
+// surfaces through the claim tools. RecordedAt is unix seconds. FilePath
+// is empty for claims recorded before migration v2 or by record_claim
+// callers that didn't supply one.
 type ClaimRecord struct {
 	ID         int64
 	SessionID  string
 	Claim      string
 	Evidence   string
 	RecordedAt int64
+	FilePath   string
 }
 
 // ClaimStore is the read/write surface the claim tools depend on. Sibling
@@ -78,7 +81,11 @@ type ClaimRecord struct {
 // full surface; in-memory test fixtures pick and choose.
 type ClaimStore interface {
 	RecordClaim(ctx context.Context, sessionID, claim, evidence string, verified bool) (int64, error)
-	GetUnverifiedClaims(ctx context.Context, sessionID string) ([]ClaimRecord, error)
+	// GetUnverifiedClaims returns claims still flagged as unverified. When
+	// includeSuperseded is false (the default for the get_unverified_claims
+	// tool), rows resolved by a later vet=ok run on the same file are
+	// hidden so stop-time output focuses on outstanding failures.
+	GetUnverifiedClaims(ctx context.Context, sessionID string, includeSuperseded bool) ([]ClaimRecord, error)
 }
 
 // ChangesStore is the read surface the recent_changes tool depends on.

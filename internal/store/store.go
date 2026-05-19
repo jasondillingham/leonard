@@ -14,7 +14,7 @@ import (
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // File describes an indexed source file.
 type File struct {
@@ -51,13 +51,18 @@ type Decision struct {
 }
 
 // Claim is a verifiable assertion made during a Claude Code session.
+// SupersededByClaimID points at the later claim that resolved this one (a
+// vet=ok run on the same FilePath, recorded by the post-edit hook). Nil
+// while the claim is still the latest signal for its file.
 type Claim struct {
-	ID         int64
-	SessionID  string
-	Claim      string
-	Evidence   string
-	Verified   bool
-	RecordedAt int64
+	ID                  int64
+	SessionID           string
+	Claim               string
+	Evidence            string
+	Verified            bool
+	RecordedAt          int64
+	FilePath            string
+	SupersededByClaimID *int64
 }
 
 // Store is the SQLite-backed Leonard data layer. The zero value is not usable;
@@ -113,6 +118,7 @@ func buildDSN(path string) string {
 // to version N+1 (so migrations[0] takes a fresh DB to v1).
 var migrations = []func(*sql.Tx) error{
 	migrateV1,
+	migrateV2,
 }
 
 func (s *Store) migrate() error {
@@ -208,6 +214,25 @@ func migrateV1(tx *sql.Tx) error {
 			recorded_at  INTEGER NOT NULL
 		)`,
 		`CREATE INDEX idx_claims_session ON claims(session_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
+		}
+	}
+	return nil
+}
+
+// migrateV2 adds claim metadata that lets the post-edit hook supersede prior
+// failure records when a later vet=ok run lands on the same file. Existing
+// rows get NULL file_path (so they're never matched as supersession targets)
+// and NULL superseded_by_claim_id (so GetUnverifiedClaims still returns
+// them).
+func migrateV2(tx *sql.Tx) error {
+	stmts := []string{
+		`ALTER TABLE claims ADD COLUMN file_path TEXT`,
+		`ALTER TABLE claims ADD COLUMN superseded_by_claim_id INTEGER REFERENCES claims(id)`,
+		`CREATE INDEX idx_claims_file_path ON claims(file_path)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -515,35 +540,80 @@ func (s *Store) SupersedeDecision(id int64, choice, reasoning string) (int64, er
 // RecordClaim inserts a claim row and returns its ID. If RecordedAt is zero,
 // the current unix time is used. SessionID is opaque to the store — an empty
 // value means "unscoped" (no session associated yet) and is accepted as-is.
+// FilePath, when non-empty, lets SupersedeClaimsForFile match this row later.
 func (s *Store) RecordClaim(c Claim) (int64, error) {
 	if c.RecordedAt == 0 {
 		c.RecordedAt = time.Now().Unix()
 	}
-	res, err := s.db.Exec(`INSERT INTO claims(session_id, claim, evidence, verified, recorded_at)
-		VALUES(?, ?, ?, ?, ?)`,
-		c.SessionID, c.Claim, c.Evidence, boolToInt(c.Verified), c.RecordedAt)
+	res, err := s.db.Exec(`INSERT INTO claims(session_id, claim, evidence, verified, recorded_at, file_path)
+		VALUES(?, ?, ?, ?, ?, ?)`,
+		c.SessionID, c.Claim, c.Evidence, boolToInt(c.Verified), c.RecordedAt, nullableString(c.FilePath))
 	if err != nil {
 		return 0, fmt.Errorf("store: RecordClaim: %w", err)
 	}
 	return res.LastInsertId()
 }
 
-// GetUnverifiedClaims returns claims with verified=0, newest first. An empty
-// sessionID returns unverified claims across all sessions.
-func (s *Store) GetUnverifiedClaims(sessionID string) ([]Claim, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if sessionID == "" {
-		rows, err = s.db.Query(`SELECT id, session_id, claim, evidence, verified, recorded_at
-			FROM claims WHERE verified = 0
-			ORDER BY recorded_at DESC, id DESC`)
-	} else {
-		rows, err = s.db.Query(`SELECT id, session_id, claim, evidence, verified, recorded_at
-			FROM claims WHERE verified = 0 AND session_id = ?
-			ORDER BY recorded_at DESC, id DESC`, sessionID)
+// SupersedeClaimsForFile marks every prior unverified, not-yet-superseded
+// claim for filePath as resolved by supersedingClaimID, returning the count
+// updated. Used by the post-edit hook when a vet=ok run lands on a file that
+// previously had vet=fail records, so stop-time get_unverified_claims doesn't
+// resurface failures the next edit already fixed. Empty filePath returns
+// (0, nil) — supersession only applies when both old and new rows agree on a
+// concrete file.
+func (s *Store) SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error) {
+	if filePath == "" {
+		return 0, nil
 	}
+	res, err := s.db.Exec(`UPDATE claims
+		SET superseded_by_claim_id = ?
+		WHERE file_path = ?
+		  AND verified = 0
+		  AND superseded_by_claim_id IS NULL
+		  AND id != ?`,
+		supersedingClaimID, filePath, supersedingClaimID)
+	if err != nil {
+		return 0, fmt.Errorf("store: SupersedeClaimsForFile: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: SupersedeClaimsForFile rows: %w", err)
+	}
+	return int(n), nil
+}
+
+// GetUnverifiedClaims returns claims with verified=0 and no supersession
+// link, newest first. An empty sessionID returns unverified claims across all
+// sessions. Superseded rows are hidden so stop-time output stays focused on
+// failures the next edit hasn't already resolved; use GetUnverifiedClaimsAll
+// to include the full history.
+func (s *Store) GetUnverifiedClaims(sessionID string) ([]Claim, error) {
+	return s.queryUnverifiedClaims(sessionID, false)
+}
+
+// GetUnverifiedClaimsAll is GetUnverifiedClaims without the supersession
+// filter. Useful for forensics ("which fixed-and-forgotten failures were
+// recorded?") and for the MCP tool's include-history opt-in.
+func (s *Store) GetUnverifiedClaimsAll(sessionID string) ([]Claim, error) {
+	return s.queryUnverifiedClaims(sessionID, true)
+}
+
+func (s *Store) queryUnverifiedClaims(sessionID string, includeSuperseded bool) ([]Claim, error) {
+	const selectCols = `SELECT id, session_id, claim, evidence, verified, recorded_at, file_path, superseded_by_claim_id`
+	var (
+		clauses = []string{"verified = 0"}
+		args    []any
+	)
+	if !includeSuperseded {
+		clauses = append(clauses, "superseded_by_claim_id IS NULL")
+	}
+	if sessionID != "" {
+		clauses = append(clauses, "session_id = ?")
+		args = append(args, sessionID)
+	}
+	q := selectCols + " FROM claims WHERE " + strings.Join(clauses, " AND ") +
+		" ORDER BY recorded_at DESC, id DESC"
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: GetUnverifiedClaims: %w", err)
 	}
@@ -552,13 +622,23 @@ func (s *Store) GetUnverifiedClaims(sessionID string) ([]Claim, error) {
 	var out []Claim
 	for rows.Next() {
 		var (
-			c        Claim
-			verified int
+			c         Claim
+			verified  int
+			filePath  sql.NullString
+			superseded sql.NullInt64
 		)
-		if err := rows.Scan(&c.ID, &c.SessionID, &c.Claim, &c.Evidence, &verified, &c.RecordedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.SessionID, &c.Claim, &c.Evidence,
+			&verified, &c.RecordedAt, &filePath, &superseded); err != nil {
 			return nil, fmt.Errorf("store: GetUnverifiedClaims scan: %w", err)
 		}
 		c.Verified = verified != 0
+		if filePath.Valid {
+			c.FilePath = filePath.String
+		}
+		if superseded.Valid {
+			v := superseded.Int64
+			c.SupersededByClaimID = &v
+		}
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -608,6 +688,13 @@ func nullableInt64(p *int64) any {
 		return nil
 	}
 	return *p
+}
+
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // escapeLike escapes the SQL LIKE wildcards %, _, and the backslash escape
