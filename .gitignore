@@ -16,3 +16,5 @@ coverage.out
 
 # macOS
 .DS_Store
+phase-1-brief.md
+.bosun/

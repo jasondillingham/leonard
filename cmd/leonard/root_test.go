@@ -1,0 +1,231 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+type fakeRuntime struct {
+	initCalls   []initCall
+	indexCalls  []indexCall
+	verifyCalls []verifyCall
+
+	initErr    error
+	indexErr   error
+	indexCount int
+	verifyOut  []SymbolMatch
+	verifyErr  error
+}
+
+type initCall struct {
+	Root string
+	Data string
+}
+
+type indexCall struct {
+	Root string
+	Data string
+}
+
+type verifyCall struct {
+	Data string
+	Name string
+	Kind string
+}
+
+func (f *fakeRuntime) Init(_ context.Context, root, data string) error {
+	f.initCalls = append(f.initCalls, initCall{root, data})
+	return f.initErr
+}
+
+func (f *fakeRuntime) IndexAll(_ context.Context, root, data string) (int, error) {
+	f.indexCalls = append(f.indexCalls, indexCall{root, data})
+	return f.indexCount, f.indexErr
+}
+
+func (f *fakeRuntime) VerifySymbol(_ context.Context, data, name, kind string) ([]SymbolMatch, error) {
+	f.verifyCalls = append(f.verifyCalls, verifyCall{data, name, kind})
+	return f.verifyOut, f.verifyErr
+}
+
+func runRoot(t *testing.T, rt Runtime, args ...string) (string, error) {
+	t.Helper()
+	cmd := newRootCmd(rt)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(args)
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetContext(context.Background())
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// withCwd temporarily chdirs to dir. The Runtime fakes use cwd, so each test
+// hops into a tempdir.
+func withCwd(t *testing.T, dir string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
+
+func TestInitCmd_UsesCwdWhenNoArg(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+	out, err := runRoot(t, rt, "init")
+	if err != nil {
+		t.Fatalf("init: %v\nout=%s", err, out)
+	}
+	if len(rt.initCalls) != 1 {
+		t.Fatalf("Init called %d times", len(rt.initCalls))
+	}
+	call := rt.initCalls[0]
+	expectedRoot, _ := filepath.EvalSymlinks(root)
+	gotRoot, _ := filepath.EvalSymlinks(call.Root)
+	if gotRoot != expectedRoot {
+		t.Errorf("Init root = %q, want %q", call.Root, root)
+	}
+	if filepath.Base(call.Data) != dataDirName {
+		t.Errorf("Init dataDir basename = %q", filepath.Base(call.Data))
+	}
+	if !strings.Contains(out, "initialized") {
+		t.Errorf("stdout = %q", out)
+	}
+}
+
+func TestInitCmd_AcceptsPathArg(t *testing.T) {
+	rt := &fakeRuntime{}
+	target := t.TempDir()
+	_, err := runRoot(t, rt, "init", target)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if len(rt.initCalls) != 1 || rt.initCalls[0].Root != target {
+		t.Fatalf("Init root = %q, want %q", rt.initCalls[0].Root, target)
+	}
+}
+
+func TestInitCmd_PropagatesError(t *testing.T) {
+	rt := &fakeRuntime{initErr: errors.New("disk full")}
+	target := t.TempDir()
+	_, err := runRoot(t, rt, "init", target)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("expected disk full error, got %v", err)
+	}
+}
+
+func TestIndexCmd_RequiresInit(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+	_, err := runRoot(t, rt, "index")
+	if err == nil || !strings.Contains(err.Error(), "leonard init") {
+		t.Fatalf("expected init-required error, got %v", err)
+	}
+	if len(rt.indexCalls) != 0 {
+		t.Errorf("IndexAll should not be called when uninitialised")
+	}
+}
+
+func TestIndexCmd_PrintsCount(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, dataDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root)
+	rt := &fakeRuntime{indexCount: 42}
+	out, err := runRoot(t, rt, "index")
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	if len(rt.indexCalls) != 1 {
+		t.Fatalf("IndexAll calls = %d", len(rt.indexCalls))
+	}
+	if !strings.Contains(out, "indexed 42") {
+		t.Errorf("stdout = %q", out)
+	}
+}
+
+func TestVerifyCmd_FoundPrintsRows(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, dataDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root)
+	rt := &fakeRuntime{
+		verifyOut: []SymbolMatch{
+			{File: "internal/store/store.go", Line: 12, Signature: "func Open(path string) (*Store, error)", Kind: "function", QualifiedName: "store.Open"},
+		},
+	}
+	out, err := runRoot(t, rt, "verify", "Open")
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if rt.verifyCalls[0].Name != "Open" {
+		t.Errorf("name = %q", rt.verifyCalls[0].Name)
+	}
+	if !strings.Contains(out, "store.go:12") || !strings.Contains(out, "function") || !strings.Contains(out, "store.Open") {
+		t.Errorf("stdout missing details: %q", out)
+	}
+}
+
+func TestVerifyCmd_NotFoundReturnsExitCode1(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, dataDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+	_, err := runRoot(t, rt, "verify", "DoesNotExist")
+	var ec *exitCode
+	if !errors.As(err, &ec) {
+		t.Fatalf("expected exitCode error, got %T %v", err, err)
+	}
+	if ec.code != 1 {
+		t.Errorf("exit code = %d, want 1", ec.code)
+	}
+}
+
+func TestVerifyCmd_KindFilterPassedThrough(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, dataDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root)
+	rt := &fakeRuntime{
+		verifyOut: []SymbolMatch{{File: "x.go", Line: 1, Kind: "method", QualifiedName: "T.M"}},
+	}
+	_, err := runRoot(t, rt, "verify", "--kind", "method", "M")
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if rt.verifyCalls[0].Kind != "method" {
+		t.Errorf("kind passed through = %q", rt.verifyCalls[0].Kind)
+	}
+}
+
+func TestMCPCmd_ReportsMissingBinary(t *testing.T) {
+	rt := &fakeRuntime{}
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	_, err := runRoot(t, rt, "mcp")
+	if err == nil || !strings.Contains(err.Error(), "leonard-mcp not found") {
+		t.Fatalf("expected leonard-mcp not found, got %v", err)
+	}
+}
+
+// Used to silence unused-import warnings if io is not referenced elsewhere.
+var _ = io.Discard

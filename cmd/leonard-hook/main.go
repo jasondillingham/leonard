@@ -5,8 +5,23 @@
 // like `leonard-hook post-edit`.
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+)
 
 func main() {
-	fmt.Println("leonard-hook: scaffold — not yet implemented")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	root := newRootCmd(newDefaultBackend())
+	root.SetContext(ctx)
+
+	if err := root.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "leonard-hook:", err)
+		os.Exit(1)
+	}
 }

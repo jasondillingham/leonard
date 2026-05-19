@@ -5,8 +5,31 @@
 // operations from the shell.
 package main
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+)
 
 func main() {
-	fmt.Println("leonard: scaffold — not yet implemented")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	root := newRootCmd(newDefaultRuntime())
+	root.SetContext(ctx)
+
+	if err := root.Execute(); err != nil {
+		var ec *exitCode
+		if errors.As(err, &ec) {
+			if ec.msg != "" {
+				fmt.Fprintln(os.Stderr, ec.msg)
+			}
+			os.Exit(ec.code)
+		}
+		fmt.Fprintln(os.Stderr, "leonard:", err)
+		os.Exit(2)
+	}
 }
