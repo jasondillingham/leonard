@@ -249,3 +249,11 @@ func ExtractSQL(path string, src []byte) ([]store.Symbol, error) {
 func ExtractWIT(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("wit", path, src)
 }
+
+func ExtractErlang(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("erlang", path, src)
+}
+
+func ExtractR(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("r", path, src)
+}

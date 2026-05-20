@@ -34,6 +34,8 @@ tree-sitter-graphql = "0.1"
 tree-sitter-proto = "0.2"
 tree-sitter-sequel = "0.3"
 tree-sitter-wit = "0.2"
+tree-sitter-erlang = "0.14"
+tree-sitter-r = "1.1"
 # tree-sitter-smithy 0.0.1 pins tree-sitter v0.20 which is
 # incompatible with v0.25; ship WIT only and revisit when a
 # compatible Smithy grammar appears on crates.io.

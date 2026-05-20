@@ -131,6 +131,12 @@ var langExtractors = map[string]struct {
 	// .jsx so Solid (and other JSX-emitting frameworks) get
 	// indexed without a Solid-specific extractor.
 	".jsx":     {lang: "typescript", extract: parse.ExtractTypeScript},
+	".erl":     {lang: "erlang", extract: parse.ExtractErlang},
+	".hrl":     {lang: "erlang", extract: parse.ExtractErlang},
+	// .r covers both .r and .R — dispatchByExt lowercases the
+	// extension before lookup, so the case distinction R uses by
+	// convention vanishes here.
+	".r": {lang: "r", extract: parse.ExtractR},
 }
 
 // langExtractorsByName handles files whose basename (rather than

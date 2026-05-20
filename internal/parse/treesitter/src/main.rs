@@ -235,6 +235,16 @@ impl Language {
                 query_src: WIT_QUERY,
                 parent_container_kinds: &["interface_item", "world_item"],
             }),
+            "erlang" => Some(Self {
+                grammar: tree_sitter_erlang::LANGUAGE.into(),
+                query_src: ERLANG_QUERY,
+                parent_container_kinds: &[],
+            }),
+            "r" => Some(Self {
+                grammar: tree_sitter_r::LANGUAGE.into(),
+                query_src: R_QUERY,
+                parent_container_kinds: &[],
+            }),
             _ => None,
         }
     }
@@ -746,6 +756,31 @@ const WIT_QUERY: &str = r#"
 
 (flags_item
   name: (identifier) @name) @type
+"#;
+
+/// ERLANG_QUERY (tree-sitter-erlang). Erlang's `fun_decl` wraps
+/// a function_clause whose `name:` is the function ident — two
+/// levels of nesting from the @function capture. record_decl and
+/// module_attribute have flatter shapes.
+const ERLANG_QUERY: &str = r#"
+(module_attribute
+  name: (atom) @name) @type
+
+(record_decl
+  name: (atom) @name) @type
+
+(fun_decl
+  clause: (function_clause name: (atom) @name)) @function
+"#;
+
+/// R_QUERY uses R's `<-` assignment idiom for function declarations.
+/// `x <- function(...) { ... }` parses as binary_operator whose
+/// rhs is function_definition. v0.33 captures only function-shaped
+/// assignments; constant assignments would overlap noisily.
+const R_QUERY: &str = r#"
+(binary_operator
+  lhs: (identifier) @name
+  rhs: (function_definition)) @function
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's
