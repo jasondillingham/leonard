@@ -10,7 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -363,15 +363,21 @@ func readSiblingPackages(moduleRoot, modulePath string) map[string]string {
 	if moduleRoot == "" || modulePath == "" {
 		return out
 	}
-	_ = filepath.Walk(moduleRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
+	_ = filepath.WalkDir(moduleRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
 			return nil
 		}
-		if info.IsDir() {
-			name := info.Name()
+		if d.IsDir() {
+			name := d.Name()
 			if path != moduleRoot && (strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" || name == "node_modules") {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Skip symlinks — they'd let an attacker plant a `evil.go`
+		// link pointing at /etc/passwd or similar; the parse below
+		// would follow it. Security-1 F3.
+		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {

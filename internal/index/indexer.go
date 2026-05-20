@@ -162,6 +162,15 @@ func (i *Indexer) IndexAll() error {
 			return nil
 		}
 
+		// Skip symlinks. filepath.WalkDir doesn't recurse INTO
+		// symlinked dirs, but it does still call this callback for
+		// the symlink itself — and indexAbs would then os.ReadFile
+		// through the link to whatever it points at, including
+		// targets outside the project root. Security-1 F3.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+
 		if matcher != nil && matcher.MatchesPath(rel) {
 			return nil
 		}
@@ -279,12 +288,101 @@ func (i *Indexer) IndexFile(path string) error {
 	return i.indexAbs(abs)
 }
 
-// absPath resolves p to an absolute, cleaned path under Root if it's relative.
+// ErrPathEscapesRoot is returned when an external caller supplies a file
+// path that resolves outside the indexer's Root. Used to plug the
+// confused-deputy reported as security-1 F1: a crafted PostToolUse
+// payload with `file_path: /etc/hosts` or `../../other.go` used to be
+// happily indexed into the project's store, breaking the ground-truth
+// contract.
+var ErrPathEscapesRoot = errors.New("index: path escapes project root")
+
+// absPath resolves p to an absolute, cleaned path under Root, or
+// returns ErrPathEscapesRoot when the resolution lands outside Root.
+// Both relative paths (joined with Root) and absolute paths are
+// accepted as INPUTS, but the OUTPUT is always rejected when it would
+// step outside.
+//
+// Symlinks are evaluated when the target exists. Non-existent paths
+// (legitimate for a Write that hasn't landed yet, or a delete-and-
+// reindex race) fall back to a lexical containment check. Either
+// way, no escape is silent.
 func (i *Indexer) absPath(p string) (string, error) {
-	if filepath.IsAbs(p) {
-		return filepath.Clean(p), nil
+	resolved, ok := ResolveSafe(i.Root, p)
+	if !ok {
+		return "", fmt.Errorf("%w: %s", ErrPathEscapesRoot, p)
 	}
-	return filepath.Clean(filepath.Join(i.Root, p)), nil
+	return resolved, nil
+}
+
+// ResolveSafe joins+cleans+symlink-evaluates claimed against root and
+// returns (abs, true) iff the result has root as a prefix. Exported
+// so internal/hooks can validate hook-payload file_path values with
+// the same logic. See indexer.absPath for the in-package consumer.
+//
+// Behavior:
+//   - Relative claimed: joined with root, then evaluated.
+//   - Absolute claimed: cleaned + evaluated; rejected if outside root.
+//   - Symlinks: filepath.EvalSymlinks resolves them; a symlink whose
+//     target lies outside root returns (_, false).
+//   - Non-existent target: fall back to lexical containment check
+//     against the cleaned (un-evaluated) root + path. A path that
+//     refers to a future write Claude proposes must still be safe.
+//   - Empty root or claimed: rejected.
+func ResolveSafe(root, claimed string) (string, bool) {
+	if root == "" || claimed == "" {
+		return "", false
+	}
+	abs := claimed
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(root, abs)
+	}
+	abs = filepath.Clean(abs)
+	rootClean := filepath.Clean(root)
+
+	contained := func(base, candidate string) bool {
+		rel, err := filepath.Rel(base, candidate)
+		if err != nil {
+			return false
+		}
+		// Rel returns ".." or "../" prefix when candidate isn't under base.
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return false
+		}
+		return true
+	}
+
+	// Primary check: lexical containment. Mixing forms here would
+	// produce false escapes when only one side is symlink-resolved.
+	if contained(rootClean, abs) {
+		// Lexical OK — also verify the resolved-symlinks form
+		// catches a symlink INSIDE the project pointing OUTSIDE
+		// (where lexical looks fine but the actual file isn't).
+		if rAbs, errA := filepath.EvalSymlinks(abs); errA == nil {
+			rRoot, errR := filepath.EvalSymlinks(rootClean)
+			if errR != nil {
+				rRoot = rootClean
+			}
+			if !contained(rRoot, rAbs) {
+				return "", false
+			}
+		}
+		return abs, true
+	}
+
+	// Lexical containment failed — but root and abs may be in
+	// different symlink states (the macOS /var → /private/var case:
+	// os.Getwd() after Chdir returns the resolved form, but a
+	// caller-supplied file_path may still be lexical, or vice
+	// versa). Try the resolved forms before giving up.
+	rAbs, errA := filepath.EvalSymlinks(abs)
+	rRoot, errR := filepath.EvalSymlinks(rootClean)
+	if errA == nil && errR == nil && contained(rRoot, rAbs) {
+		// Keep the returned path in its caller-supplied lexical form so
+		// storeKey + filepath.Rel downstream keep working with the
+		// same path strings callers passed in.
+		return abs, true
+	}
+	return "", false
 }
 
 // indexAbs is the per-file workhorse: hash, decide whether to re-parse,

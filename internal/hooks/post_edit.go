@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jasondillingham/leonard/internal/index"
 	"github.com/jasondillingham/leonard/internal/telemetry"
 )
 
@@ -171,6 +172,19 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 		root = "."
 	}
 
+	// Security-1 F1: reject file_path values that resolve outside
+	// the project root BEFORE any filesystem read/write. A crafted
+	// PostToolUse payload with file_path=/etc/hosts or "../../other.go"
+	// used to flow straight through to IndexFile, which then stored
+	// foreign symbols as if they were project content. Validate
+	// upfront so the stat-check below and the IndexFile call below
+	// both run only on contained paths.
+	safePath, ok := index.ResolveSafe(root, filePath)
+	if !ok {
+		return handleEscapedPath(opts, payload, filePath, stdout)
+	}
+	filePath = safePath
+
 	// hooks F5: PostToolUse fires whether or not the edit actually landed —
 	// e.g. a write Claude believes succeeded but the user rejected via a hook
 	// veto. The indexer silently no-ops on missing paths, so without this
@@ -258,6 +272,45 @@ func handleMissingFile(opts PostEditOptions, payload PostToolUsePayload, filePat
 	resp := HookResponse{
 		Continue:      true,
 		SystemMessage: fmt.Sprintf("leonard: %s file not found, skipping re-index", filePath),
+	}
+	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+		return fmt.Errorf("hooks: encode response: %w", err)
+	}
+	return nil
+}
+
+// handleEscapedPath records a claim and emits a response describing
+// the PostToolUse event for a file_path that resolves outside the
+// project root. Mirrors handleMissingFile's shape — Continue=true,
+// verified=false, IndexOK/VetOK nil, plus a system message that
+// reaches the user. Security-1 F1: a crafted payload with
+// `file_path: /etc/hosts` or `../../other.go` used to skip this
+// guard and get indexed as project content.
+func handleEscapedPath(opts PostEditOptions, payload PostToolUsePayload, filePath string, stdout io.Writer) error {
+	claim := fmt.Sprintf("tool=%s file=%s; index=rejected (path escapes project root); go vet=skipped",
+		coalesce(payload.ToolName, "edit"), filePath)
+	evidence := fmt.Sprintf("file: %s\nrejected: path resolves outside the project root; index + vet skipped\n", filePath)
+	rec := ClaimRecord{
+		SessionID: payload.SessionID,
+		Claim:     claim,
+		Evidence:  evidence,
+		FilePath:  filePath,
+		Verified:  false,
+		Tool:      payload.ToolName,
+	}
+	if _, err := opts.Claims.RecordClaim(rec); err != nil {
+		return fmt.Errorf("hooks: record claim: %w", err)
+	}
+	resp := HookResponse{
+		Continue:      true,
+		SystemMessage: fmt.Sprintf("leonard: %s rejected — path escapes project root", filePath),
+		HookSpecificOutput: &PostToolUseSpecificOutput{
+			HookEventName: "PostToolUse",
+			AdditionalContext: fmt.Sprintf(
+				"Leonard rejected file_path %q: the path resolves outside the project root. The edit was not indexed. If this was intentional, the change still lives on disk but Leonard's symbol index ignored it.",
+				filePath,
+			),
+		},
 	}
 	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 		return fmt.Errorf("hooks: encode response: %w", err)

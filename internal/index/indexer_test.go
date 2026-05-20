@@ -1,9 +1,11 @@
 package index
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jasondillingham/leonard/internal/store"
@@ -462,5 +464,124 @@ func TestIndexAll_DefaultSkipDirsCoverEcosystemArtifacts(t *testing.T) {
 		if len(syms) != 0 {
 			t.Errorf("symbol %q from a skip-dir leaked into the index", name)
 		}
+	}
+}
+
+// TestResolveSafe_RejectsPathEscapes pins the security-1 F1 fix:
+// claimed paths that resolve outside root must be rejected so a
+// crafted PostToolUse payload with file_path=/etc/hosts or "../x"
+// can't be silently indexed as project content.
+func TestResolveSafe_RejectsPathEscapes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	cases := []struct {
+		name    string
+		claimed string
+		wantOk  bool
+	}{
+		{"relative under root", "a.go", true},
+		{"nested relative", "sub/dir/a.go", true},
+		{"absolute outside root", "/etc/hosts", false},
+		{"absolute under tmpdir but not under root", "/tmp/somewhere/else.go", false},
+		{"dot-dot escape", "../sneaky.go", false},
+		{"deep dot-dot escape", "../../../etc/hosts", false},
+		{"dot-dot inside followed by re-entry", "sub/../a.go", true},
+		{"empty claimed", "", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, ok := ResolveSafe(root, tc.claimed)
+			if ok != tc.wantOk {
+				t.Errorf("ResolveSafe(%q, %q) ok=%v, want %v", root, tc.claimed, ok, tc.wantOk)
+			}
+		})
+	}
+}
+
+// TestResolveSafe_RejectsSymlinkEscape covers the security-1 F3
+// case: a symlink INSIDE the project root that points OUTSIDE
+// (lexical path looks fine, resolved path doesn't).
+func TestResolveSafe_RejectsSymlinkEscape(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "secret.go")
+	if err := os.WriteFile(target, []byte("package x\n"), 0o644); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	linkPath := filepath.Join(root, "evil.go")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, ok := ResolveSafe(root, "evil.go")
+	if ok {
+		t.Error("ResolveSafe accepted a symlink pointing outside root; security F3 regression")
+	}
+}
+
+// TestIndexFile_RejectsPathEscapes pins the indexer-side wiring: the
+// rejection from ResolveSafe surfaces through absPath -> IndexFile
+// as ErrPathEscapesRoot so the caller can react.
+func TestIndexFile_RejectsPathEscapes(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, map[string]string{
+		"keep.go": "package keep\nfunc Stay() {}\n",
+	})
+	idx := New(fx.store, fx.root)
+	err := idx.IndexFile("/etc/hosts")
+	if err == nil {
+		t.Fatal("expected error indexing /etc/hosts; security F1 regression")
+	}
+	if !errors.Is(err, ErrPathEscapesRoot) {
+		t.Errorf("err = %v, want wrapping ErrPathEscapesRoot", err)
+	}
+	// And nothing got persisted from /etc/hosts.
+	files, _ := fx.store.ListFiles("", "")
+	for _, f := range files {
+		if f.Path == "/etc/hosts" || strings.Contains(f.Path, "etc/hosts") {
+			t.Errorf("/etc/hosts leaked into the index: %q", f.Path)
+		}
+	}
+}
+
+// TestIndexAll_SkipsSymlinkedFiles confirms IndexAll's walker
+// doesn't read THROUGH a symlinked .go file inside the project
+// (which would otherwise let an attacker plant a `evil.go` link
+// pointing at /etc/passwd or similar). Security-1 F3.
+func TestIndexAll_SkipsSymlinkedFiles(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "outside.go")
+	if err := os.WriteFile(target, []byte("package outside\nfunc Outside() {}\n"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	// A real file inside the project + a symlink to the outside file.
+	if err := os.WriteFile(filepath.Join(root, "inside.go"), []byte("package inside\nfunc Inside() {}\n"), 0o644); err != nil {
+		t.Fatalf("write inside: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "evil.go")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	s, err := store.Open(filepath.Join(root, "leonard.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	idx := New(s, root)
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	if syms, _ := s.FindSymbolsByName("Outside"); len(syms) != 0 {
+		t.Errorf("symlinked file leaked Outside symbol into the index: %d rows", len(syms))
+	}
+	if syms, _ := s.FindSymbolsByName("Inside"); len(syms) != 1 {
+		t.Errorf("real inside.go should still be indexed; got %d rows", len(syms))
 	}
 }

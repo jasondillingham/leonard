@@ -853,3 +853,63 @@ func TestRunGoVet_RealCommand(t *testing.T) {
 		t.Fatalf("RunGoVet: %v (output=%q)", err, out)
 	}
 }
+
+// TestHandlePostEdit_RejectsEscapedFilePath covers security-1 F1.
+// A crafted PostToolUse payload with file_path resolving outside
+// the project root used to flow straight through to IndexFile and
+// store foreign symbols as project content. The handler now
+// rejects upfront, records a claim noting the rejection, and
+// emits an additionalContext message so the model sees the block.
+func TestHandlePostEdit_RejectsEscapedFilePath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeGoMod(t, root)
+
+	idx := &fakeIndexer{}
+	claims := &fakeClaims{}
+	stubVet := func(ctx context.Context, dir string) (string, error) {
+		t.Error("vet should not run when path is rejected")
+		return "", nil
+	}
+
+	for _, attack := range []string{
+		"/etc/hosts",        // absolute outside root
+		"../../sneaky.go",   // dot-dot escape
+		"/tmp/elsewhere.go", // absolute under tmp but not under root
+	} {
+		attack := attack
+		t.Run(attack, func(t *testing.T) {
+			stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+				SessionID:     "sess-attack",
+				HookEventName: "PostToolUse",
+				ToolName:      "Edit",
+				ToolInput:     ToolInput{FilePath: attack},
+				CWD:           root,
+			}))
+			var stdout bytes.Buffer
+			if err := HandlePostEdit(context.Background(), PostEditOptions{
+				Indexer: idx,
+				Claims:  claims,
+				Vet:     stubVet,
+			}, stdin, &stdout); err != nil {
+				t.Fatalf("HandlePostEdit: %v", err)
+			}
+		})
+	}
+
+	if calls := idx.Calls(); len(calls) != 0 {
+		t.Errorf("indexer should not be called on escaped paths; got %v", calls)
+	}
+	rows := claims.Rows()
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 claim rows (one per attack), got %d", len(rows))
+	}
+	for _, row := range rows {
+		if row.Verified {
+			t.Errorf("escaped-path claim verified=true; want false: %+v", row)
+		}
+		if !strings.Contains(strings.ToLower(row.Claim), "escapes project root") {
+			t.Errorf("claim should mention rejection: %q", row.Claim)
+		}
+	}
+}
