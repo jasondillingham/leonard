@@ -259,6 +259,15 @@ func sortedLangCounts(m map[string]int) []LanguageCount {
 	return out
 }
 
+func (realRuntime) ResolveClaim(_ context.Context, dataDir string, claimID int64, note string) error {
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.ResolveClaim(claimID, note)
+}
+
 func (realRuntime) GetUnverifiedClaims(_ context.Context, dataDir, sessionID string) ([]ClaimRow, error) {
 	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
 	if err != nil {

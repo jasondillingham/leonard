@@ -50,6 +50,15 @@ func (r *recordedClaims) SupersedeClaimsForFile(filePath string, supersedingClai
 	return 0, nil
 }
 
+func (r *recordedClaims) SupersedeOutstandingFailures(supersedingClaimID int64) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// FilePath="" distinguishes project-wide calls from file-scoped
+	// ones in tests that inspect the recorded supersede log.
+	r.supersedes = append(r.supersedes, hookSupersede{"", supersedingClaimID})
+	return 0, nil
+}
+
 type stubBackendWithSpies struct {
 	idx    *recordedIndex
 	claims *recordedClaims

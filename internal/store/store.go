@@ -15,7 +15,7 @@ import (
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 6
+const schemaVersion = 7
 
 // File describes an indexed source file.
 type File struct {
@@ -148,6 +148,7 @@ var migrations = []func(*sql.Tx) error{
 	migrateV4,
 	migrateV5,
 	migrateV6,
+	migrateV7,
 }
 
 func (s *Store) migrate() error {
@@ -344,6 +345,35 @@ func migrateV6(tx *sql.Tx) error {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
 		}
+	}
+	return nil
+}
+
+// migrateV7 is a one-time cleanup of two categories of historical
+// claim rows that v0.38.0's semantics no longer treat as claims:
+//
+//   1. Path-escape rejection rows recorded by the pre-v0.38
+//      handleEscapedPath path. Those weren't unverified Claude
+//      claims — they were tool-layer rejections that already
+//      surfaced via additionalContext at decision time. Recording
+//      them as ledger entries polluted Stop's "unverified claims"
+//      summary forever (the Stop hook would surface every old
+//      `/tmp/bughunt-*/` scratch-write rejection on every session
+//      end).
+//
+//   2. Missing-file rejection rows from handleMissingFile that
+//      similarly aren't actionable at Stop time.
+//
+// Both classes are identified by claim-text patterns the relevant
+// handlers used. Idempotent — re-running on a clean DB deletes
+// zero rows.
+func migrateV7(tx *sql.Tx) error {
+	if _, err := tx.Exec(`
+		DELETE FROM claims
+		WHERE claim LIKE '%path escapes project root%'
+		   OR claim LIKE '%index=skipped (file not found)%'
+	`); err != nil {
+		return fmt.Errorf("exec ledger cleanup: %w", err)
 	}
 	return nil
 }
@@ -1043,6 +1073,73 @@ func (s *Store) SupersedeClaimsForFile(filePath string, supersedingClaimID int64
 		return 0, fmt.Errorf("store: SupersedeClaimsForFile rows: %w", err)
 	}
 	return int(n), nil
+}
+
+// SupersedeOutstandingFailures marks every unverified, not-yet-
+// superseded claim that recorded a verifier failure (vet=failed,
+// check=failed, etc.) as resolved by supersedingClaimID. Used by
+// the post-edit hook when a fresh vet=ok run lands and the project
+// as a whole is now clean — earlier failure claims, even for files
+// the current edit didn't touch, are no longer accurate.
+//
+// This catches the multi-file fix-cascade case
+// SupersedeClaimsForFile misses: a vet failure in file A is
+// commonly fixed by edits to dependent files B and C, never
+// touching A again. The file-specific supersede never fires for A;
+// the failure claim hangs in the ledger forever.
+//
+// Pattern match is intentionally broad (`%=failed%`) to cover
+// every verb the [post_edit.verify] config might use (`cargo
+// check=failed`, `pnpm tsc=failed`, etc.) without baking in a
+// fixed list.
+func (s *Store) SupersedeOutstandingFailures(supersedingClaimID int64) (int, error) {
+	res, err := s.db.Exec(`UPDATE claims
+		SET superseded_by_claim_id = ?
+		WHERE verified = 0
+		  AND superseded_by_claim_id IS NULL
+		  AND claim LIKE '%=failed%'
+		  AND id != ?`,
+		supersedingClaimID, supersedingClaimID)
+	if err != nil {
+		return 0, fmt.Errorf("store: SupersedeOutstandingFailures: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: SupersedeOutstandingFailures rows: %w", err)
+	}
+	return int(n), nil
+}
+
+// ResolveClaim marks a single claim as manually resolved by the
+// operator. The implementation marks verified=true and appends a
+// "manually resolved" note to the evidence field so the audit
+// trail records why this row stopped surfacing in Stop. Used by
+// `leonard claims resolve <id>` — a manual escape hatch for stale
+// claims that don't fit the auto-supersede pattern (e.g. a
+// failure claim the operator inspected and decided is no longer
+// actionable).
+//
+// Returns ErrNoRows when no claim with the given ID exists.
+func (s *Store) ResolveClaim(claimID int64, note string) error {
+	suffix := "\n\nmanually resolved by operator"
+	if strings.TrimSpace(note) != "" {
+		suffix = "\n\nmanually resolved by operator: " + note
+	}
+	res, err := s.db.Exec(`UPDATE claims
+		SET verified = 1,
+		    evidence = COALESCE(evidence, '') || ?
+		WHERE id = ?`, suffix, claimID)
+	if err != nil {
+		return fmt.Errorf("store: ResolveClaim: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: ResolveClaim rows: %w", err)
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // GetUnverifiedClaims returns claims with verified=0 and no supersession

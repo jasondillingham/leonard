@@ -63,3 +63,7 @@ func (a storeClaimsAdapter) RecordClaim(rec hooks.ClaimRecord) (int64, error) {
 func (a storeClaimsAdapter) SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error) {
 	return a.s.SupersedeClaimsForFile(filePath, supersedingClaimID)
 }
+
+func (a storeClaimsAdapter) SupersedeOutstandingFailures(supersedingClaimID int64) (int, error) {
+	return a.s.SupersedeOutstandingFailures(supersedingClaimID)
+}

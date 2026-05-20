@@ -44,6 +44,13 @@ type Runtime interface {
 	// sessionID is optional (empty = all sessions).
 	GetUnverifiedClaims(ctx context.Context, dataDir, sessionID string) ([]ClaimRow, error)
 
+	// ResolveClaim marks a single claim as manually resolved by the
+	// operator. v0.38 escape hatch for stale claims that the
+	// auto-supersede (SupersedeOutstandingFailures on vet=ok)
+	// doesn't catch. note is optional audit text appended to the
+	// claim's evidence.
+	ResolveClaim(ctx context.Context, dataDir string, claimID int64, note string) error
+
 	// Doctor inspects store + filesystem state and returns a health report.
 	// Used by `leonard doctor` — opens the store once and collects every
 	// data-point the command surfaces.

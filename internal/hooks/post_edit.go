@@ -43,12 +43,19 @@ type ClaimRecord struct {
 }
 
 // ClaimRecorder is the minimum surface internal/store.Store must satisfy for
-// the post-edit hook. RecordClaim persists the row; SupersedeClaimsForFile
-// links prior unverified rows for filePath to a fresh vet=ok claim so
-// stop-time output focuses on failures the next edit didn't already fix.
+// the post-edit hook. RecordClaim persists the row. The two supersede
+// methods link prior unverified rows to a fresh vet=ok claim so Stop
+// output focuses on failures the next edit didn't already fix:
+//
+//   - SupersedeClaimsForFile: same-file supersede (a vet=fail on x.go
+//     followed by an edit to x.go with vet=ok).
+//   - SupersedeOutstandingFailures: project-wide supersede (a vet=fail
+//     on x.go fixed by edits to y.go and z.go without touching x).
+//     v0.38 added this to close the multi-file-fix-cascade gap.
 type ClaimRecorder interface {
 	RecordClaim(rec ClaimRecord) (int64, error)
 	SupersedeClaimsForFile(filePath string, supersedingClaimID int64) (int, error)
+	SupersedeOutstandingFailures(supersedingClaimID int64) (int, error)
 }
 
 // PostToolUsePayload mirrors the Claude Code PostToolUse hook envelope. The
@@ -250,6 +257,15 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 		if _, supErr := opts.Claims.SupersedeClaimsForFile(filePath, claimID); supErr != nil {
 			fmt.Fprintf(os.Stderr, "leonard: supersede prior claims for %s: %v\n", filePath, supErr)
 		}
+		// v0.38: project-wide supersede on vet=ok. Catches the
+		// multi-file fix-cascade case the file-scoped call misses —
+		// a vet failure on x.go fixed by edits to y.go + z.go never
+		// touched x again, so SupersedeClaimsForFile(x, ...) never
+		// fires for it. The vet=ok signal here means the project as
+		// a whole is clean; any outstanding failure claim is stale.
+		if _, supErr := opts.Claims.SupersedeOutstandingFailures(claimID); supErr != nil {
+			fmt.Fprintf(os.Stderr, "leonard: project-wide supersede: %v\n", supErr)
+		}
 	}
 
 	resp := HookResponse{
@@ -311,28 +327,21 @@ func handleMissingFile(opts PostEditOptions, payload PostToolUsePayload, filePat
 	return nil
 }
 
-// handleEscapedPath records a claim and emits a response describing
-// the PostToolUse event for a file_path that resolves outside the
-// project root. Mirrors handleMissingFile's shape — Continue=true,
-// verified=false, IndexOK/VetOK nil, plus a system message that
-// reaches the user. Security-1 F1: a crafted payload with
-// `file_path: /etc/hosts` or `../../other.go` used to skip this
-// guard and get indexed as project content.
+// handleEscapedPath emits a hook response describing the PostToolUse
+// event for a file_path that resolves outside the project root.
+// Security-1 F1: a crafted payload with `file_path: /etc/hosts` or
+// `../../other.go` used to skip this guard and get indexed as
+// project content.
+//
+// v0.38 dropped the claim-record on this path. The rejection is a
+// tool-layer decision Leonard already surfaces via
+// additionalContext at decision time — recording it as a
+// `verified=false` claim only polluted the Stop hook's "unverified
+// claims" summary with rejections that aren't actionable later
+// (every old `/tmp/scratch/foo.go` write Claude attempted would
+// resurface forever).
 func handleEscapedPath(opts PostEditOptions, payload PostToolUsePayload, filePath string, stdout io.Writer) error {
-	claim := fmt.Sprintf("tool=%s file=%s; index=rejected (path escapes project root); %s=skipped",
-		coalesce(payload.ToolName, "edit"), filePath, opts.VetVerb)
-	evidence := fmt.Sprintf("file: %s\nrejected: path resolves outside the project root; index + vet skipped\n", filePath)
-	rec := ClaimRecord{
-		SessionID: payload.SessionID,
-		Claim:     claim,
-		Evidence:  evidence,
-		FilePath:  filePath,
-		Verified:  false,
-		Tool:      payload.ToolName,
-	}
-	if _, err := opts.Claims.RecordClaim(rec); err != nil {
-		return fmt.Errorf("hooks: record claim: %w", err)
-	}
+	_ = opts // claims recorder no longer used here; keep param for shape
 	resp := HookResponse{
 		Continue:      true,
 		SystemMessage: fmt.Sprintf("leonard: %s rejected — path escapes project root", filePath),

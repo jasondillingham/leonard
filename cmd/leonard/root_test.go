@@ -40,6 +40,9 @@ type fakeRuntime struct {
 	getUnverifiedOut   []ClaimRow
 	getUnverifiedErr   error
 
+	resolveClaimCalls []resolveClaimCall
+	resolveClaimErr   error
+
 	doctorCalls []doctorCall
 	doctorOut   DoctorReport
 	doctorErr   error
@@ -60,6 +63,11 @@ type getDecisionsCall struct {
 }
 type getStaleCall struct{ Limit int }
 type getUnverifiedCall struct{ SessionID string }
+
+type resolveClaimCall struct {
+	ClaimID int64
+	Note    string
+}
 
 type initCall struct {
 	Root string
@@ -110,6 +118,11 @@ func (f *fakeRuntime) GetStaleDecisions(_ context.Context, _ string, limit int) 
 func (f *fakeRuntime) GetUnverifiedClaims(_ context.Context, _, sessionID string) ([]ClaimRow, error) {
 	f.getUnverifiedCalls = append(f.getUnverifiedCalls, getUnverifiedCall{sessionID})
 	return f.getUnverifiedOut, f.getUnverifiedErr
+}
+
+func (f *fakeRuntime) ResolveClaim(_ context.Context, _ string, claimID int64, note string) error {
+	f.resolveClaimCalls = append(f.resolveClaimCalls, resolveClaimCall{claimID, note})
+	return f.resolveClaimErr
 }
 
 func (f *fakeRuntime) Doctor(_ context.Context, root, data string) (DoctorReport, error) {

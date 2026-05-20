@@ -40,12 +40,13 @@ type supersedeCall struct {
 }
 
 type fakeClaims struct {
-	mu             sync.Mutex
-	rows           []ClaimRecord
-	nextID         int64
-	recordErr      error
-	supersedeCalls []supersedeCall
-	supersedeErr   error
+	mu                   sync.Mutex
+	rows                 []ClaimRecord
+	nextID               int64
+	recordErr            error
+	supersedeCalls       []supersedeCall
+	supersedeErr         error
+	broadSupersedeCount  int
 }
 
 func (f *fakeClaims) RecordClaim(rec ClaimRecord) (int64, error) {
@@ -67,6 +68,18 @@ func (f *fakeClaims) SupersedeClaimsForFile(filePath string, supersedingClaimID 
 	}
 	f.supersedeCalls = append(f.supersedeCalls, supersedeCall{FilePath: filePath, SupersedingClaimID: supersedingClaimID})
 	return 0, nil
+}
+
+func (f *fakeClaims) SupersedeOutstandingFailures(supersedingClaimID int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.supersedeErr != nil {
+		return 0, f.supersedeErr
+	}
+	// Record under file_path="" to distinguish from file-scoped calls
+	// in tests that inspect the SupersedeCalls log.
+	f.supersedeCalls = append(f.supersedeCalls, supersedeCall{FilePath: "", SupersedingClaimID: supersedingClaimID})
+	return f.broadSupersedeCount, nil
 }
 
 func (f *fakeClaims) Rows() []ClaimRecord {
@@ -597,15 +610,24 @@ func TestHandlePostEdit_SupersedesOnVetPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandlePostEdit: %v", err)
 	}
+	// v0.38: vet=ok triggers two supersede calls — file-scoped
+	// (SupersedeClaimsForFile, target) and project-wide
+	// (SupersedeOutstandingFailures, FilePath=""). Both should
+	// reference the same superseding claim ID.
 	calls := claims.SupersedeCalls()
-	if len(calls) != 1 {
-		t.Fatalf("SupersedeCalls = %d, want 1", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("SupersedeCalls = %d, want 2 (file-scoped + project-wide)", len(calls))
 	}
 	if calls[0].FilePath != target {
-		t.Errorf("SupersedeCalls[0].FilePath = %q, want %q", calls[0].FilePath, target)
+		t.Errorf("file-scoped supersede FilePath = %q, want %q", calls[0].FilePath, target)
 	}
-	if calls[0].SupersedingClaimID != 1 {
-		t.Errorf("SupersedeCalls[0].SupersedingClaimID = %d, want 1", calls[0].SupersedingClaimID)
+	if calls[1].FilePath != "" {
+		t.Errorf("project-wide supersede FilePath = %q, want empty", calls[1].FilePath)
+	}
+	for i, c := range calls {
+		if c.SupersedingClaimID != 1 {
+			t.Errorf("calls[%d].SupersedingClaimID = %d, want 1", i, c.SupersedingClaimID)
+		}
 	}
 	rows := claims.Rows()
 	if len(rows) != 1 || rows[0].FilePath != target {
@@ -858,8 +880,15 @@ func TestRunGoVet_RealCommand(t *testing.T) {
 // A crafted PostToolUse payload with file_path resolving outside
 // the project root used to flow straight through to IndexFile and
 // store foreign symbols as project content. The handler now
-// rejects upfront, records a claim noting the rejection, and
-// emits an additionalContext message so the model sees the block.
+// rejects upfront and emits an additionalContext message so the
+// model sees the block.
+//
+// v0.38 removed the claim-record on this path — the rejection is
+// a tool-layer decision, not an unverified work claim, and
+// recording it polluted Stop's "unverified claims" summary
+// forever. The test now asserts (a) the model still gets
+// additionalContext, (b) no claim row is created, (c) the indexer
+// is never called.
 func TestHandlePostEdit_RejectsEscapedFilePath(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -872,6 +901,7 @@ func TestHandlePostEdit_RejectsEscapedFilePath(t *testing.T) {
 		return "", nil
 	}
 
+	var lastStdout bytes.Buffer
 	for _, attack := range []string{
 		"/etc/hosts",        // absolute outside root
 		"../../sneaky.go",   // dot-dot escape
@@ -886,13 +916,24 @@ func TestHandlePostEdit_RejectsEscapedFilePath(t *testing.T) {
 				ToolInput:     ToolInput{FilePath: attack},
 				CWD:           root,
 			}))
-			var stdout bytes.Buffer
+			lastStdout.Reset()
 			if err := HandlePostEdit(context.Background(), PostEditOptions{
 				Indexer: idx,
 				Claims:  claims,
 				Vet:     stubVet,
-			}, stdin, &stdout); err != nil {
+			}, stdin, &lastStdout); err != nil {
 				t.Fatalf("HandlePostEdit: %v", err)
+			}
+			var resp HookResponse
+			if err := json.Unmarshal(lastStdout.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v\nstdout=%q", err, lastStdout.String())
+			}
+			if resp.HookSpecificOutput == nil {
+				t.Fatal("escaped-path rejection must populate additionalContext")
+			}
+			if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "escapes the project root") &&
+				!strings.Contains(resp.HookSpecificOutput.AdditionalContext, "resolves outside the project root") {
+				t.Errorf("additionalContext should explain the escape: %q", resp.HookSpecificOutput.AdditionalContext)
 			}
 		})
 	}
@@ -900,17 +941,8 @@ func TestHandlePostEdit_RejectsEscapedFilePath(t *testing.T) {
 	if calls := idx.Calls(); len(calls) != 0 {
 		t.Errorf("indexer should not be called on escaped paths; got %v", calls)
 	}
-	rows := claims.Rows()
-	if len(rows) != 3 {
-		t.Fatalf("expected 3 claim rows (one per attack), got %d", len(rows))
-	}
-	for _, row := range rows {
-		if row.Verified {
-			t.Errorf("escaped-path claim verified=true; want false: %+v", row)
-		}
-		if !strings.Contains(strings.ToLower(row.Claim), "escapes project root") {
-			t.Errorf("claim should mention rejection: %q", row.Claim)
-		}
+	if rows := claims.Rows(); len(rows) != 0 {
+		t.Errorf("v0.38: escaped-path rejections must NOT record claim rows; got %d rows", len(rows))
 	}
 }
 
