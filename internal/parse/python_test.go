@@ -261,16 +261,14 @@ func TestExtractPython_ParseError(t *testing.T) {
 
 // TestExtractPython_ParseErrorIsSingleLine verifies the parser's error
 // string is the single-line summary expected by indexer ParseFailures
-// surfacing. gpython's raw error is a multi-line Python-style traceback;
-// we collapse it so the CLI can render one line per failed file.
+// surfacing. Python's raw SyntaxError formats as multiple lines by
+// default; the subprocess extractor collapses to "line N: SyntaxError: …".
 func TestExtractPython_ParseErrorIsSingleLine(t *testing.T) {
 	t.Parallel()
-	// `dict[str, int]` is PEP 585 generic alias syntax (Python 3.9+) —
-	// gpython rejects it with a SyntaxError. Using this gives the test a
-	// realistic modern-Python failure mode to capture.
-	_, err := ExtractPython("x.py", []byte("x: dict[str, int] = {}\n"))
+	// Genuinely-invalid Python: missing function name and parens.
+	_, err := ExtractPython("x.py", []byte("def\n"))
 	if err == nil {
-		t.Fatal("expected parse error on modern-Python annotation")
+		t.Fatal("expected parse error on malformed def")
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "\n") {
@@ -281,5 +279,60 @@ func TestExtractPython_ParseErrorIsSingleLine(t *testing.T) {
 	}
 	if !strings.Contains(msg, "line ") {
 		t.Errorf("expected a line number in message, got %q", msg)
+	}
+}
+
+// TestExtractPython_ModernSyntax exercises the v0.2 parser swap:
+// the old gpython-backed extractor rejected every one of these forms
+// with a SyntaxError. The subprocess-to-python3 backend parses them
+// natively and emits the same symbol shape as any other file.
+func TestExtractPython_ModernSyntax(t *testing.T) {
+	t.Parallel()
+	src := `# modern-Python smoke test — all forms gpython rejected pre-3.5
+
+VERSION: str = "0.1"           # PEP 526 annotated assignment
+items: list[int] = []           # PEP 585 generic alias
+
+def greet(name: str) -> str:
+    return f"hello {name}"      # f-string
+
+async def fetch_all(urls: list[str]) -> list[str]:
+    return [u for u in urls if (n := len(u)) > 0]  # walrus
+
+class Box[T]:                   # PEP 695 type parameter
+    def put(self, item: T | None) -> None:  # PEP 604 union
+        self.last = item
+
+def kind_of(v: int | str) -> str:
+    match v:                    # structural pattern matching
+        case int():
+            return "int"
+        case str():
+            return "str"
+        case _:
+            return "other"
+`
+	syms, err := ExtractPython("modern.py", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractPython on modern syntax: %v", err)
+	}
+	byQName := map[string]string{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = s.Kind
+	}
+	for _, want := range []struct {
+		qname, kind string
+	}{
+		{"modern.VERSION", "var"},
+		{"modern.items", "var"},
+		{"modern.greet", "function"},
+		{"modern.fetch_all", "function"},
+		{"modern.Box", "type"},
+		{"modern.Box.put", "method"},
+		{"modern.kind_of", "function"},
+	} {
+		if got := byQName[want.qname]; got != want.kind {
+			t.Errorf("%s: kind=%q, want %q (have %v)", want.qname, got, want.kind, byQName)
+		}
 	}
 }
