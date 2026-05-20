@@ -25,6 +25,52 @@ type Runtime interface {
 	// VerifySymbol opens the store and returns matches by name. kind is
 	// optional ("" means any).
 	VerifySymbol(ctx context.Context, dataDir, name, kind string) ([]SymbolMatch, error)
+
+	// RecordDecision opens the store and persists a decision row. Mirrors
+	// the MCP record_decision tool. Returns the assigned row ID.
+	RecordDecision(ctx context.Context, dataDir, topic, choice, reasoning string) (int64, error)
+
+	// GetDecisions opens the store and returns decisions newest-first.
+	// topic is optional (empty = all topics); since is a unix-second lower
+	// bound (0 = no bound); limit caps the slice (0 = use the same default
+	// the MCP tool publishes).
+	GetDecisions(ctx context.Context, dataDir, topic string, since int64, limit int) ([]DecisionRow, error)
+
+	// GetStaleDecisions returns decisions whose related_files or
+	// related_symbols no longer resolve against the live index.
+	GetStaleDecisions(ctx context.Context, dataDir string, limit int) ([]StaleDecisionRow, error)
+
+	// GetUnverifiedClaims returns claim rows where verified=false.
+	// sessionID is optional (empty = all sessions).
+	GetUnverifiedClaims(ctx context.Context, dataDir, sessionID string) ([]ClaimRow, error)
+}
+
+// DecisionRow is the small DTO the decisions subcommand prints. Mirrors
+// store.Decision, declared locally so cmd/leonard stays decoupled.
+type DecisionRow struct {
+	ID         int64
+	Topic      string
+	Choice     string
+	Reasoning  string
+	RecordedAt int64
+}
+
+// StaleDecisionRow carries the decision plus the specific refs that no
+// longer resolve. Mirrors store.StaleDecision.
+type StaleDecisionRow struct {
+	Decision       DecisionRow
+	MissingFiles   []string
+	MissingSymbols []string
+}
+
+// ClaimRow is the projection of store.Claim the claims subcommand prints.
+type ClaimRow struct {
+	ID         int64
+	SessionID  string
+	Claim      string
+	Evidence   string
+	FilePath   string
+	RecordedAt int64
 }
 
 // SymbolMatch is the small DTO the verify subcommand prints. It mirrors the
@@ -68,6 +114,8 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newInitCmd(rt))
 	root.AddCommand(newIndexCmd(rt))
 	root.AddCommand(newVerifyCmd(rt))
+	root.AddCommand(newDecisionsCmd(rt))
+	root.AddCommand(newClaimsCmd(rt))
 	root.AddCommand(newMCPCmd())
 	return root
 }

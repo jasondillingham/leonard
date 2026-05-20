@@ -22,7 +22,35 @@ type fakeRuntime struct {
 	indexFailures []ParseFailure
 	verifyOut     []SymbolMatch
 	verifyErr     error
+
+	// decisions/claims tape
+	recordDecisionCalls []recordDecisionCall
+	recordDecisionID    int64
+	recordDecisionErr   error
+
+	getDecisionsCalls []getDecisionsCall
+	getDecisionsOut   []DecisionRow
+	getDecisionsErr   error
+
+	getStaleCalls []getStaleCall
+	getStaleOut   []StaleDecisionRow
+	getStaleErr   error
+
+	getUnverifiedCalls []getUnverifiedCall
+	getUnverifiedOut   []ClaimRow
+	getUnverifiedErr   error
 }
+
+type recordDecisionCall struct {
+	Topic, Choice, Reasoning string
+}
+type getDecisionsCall struct {
+	Topic string
+	Since int64
+	Limit int
+}
+type getStaleCall struct{ Limit int }
+type getUnverifiedCall struct{ SessionID string }
 
 type initCall struct {
 	Root string
@@ -53,6 +81,26 @@ func (f *fakeRuntime) IndexAll(_ context.Context, root, data string) (IndexResul
 func (f *fakeRuntime) VerifySymbol(_ context.Context, data, name, kind string) ([]SymbolMatch, error) {
 	f.verifyCalls = append(f.verifyCalls, verifyCall{data, name, kind})
 	return f.verifyOut, f.verifyErr
+}
+
+func (f *fakeRuntime) RecordDecision(_ context.Context, _, topic, choice, reasoning string) (int64, error) {
+	f.recordDecisionCalls = append(f.recordDecisionCalls, recordDecisionCall{topic, choice, reasoning})
+	return f.recordDecisionID, f.recordDecisionErr
+}
+
+func (f *fakeRuntime) GetDecisions(_ context.Context, _, topic string, since int64, limit int) ([]DecisionRow, error) {
+	f.getDecisionsCalls = append(f.getDecisionsCalls, getDecisionsCall{topic, since, limit})
+	return f.getDecisionsOut, f.getDecisionsErr
+}
+
+func (f *fakeRuntime) GetStaleDecisions(_ context.Context, _ string, limit int) ([]StaleDecisionRow, error) {
+	f.getStaleCalls = append(f.getStaleCalls, getStaleCall{limit})
+	return f.getStaleOut, f.getStaleErr
+}
+
+func (f *fakeRuntime) GetUnverifiedClaims(_ context.Context, _, sessionID string) ([]ClaimRow, error) {
+	f.getUnverifiedCalls = append(f.getUnverifiedCalls, getUnverifiedCall{sessionID})
+	return f.getUnverifiedOut, f.getUnverifiedErr
 }
 
 func runRoot(t *testing.T, rt Runtime, args ...string) (string, error) {

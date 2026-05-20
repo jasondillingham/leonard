@@ -78,3 +78,73 @@ func (realRuntime) VerifySymbol(_ context.Context, dataDir, name, kind string) (
 	}
 	return out, nil
 }
+
+func (realRuntime) RecordDecision(_ context.Context, dataDir, topic, choice, reasoning string) (int64, error) {
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	return s.RecordDecision(store.Decision{Topic: topic, Choice: choice, Reasoning: reasoning})
+}
+
+func (realRuntime) GetDecisions(_ context.Context, dataDir, topic string, since int64, limit int) ([]DecisionRow, error) {
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	rows, err := s.GetDecisions(topic, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DecisionRow, len(rows))
+	for i, d := range rows {
+		out[i] = DecisionRow{ID: d.ID, Topic: d.Topic, Choice: d.Choice, Reasoning: d.Reasoning, RecordedAt: d.RecordedAt}
+	}
+	return out, nil
+}
+
+func (realRuntime) GetStaleDecisions(_ context.Context, dataDir string, limit int) ([]StaleDecisionRow, error) {
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	rows, err := s.GetStaleDecisions(limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]StaleDecisionRow, len(rows))
+	for i, r := range rows {
+		out[i] = StaleDecisionRow{
+			Decision: DecisionRow{
+				ID: r.Decision.ID, Topic: r.Decision.Topic, Choice: r.Decision.Choice,
+				Reasoning: r.Decision.Reasoning, RecordedAt: r.Decision.RecordedAt,
+			},
+			MissingFiles:   r.MissingFiles,
+			MissingSymbols: r.MissingSymbols,
+		}
+	}
+	return out, nil
+}
+
+func (realRuntime) GetUnverifiedClaims(_ context.Context, dataDir, sessionID string) ([]ClaimRow, error) {
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	rows, err := s.GetUnverifiedClaims(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ClaimRow, len(rows))
+	for i, c := range rows {
+		out[i] = ClaimRow{
+			ID: c.ID, SessionID: c.SessionID, Claim: c.Claim,
+			Evidence: c.Evidence, FilePath: c.FilePath, RecordedAt: c.RecordedAt,
+		}
+	}
+	return out, nil
+}
