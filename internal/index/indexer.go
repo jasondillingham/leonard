@@ -136,6 +136,16 @@ var langExtractorsByName = map[string]struct {
 	"makefile":      {lang: "make", extract: parse.ExtractMake},
 	"gnumakefile":   {lang: "make", extract: parse.ExtractMake},
 	"cmakelists.txt": {lang: "cmake", extract: parse.ExtractCMake},
+	// OpenAPI / Swagger specs. Detected by filename because YAML
+	// + JSON files are too generic to dispatch by extension.
+	// Real-world projects ship these specs with one of these
+	// conventional names.
+	"openapi.yaml": {lang: "openapi", extract: parse.ExtractOpenAPI},
+	"openapi.yml":  {lang: "openapi", extract: parse.ExtractOpenAPI},
+	"openapi.json": {lang: "openapi", extract: parse.ExtractOpenAPI},
+	"swagger.yaml": {lang: "openapi", extract: parse.ExtractOpenAPI},
+	"swagger.yml":  {lang: "openapi", extract: parse.ExtractOpenAPI},
+	"swagger.json": {lang: "openapi", extract: parse.ExtractOpenAPI},
 }
 
 // dispatchByExt looks up an extractor for the given path. It tries
