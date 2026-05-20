@@ -24,11 +24,12 @@ The bug-hunt + security-review discipline has produced several concrete guards:
 | Resource caps (per-payload, per-snippet, per-element-count, per-response) | v0.9, v0.13 | OOM via crafted PreToolUse payloads; runaway MCP response sizes |
 | Custom line reader replacing `bufio.Scanner` | v0.13 | busy-spin DoS on oversize stdin lines |
 | MCP stdin filter | v0.6 | wrong-version / malformed JSON-RPC frames killing the transport |
-| `[post_edit.verify]` config is project-authored only | v0.37 | command injection — the command source is trusted (config.toml is on disk where the user controls it) |
+| `[post_edit.verify]` config is operator-authored only | v0.37, v0.46 | command injection. v0.46 closed the security-2 F1 chain: pre-edit hook now rejects Edit/Write/MultiEdit against any path under `.leonard/`, so Claude cannot author the verifier's `command` field. The directory is reserved for operator wiring + the SQLite store. |
 | Ledger hygiene (vet_ok-based supersede, no missing-file claims) | v0.38, v0.39 | ledger pollution / supersede mis-classification |
+| `working_dir` path-trust validation | v0.46 | confused-deputy. `[post_edit.verify].working_dir` values are validated via `ResolveSafe` against the project root; escapes fall back to the project root with a captured-output note. |
 | `idx_symbols_parent` and other store indexes | v0.7.1, v0.15 | DoS via expensive queries |
 
-See [`security-1-review.md`](./security-1-review.md) for the full security review and [`bughunt-{1..5}-triage.md`](.) for finding-by-finding history.
+See [`audits/security-1-review.md`](./audits/security-1-review.md) for the full security review and the [`audits/`](./audits/) directory for finding-by-finding history across the five bug-hunt rounds.
 
 ## Reporting a vulnerability
 
@@ -47,4 +48,4 @@ We aim to acknowledge reports within 7 days. Critical issues get a v0.X.0 releas
 
 ## Bug-hunt-style audits welcome
 
-If you'd like to run a security-focused bug hunt against Leonard, the format is documented in `security-1-review.md` + the round-N triage files. Findings filed in that shape are easy to action.
+If you'd like to run a security-focused bug hunt against Leonard, the format is documented in [`audits/security-1-review.md`](./audits/security-1-review.md) + the round-N triage files under `audits/`. Findings filed in that shape are easy to action.

@@ -25,9 +25,13 @@ coverage.out
 
 # macOS
 .DS_Store
-phase-1-brief.md
 .bosun/
-phase-2-brief.md
-phase-3-brief.md
-bughunt-1-brief.md
-fix-1-brief.md
+
+# Ephemeral session/process artifacts at repo root (briefs, scratch
+# reports, launch-prep notes). The audits/ directory is the canonical
+# home for retained audit history.
+/phase-*-brief.md
+/bughunt-*-brief.md
+/fix-*-brief.md
+/launch-readiness-*.md
+/resume-here.md

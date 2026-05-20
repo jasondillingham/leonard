@@ -35,15 +35,15 @@ If the language doesn't have a tree-sitter grammar on crates.io, or has a one th
 
 The standard discipline:
 
-1. **Bug hunt** — run a structured audit and write findings to `bughunt-N-<lane>.md`. See `bughunt-5-*.md` for the format. Each finding gets a severity (high/medium/low/informational), reproducer, observed/expected behavior, suggested fix shape.
-2. **Triage** — `bughunt-N-triage.md` synthesizes themes and picks the fix-round priority list.
+1. **Bug hunt** — run a structured audit and write findings to `audits/bughunt-N-<lane>.md`. See the `audits/bughunt-5-*.md` set for the format. Each finding gets a severity (high/medium/low/informational), reproducer, observed/expected behavior, suggested fix shape.
+2. **Triage** — `audits/bughunt-N-triage.md` synthesizes themes and picks the fix-round priority list.
 3. **Fix round** — one minor version bump per theme (`v0.X.0: <theme title>`). Tests cover the regression. Commit messages reference the original finding ID (`F1`, `F4`, etc.).
 
 PRs that follow this shape get reviewed fast.
 
 ### 🟢 Language refinement
 
-The `bughunt-5-languages.md` punch list has 32 specific per-language gaps that are deferred. Each one is a small, well-scoped PR. Pick a language you actually use and fix the specific finding.
+The [`audits/bughunt-5-languages.md`](./audits/bughunt-5-languages.md) punch list has 32 specific per-language gaps that are deferred. Each one is a small, well-scoped PR. Pick a language you actually use and fix the specific finding.
 
 ### 🟢 Performance + correctness fixes
 

@@ -21,7 +21,7 @@ import (
 )
 
 // version is overridable at build time via -ldflags "-X main.version=...".
-var version = "0.45.0"
+var version = "0.46.0"
 
 // dbWatchInterval is how often the active watcher polls the DB path for a
 // swap. Two seconds is a generous balance: well under the human latency of
@@ -29,6 +29,21 @@ var version = "0.45.0"
 const dbWatchInterval = 2 * time.Second
 
 func main() {
+	// Bughunt-5 launch-readiness B4: `leonard-mcp --version` used to
+	// exit 0 with no output because the binary never goes through
+	// cobra. Check argv before falling into the MCP run loop.
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "--version", "-v", "version":
+			fmt.Println("leonard-mcp", version)
+			return
+		case "--help", "-h", "help":
+			fmt.Fprintln(os.Stderr, "leonard-mcp — stdio MCP server for Leonard's ground-truth tools.")
+			fmt.Fprintln(os.Stderr, "Run with no arguments to start the server (expects MCP JSON-RPC on stdin/stdout).")
+			fmt.Fprintln(os.Stderr, "Version:", version)
+			return
+		}
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "leonard-mcp: %v\n", err)
 		os.Exit(1)

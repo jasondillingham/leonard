@@ -3,8 +3,36 @@
 All notable changes to Leonard, in reverse chronological order.
 
 Cadence: each minor bump bundles one coherent change (a feature, a
-bug-hunt theme fix, or a perf sweep) and ships with an updated
-`leonard-mcp --version` string + test coverage.
+bug-hunt theme fix, or a perf sweep) and ships with updated version
+strings (`leonard --version`, `leonard-hook --version`,
+`leonard-mcp --version`) + test coverage.
+
+## v0.45.1 — Launch polish
+
+A second-pass review against the "HN-tomorrow-morning" bar surfaced
+6 BLOCKING items, all fixed here. No code-behavior changes — pure
+docs / wiring / repo-organization polish.
+
+- **B3** — Broken brace-expansion markdown link in README + SECURITY
+  (`[bughunt-{1..5}-triage.md](.)` doesn't render). Replaced with
+  explicit per-round links into the new `audits/` directory.
+- **B4 + B5** — `leonard`, `leonard-hook`, and `leonard-mcp` now all
+  respond to `--version`. The two cobra-rooted binaries via cobra's
+  built-in `Version` field; `leonard-mcp` via an early argv check
+  before the MCP run loop (cobra isn't on that path).
+- **B6** — `.leonard/config.toml` advertised `[index]`, `[verifiers]`,
+  and `block_on_fabricated_symbol` — none of which the runtime
+  Config struct reads (bughunt-2 Theme A trimmed them out 30+
+  versions ago). Rewritten to only contain the real schema.
+- **S1 + S2** — 25 audit/triage markdown files moved out of the
+  repo root into a new `audits/` directory (with its own index
+  README); the root now shows the ~8 user-facing files instead of
+  32. Stale `phase-{1,2,3}-brief.md` and `fix-1-brief.md` MVP-era
+  files removed.
+- **S5** — README gets CI / License / Go Reference badges at top.
+- **S7** — Status-line tone updated from "have driven the project"
+  (past-progressive, reads in-progress) to "stable; every HIGH
+  severity finding closed" (declarative, reads shipped).
 
 ## v0.45.0 — Docs + release infra sweep (bughunt-5 Theme E)
 

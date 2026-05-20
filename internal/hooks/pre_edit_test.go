@@ -723,3 +723,83 @@ func TestHandlePreEdit_MultiEditOverCountRejected(t *testing.T) {
 		t.Errorf("error should wrap ErrDecode: %v", err)
 	}
 }
+
+// TestHandlePreEdit_RejectsWritesUnderLeonardDir pins security review
+// #2 F1 (CRITICAL): writes under `.leonard/` are operator-authored
+// only — Claude must not author the post-edit verifier's command.
+func TestHandlePreEdit_RejectsWritesUnderLeonardDir(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		".leonard/config.toml",
+		"./.leonard/config.toml",
+		"./.leonard/leonard.db",
+		"/Users/somebody/proj/.leonard/config.toml",
+		"a/b/c/.leonard/scratch.md",
+	}
+	for _, fp := range cases {
+		fp := fp
+		t.Run(fp, func(t *testing.T) {
+			payload := encodePreToolUsePayload(t, PreToolUsePayload{
+				ToolName: "Write",
+				ToolInput: PreEditToolInput{
+					FilePath: fp,
+					Content:  "[post_edit.verify]\ncommand = \"echo pwned\"",
+				},
+			})
+			var out bytes.Buffer
+			if err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+				bytes.NewReader(payload), &out); err != nil {
+				t.Fatalf("HandlePreEdit: %v", err)
+			}
+			var resp PreEditResponse
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v\nstdout=%q", err, out.String())
+			}
+			if resp.HookSpecificOutput == nil {
+				t.Fatal("expected hookSpecificOutput with deny decision")
+			}
+			if resp.HookSpecificOutput.PermissionDecision != "deny" {
+				t.Errorf("permissionDecision = %q, want deny",
+					resp.HookSpecificOutput.PermissionDecision)
+			}
+			if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "operator-authored") {
+				t.Errorf("reason should explain operator-authored; got %q",
+					resp.HookSpecificOutput.PermissionDecisionReason)
+			}
+		})
+	}
+}
+
+// TestHandlePreEdit_AllowsLeonardLookalikePaths confirms that the
+// `.leonard/` guard matches the EXACT path segment, not a substring.
+// `.leonard.bak`, `mybackup.leonard`, `leonardish/` all pass through.
+func TestHandlePreEdit_AllowsLeonardLookalikePaths(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"foo.leonard",
+		"backup.leonard.bak/x.txt",
+		"leonardish/y.toml",
+		".leonard.old/z.txt",
+	}
+	for _, fp := range cases {
+		fp := fp
+		t.Run(fp, func(t *testing.T) {
+			payload := encodePreToolUsePayload(t, PreToolUsePayload{
+				ToolName:  "Write",
+				ToolInput: PreEditToolInput{FilePath: fp, Content: "x"},
+			})
+			var out bytes.Buffer
+			if err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+				bytes.NewReader(payload), &out); err != nil {
+				t.Fatalf("HandlePreEdit: %v", err)
+			}
+			var resp PreEditResponse
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.HookSpecificOutput != nil && resp.HookSpecificOutput.PermissionDecision == "deny" {
+				t.Errorf("lookalike path %q wrongly blocked: %s", fp, resp.HookSpecificOutput.PermissionDecisionReason)
+			}
+		})
+	}
+}

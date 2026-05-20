@@ -167,6 +167,23 @@ func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload
 	if err := validateToolInputSizes(p.ToolName, p.ToolInput); err != nil {
 		return PreEditResponse{}, err
 	}
+	// Security review #2 F1 (CRITICAL): reject Edit/Write/MultiEdit
+	// against ANY path under `.leonard/`. The pre-v0.46 guard only
+	// inspected `.go` files, so Claude could freely Write
+	// `.leonard/config.toml` — the next post-edit hook would then
+	// read the new `[post_edit.verify].command` and execute it via
+	// `sh -c`. End-to-end RCE chain through a path Claude controls.
+	//
+	// `.leonard/` is operator-authored: the user wires Leonard into
+	// their project, the user edits config.toml. Claude has no
+	// legitimate reason to touch it. This check is the trust-
+	// boundary line.
+	candidatePaths := candidateEditPaths(p.ToolInput)
+	for _, cp := range candidatePaths {
+		if isUnderLeonardDir(cp) {
+			return blockLeonardSelfEdit(cp), nil
+		}
+	}
 	snippets, targeted := snippetsForTool(p.ToolName, p.ToolInput)
 	if !targeted {
 		return allowResponse(), nil
@@ -548,4 +565,62 @@ func blockResponse(fabricated []string) PreEditResponse {
 			PermissionDecisionReason: reason,
 		},
 	}
+}
+
+// blockLeonardSelfEdit is the security review #2 F1 response: tell
+// the model exactly why a write under `.leonard/` was rejected so
+// it doesn't keep trying. Operator-authored config is a trust
+// boundary — Claude has no legitimate reason to touch this path.
+func blockLeonardSelfEdit(filePath string) PreEditResponse {
+	return PreEditResponse{
+		HookSpecificOutput: &PreToolUseSpecificOutput{
+			HookEventName:      "PreToolUse",
+			PermissionDecision: "deny",
+			PermissionDecisionReason: fmt.Sprintf(
+				"leonard pre-edit: rejected edit to %q — paths under `.leonard/` are operator-authored (the user's Leonard wiring and SQLite store live there). If a config change is genuinely needed, the user must edit `.leonard/config.toml` themselves.",
+				filePath,
+			),
+		},
+	}
+}
+
+// candidateEditPaths returns every filesystem path a single ToolInput
+// might touch — covers Edit/Write's `file_path`, NotebookEdit's
+// `notebook_path`, and MultiEdit's per-element paths. Used by the
+// `.leonard/` guard so any tool-shape that could land an edit under
+// that directory is caught.
+func candidateEditPaths(in PreEditToolInput) []string {
+	var out []string
+	if p := strings.TrimSpace(in.FilePath); p != "" {
+		out = append(out, p)
+	}
+	if p := strings.TrimSpace(in.NotebookPath); p != "" {
+		out = append(out, p)
+	}
+	// MultiEdit's per-element shape is {old_string, new_string}; the
+	// destination file_path lives on the outer ToolInput and is
+	// captured above.
+	return out
+}
+
+// isUnderLeonardDir reports whether `path` contains a `.leonard`
+// directory segment anywhere in its cleaned form. Matches:
+//   - `.leonard/config.toml`
+//   - `./.leonard/leonard.db`
+//   - `/Users/foo/proj/.leonard/anything`
+//
+// Does NOT match `.leonard.bak/`, `leonardish/`, or any name that
+// isn't an exact `.leonard` segment. Path comparison is textual on
+// the cleaned form, so `..` and `./` are normalized away first.
+func isUnderLeonardDir(path string) bool {
+	clean := filepath.Clean(path)
+	// filepath.Separator is OS-specific; iterate via Split rather than
+	// strings.Contains so we don't false-match `.leonard` as a substring
+	// of another path segment.
+	for _, seg := range strings.Split(clean, string(filepath.Separator)) {
+		if seg == ".leonard" {
+			return true
+		}
+	}
+	return false
 }

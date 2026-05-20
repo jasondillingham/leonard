@@ -6,6 +6,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is the leonard CLI version string. cobra wires it into
+// the auto-generated `--version` flag once Command.Version is set.
+// Kept in sync with cmd/leonard-mcp/main.go's `version` var; each
+// minor release bumps both via the same commit (see CHANGELOG.md).
+const Version = "0.46.0"
+
 // Runtime is the minimum collaborator surface the cobra subcommands need.
 // Concrete implementations live in wire_real.go (uses internal/store +
 // internal/index) and wire_stub.go (in-process fake for unit tests and for
@@ -153,6 +159,7 @@ func newRootCmd(rt Runtime) *cobra.Command {
 		Use:           "leonard",
 		Short:         "Project ground-truth indexer for Claude Code.",
 		Long:          "Leonard maintains a local symbol index and a claims ledger that Claude Code consults via MCP and post-edit hooks. See DESIGN.md for the long form.",
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

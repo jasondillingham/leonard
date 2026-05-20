@@ -1100,16 +1100,45 @@ func TestMakeShellRunner_Failure(t *testing.T) {
 	}
 }
 
+// TestMakeShellRunner_WorkingDirOverride exercises the v0.46
+// path-trust-aware working_dir handling. A working_dir inside the
+// project root resolves; a working_dir outside falls back with a
+// captured-output rejection note (security review #2 F2).
 func TestMakeShellRunner_WorkingDirOverride(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	runner := MakeShellRunner("pwd", dir)
-	out, err := runner(context.Background(), "/tmp/some-other-projectroot")
+	root := t.TempDir()
+	sub := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inside the project root: pwd should print the resolved subdir.
+	runner := MakeShellRunner("pwd", "subdir")
+	out, err := runner(context.Background(), root)
 	if err != nil {
 		t.Fatalf("runner err: %v", err)
 	}
-	// On macOS the temp dir resolves through /private/var → tolerate either prefix.
-	if !strings.HasSuffix(strings.TrimSpace(out), filepath.Base(dir)) {
-		t.Errorf("pwd output %q did not end with %q", out, filepath.Base(dir))
+	if !strings.HasSuffix(strings.TrimSpace(out), filepath.Base(sub)) {
+		t.Errorf("pwd output %q did not end with %q", out, filepath.Base(sub))
+	}
+}
+
+// TestMakeShellRunner_WorkingDirEscapeRejected pins the security
+// review #2 F2 fix: a working_dir that resolves outside the project
+// root must NOT execute the command in that directory.
+func TestMakeShellRunner_WorkingDirEscapeRejected(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	runner := MakeShellRunner("pwd", "/etc")
+	out, err := runner(context.Background(), root)
+	if err != nil {
+		t.Fatalf("runner err: %v", err)
+	}
+	if !strings.Contains(out, "resolves outside the project root") {
+		t.Errorf("expected fallback note in output, got %q", out)
+	}
+	// pwd should print the project root, not /etc.
+	if strings.Contains(out, "/etc\n") {
+		t.Errorf("verifier ran in /etc despite path-trust; output: %q", out)
 	}
 }

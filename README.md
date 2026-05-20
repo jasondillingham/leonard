@@ -1,10 +1,14 @@
 # Leonard
 
+[![CI](https://github.com/jasondillingham/leonard/actions/workflows/ci.yml/badge.svg)](https://github.com/jasondillingham/leonard/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Go Reference](https://pkg.go.dev/badge/github.com/jasondillingham/leonard.svg)](https://pkg.go.dev/github.com/jasondillingham/leonard)
+
 > *Leonard Hofstadter is the experimentalist who keeps Sheldon's overconfident theorizing tethered to reality. This tool plays the same role for Claude Code.*
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status: v0.45.0.** Self-dogfooded on this repo through 45 minor releases. **Five bug-hunt rounds + one focused security review** have driven the project; see [`bughunt-{1..5}-triage.md`](.) for the discipline trail. Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
+**Status: v0.45.0 — stable.** Self-dogfooded across 45 minor releases with **five bug-hunt rounds and one focused security review**; every HIGH-severity finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ```
 27+ tree-sitter languages   +   4 production-dogfooded parsers   +   3 SFC preprocessors
@@ -114,12 +118,12 @@ Leonard's quality comes from a recurring loop: **bug-hunt → triage → fix →
 
 | Round | Surface audited | HIGH findings | Documented as |
 |---|---|---|---|
-| Bughunt #1 | Initial v0.1 dogfood surface | 4 HIGH | `bughunt-1-triage.md` |
-| Bughunt #2 | Hooks, MCP, store, languages | 6 HIGH | `bughunt-2-triage.md` |
-| Bughunt #3 | Rust parser, skip-dirs, OTel, eval framework | 6 HIGH | `bughunt-3-triage.md` |
-| Security #1 | Cross-cutting security review | 2 HIGH (confused-deputy + memory amp) | `security-1-review.md` |
-| Bughunt #4 | v0.7-v0.12 surfaces | 4 HIGH | `bughunt-4-triage.md` |
-| Bughunt #5 | v0.19-v0.38 surfaces (tree-sitter + 24 languages + ledger hygiene) | 3 HIGH | `bughunt-5-triage.md` |
+| Bughunt #1 | Initial v0.1 dogfood surface | 4 HIGH | [`audits/bughunt-1-triage.md`](./audits/bughunt-1-triage.md) |
+| Bughunt #2 | Hooks, MCP, store, languages | 6 HIGH | [`audits/bughunt-2-triage.md`](./audits/bughunt-2-triage.md) |
+| Bughunt #3 | Rust parser, skip-dirs, OTel, eval framework | 6 HIGH | [`audits/bughunt-3-triage.md`](./audits/bughunt-3-triage.md) |
+| Security #1 | Cross-cutting security review | 2 HIGH (confused-deputy + memory amp) | [`audits/security-1-review.md`](./audits/security-1-review.md) |
+| Bughunt #4 | v0.7-v0.12 surfaces | 4 HIGH | [`audits/bughunt-4-triage.md`](./audits/bughunt-4-triage.md) |
+| Bughunt #5 | v0.19-v0.38 surfaces (tree-sitter + 24 languages + ledger hygiene) | 3 HIGH | [`audits/bughunt-5-triage.md`](./audits/bughunt-5-triage.md) |
 
 Every HIGH severity finding has been closed. Most MEDIUMs too — the remainder live in the deferred lists per round.
 
@@ -232,7 +236,7 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the bug-hunt → triage → fix l
 
 ## Security
 
-See [`SECURITY.md`](./SECURITY.md) for disclosure process. The path-trust + resource-cap + verifier-isolation guards are documented in the security review file (`security-1-review.md`).
+See [`SECURITY.md`](./SECURITY.md) for disclosure process. The path-trust + resource-cap + verifier-isolation guards are documented in [`audits/security-1-review.md`](./audits/security-1-review.md).
 
 ## License
 

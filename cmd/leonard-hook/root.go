@@ -16,11 +16,16 @@ type Backend interface {
 	Close() error
 }
 
+// Version mirrors cmd/leonard's Version and cmd/leonard-mcp's
+// `version` var. Bump them together on each minor release.
+const Version = "0.46.0"
+
 func newRootCmd(b Backend) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "leonard-hook",
 		Short:         "Dispatcher for Claude Code hook events.",
 		Long:          "Subcommands map 1:1 to Claude Code hook event types. Each reads the hook JSON envelope from stdin and writes a hook response to stdout.",
+		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
