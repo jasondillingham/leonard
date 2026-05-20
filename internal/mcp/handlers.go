@@ -36,9 +36,10 @@ type VerifySymbolOutput struct {
 
 // FindSymbolInput is the argument shape for find_symbol.
 type FindSymbolInput struct {
-	Query string `json:"query" jsonschema:"substring matched against symbol name and qualified name (case-insensitive)"`
-	Kind  string `json:"kind,omitempty" jsonschema:"optional kind filter: function|method|type|const|var|interface"`
-	Limit int    `json:"limit,omitempty" jsonschema:"maximum number of matches to return (0 = unlimited)"`
+	Query    string `json:"query" jsonschema:"substring matched against symbol name and qualified name (case-insensitive)"`
+	Kind     string `json:"kind,omitempty" jsonschema:"optional kind filter: function|method|type|const|var|interface"`
+	Language string `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"maximum number of matches to return (0 = unlimited)"`
 }
 
 // FindSymbolOutput wraps the matches array. MCP requires structured tool

@@ -343,6 +343,69 @@ func TestListFilesPatternSchemaIsHonest(t *testing.T) {
 	}
 }
 
+// TestFindSymbolLanguageFilter covers mcp F5: find_symbol must expose the
+// same language filter that verify_symbol does. Without it, a caller
+// who wants "find all Server-shaped names, Go only" has no API path
+// — they'd have to fall back to list_files+walk-and-grep.
+func TestFindSymbolLanguageFilter(t *testing.T) {
+	session := newSession(t, loadFixture(t))
+
+	// Sanity-check schema first: pattern must be advertised, otherwise
+	// the behavioral assertion below would pass with a still-broken API.
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var findSym *mcp.Tool
+	for _, tool := range tools.Tools {
+		if tool.Name == "find_symbol" {
+			findSym = tool
+			break
+		}
+	}
+	if findSym == nil {
+		t.Fatal("find_symbol tool not advertised")
+	}
+	raw, err := json.Marshal(findSym.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal InputSchema: %v", err)
+	}
+	if !strings.Contains(string(raw), `"language"`) {
+		t.Errorf("find_symbol schema missing language field; raw=%s", raw)
+	}
+
+	// Behavior: query "t" matches Greeter, Greet, DefaultGreeting (go)
+	// and shout (python). Filtering by language should partition them.
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "find_symbol",
+		Arguments: map[string]any{"query": "t", "language": "go"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool go: %v", err)
+	}
+	out := decodeResult[leonardmcp.FindSymbolOutput](t, res).Matches
+	for _, m := range out {
+		if !strings.HasSuffix(m.File, ".go") {
+			t.Errorf("language=go filter leaked %s (%q)", m.File, m.QualifiedName)
+		}
+	}
+	if len(out) == 0 {
+		t.Error("language=go filter excluded all matches; expected at least one Go symbol")
+	}
+
+	res, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "find_symbol",
+		Arguments: map[string]any{"query": "t", "language": "python"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool python: %v", err)
+	}
+	out = decodeResult[leonardmcp.FindSymbolOutput](t, res).Matches
+	if len(out) != 1 || out[0].QualifiedName != "helper.shout" {
+		t.Errorf("language=python should narrow to helper.shout, got %+v", out)
+	}
+}
+
 // ---- store error propagation ----
 
 type errStore struct{}

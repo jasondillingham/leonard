@@ -105,7 +105,7 @@ func findSymbol(ctx context.Context, store SymbolStore, in FindSymbolInput) (Fin
 	if err != nil {
 		return FindSymbolOutput{}, err
 	}
-	return FindSymbolOutput{Matches: filterAndConvert(syms, in.Kind, "", in.Limit)}, nil
+	return FindSymbolOutput{Matches: filterAndConvert(syms, in.Kind, in.Language, in.Limit)}, nil
 }
 
 func listFiles(ctx context.Context, store SymbolStore, in ListFilesInput) (ListFilesOutput, error) {
