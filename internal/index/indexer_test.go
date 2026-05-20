@@ -417,3 +417,50 @@ func TestIndexAll_PruneIgnoresLeonardIgnoredFiles(t *testing.T) {
 		t.Errorf("ignored-but-on-disk file should not be pruned; got %d files", len(files))
 	}
 }
+
+// TestIndexAll_DefaultSkipDirsCoverEcosystemArtifacts pins the v0.6.1
+// expansion of defaultSkipDirs. A bare reindex of any Python or Rust
+// project shouldn't pull in .venv/__pycache__ or target/ contents —
+// neither is in any sensible "source code I wrote" set. Caught when
+// re-indexing Leonard's own repo for the Inspect eval picked up
+// ~160k symbols from site-packages.
+func TestIndexAll_DefaultSkipDirsCoverEcosystemArtifacts(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		// Real source — should survive.
+		"keep.go":           "package keep\nfunc Stay() {}\n",
+		"src/main.py":       "def hello(): return 1\n",
+		"src/lib.rs":        "pub fn yes() {}\n",
+		// Junk that must be skipped.
+		".venv/lib/python3.11/site-packages/requests/api.py": "def get(): return 1\n",
+		"venv/lib/site-packages/junk.py":                     "def junk(): return 1\n",
+		"src/__pycache__/lib.cpython-311.pyc":                "binary\n", // .pyc isn't indexed anyway, but the dir should be skipped
+		"src/__pycache__/lib.py":                             "def from_pycache(): return 1\n",
+		"target/debug/build/leonard-extract-rust-deadbeef/out.rs": "pub fn from_cargo() {}\n",
+		"target/release/.fingerprint/anything.rs":                 "pub fn cargo_internal() {}\n",
+		".mypy_cache/3.11/builtins.data.json":                     "{}\n",
+		".pytest_cache/v/cache/nodeids":                           "[]\n",
+		".tox/py311/lib/python3.11/site-packages/junk.py":         "def tox_junk(): return 1\n",
+		".next/server/pages/index.js":                             "// JS not indexed anyway\n",
+	}
+	fx := newFixture(t, files)
+	idx := New(fx.store, fx.root)
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	// Real symbols must be present.
+	for _, name := range []string{"Stay", "hello", "yes"} {
+		syms, _ := fx.store.FindSymbolsByName(name)
+		if len(syms) == 0 {
+			t.Errorf("real symbol %q dropped (skip-dirs are too aggressive)", name)
+		}
+	}
+	// Junk symbols must not be present.
+	for _, name := range []string{"get", "junk", "from_pycache", "from_cargo", "cargo_internal", "tox_junk"} {
+		syms, _ := fx.store.FindSymbolsByName(name)
+		if len(syms) != 0 {
+			t.Errorf("symbol %q from a skip-dir leaked into the index", name)
+		}
+	}
+}

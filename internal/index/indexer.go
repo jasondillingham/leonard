@@ -24,12 +24,40 @@ import (
 
 // defaultSkipDirs are directory names always skipped, regardless of ignore
 // files. These exist before .gitignore can be read on most projects.
+// defaultSkipDirs are directory names skipped during IndexAll regardless of
+// any .gitignore / .leonardignore content. Three categories:
+//
+//   - Version control: .git
+//   - Dependency vendoring: vendor (Go), node_modules (JS/TS)
+//   - Build artifacts + tool caches by ecosystem convention:
+//     dist, build (generic);
+//     .venv, venv, __pycache__, .mypy_cache, .ruff_cache,
+//     .pytest_cache, .tox (Python);
+//     target (Rust/Maven/sbt);
+//     .next, .nuxt (JS/TS framework build dirs).
+//
+// Added in v0.6.1 after a Leonard-on-Leonard reindex picked up
+// ~160k symbols from .venv site-packages and Cargo's target/, which
+// would have tanked the Inspect eval. The .gitignore lane already
+// handles these for projects that ignore them at the root, but
+// subdir .gitignores (which is where these usually live) aren't
+// honored — so the default has to be defensive.
 var defaultSkipDirs = map[string]bool{
-	"vendor":       true,
-	"node_modules": true,
-	"dist":         true,
-	"build":        true,
-	".git":         true,
+	".git":          true,
+	".mypy_cache":   true,
+	".next":         true,
+	".nuxt":         true,
+	".pytest_cache": true,
+	".ruff_cache":   true,
+	".tox":          true,
+	".venv":         true,
+	"__pycache__":   true,
+	"build":         true,
+	"dist":          true,
+	"node_modules":  true,
+	"target":        true,
+	"vendor":        true,
+	"venv":          true,
 }
 
 // extractor extracts symbols for a single file's source. Returning an error
@@ -163,16 +191,28 @@ func (i *Indexer) IndexAll() error {
 	return i.pruneStaleFiles()
 }
 
-// pruneStaleFiles iterates every known file row and removes the ones whose
-// path no longer resolves on disk. Symbols cascade via FK. Paths excluded
-// by ignore rules (.gitignore, .leonardignore) that are still on disk are
-// left in place — only file-not-found triggers the delete.
+// pruneStaleFiles iterates every known file row and removes:
+//
+//  1. Rows whose path no longer resolves on disk (the original
+//     bughunt-2 ground-truth-drift fix).
+//  2. Rows whose path lives under a directory the indexer would now
+//     skip — caught when v0.6.1's expanded defaultSkipDirs added
+//     `.venv`, `target`, `__pycache__` etc. and a re-index found
+//     thousands of prior rows from those dirs lingering in the store.
+//
+// Symbols cascade via FK on either deletion path.
 func (i *Indexer) pruneStaleFiles() error {
 	files, err := i.Store.ListFiles("", "")
 	if err != nil {
 		return fmt.Errorf("prune: list files: %w", err)
 	}
 	for _, f := range files {
+		if pathHasSkippedComponent(f.Path) {
+			if err := i.Store.DeleteFile(f.Path); err != nil {
+				return err
+			}
+			continue
+		}
 		abs := filepath.Join(i.Root, filepath.FromSlash(f.Path))
 		_, statErr := os.Stat(abs)
 		if statErr == nil {
@@ -186,6 +226,20 @@ func (i *Indexer) pruneStaleFiles() error {
 		}
 	}
 	return nil
+}
+
+// pathHasSkippedComponent returns true when any directory component
+// of rel matches a defaultSkipDirs entry. Used by the prune sweep
+// (and could be reused by the walk itself, but the walk uses
+// filepath.SkipDir at the d.IsDir() check which is more efficient
+// for full-tree scans).
+func pathHasSkippedComponent(rel string) bool {
+	for _, part := range strings.Split(rel, "/") {
+		if defaultSkipDirs[part] {
+			return true
+		}
+	}
+	return false
 }
 
 // IndexFile indexes a single file. The path may be absolute or relative to
