@@ -31,6 +31,7 @@ type claimRow struct {
 	sessionID    string
 	claim        string
 	evidence     string
+	filePath     string
 	verified     bool
 	recordedAt   int64
 	supersededBy *int64
@@ -40,7 +41,7 @@ func newMemClaimStore() *memClaimStore {
 	return &memClaimStore{MemStore: leonardmcp.NewMemStore()}
 }
 
-func (m *memClaimStore) RecordClaim(_ context.Context, sessionID, claim, evidence string, verified bool) (int64, error) {
+func (m *memClaimStore) RecordClaim(_ context.Context, sessionID, claim, evidence, filePath string, verified bool) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextID++
@@ -49,6 +50,7 @@ func (m *memClaimStore) RecordClaim(_ context.Context, sessionID, claim, evidenc
 		sessionID:  sessionID,
 		claim:      claim,
 		evidence:   evidence,
+		filePath:   filePath,
 		verified:   verified,
 		recordedAt: time.Now().Unix(),
 	})

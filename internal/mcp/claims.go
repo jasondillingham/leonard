@@ -24,6 +24,11 @@ type RecordClaimInput struct {
 	Evidence  string `json:"evidence" jsonschema:"supporting evidence — command output, exit codes, file paths; can be longer than the claim itself"`
 	Verified  bool   `json:"verified" jsonschema:"true if the claim has already been confirmed; false to flag it for follow-up at session end"`
 	SessionID string `json:"session_id,omitempty" jsonschema:"opaque Claude Code session identifier; empty means unscoped (no session attribution yet)"`
+	// Bughunt-4 mcp F4: without file_path, SupersedeClaimsForFile
+	// short-circuits on empty path and MCP-recorded unverified
+	// claims accumulate forever even after a successful post-edit
+	// vet on the same file.
+	FilePath string `json:"file_path,omitempty" jsonschema:"optional file path the claim is about; lets a later vet=ok post-edit hook supersede this claim"`
 }
 
 // RecordClaimOutput returns the newly assigned claim id.
@@ -85,7 +90,7 @@ func recordClaim(ctx context.Context, cs ClaimStore, in RecordClaimInput) (Recor
 	if len(in.Evidence) > maxClaimEvidenceBytes {
 		return RecordClaimOutput{}, fmt.Errorf("record_claim: evidence exceeds %d bytes", maxClaimEvidenceBytes)
 	}
-	id, err := cs.RecordClaim(ctx, in.SessionID, in.Claim, in.Evidence, in.Verified)
+	id, err := cs.RecordClaim(ctx, in.SessionID, in.Claim, in.Evidence, in.FilePath, in.Verified)
 	if err != nil {
 		return RecordClaimOutput{}, fmt.Errorf("record_claim: %w", err)
 	}

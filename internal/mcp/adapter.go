@@ -185,7 +185,7 @@ func (a *StoreAdapter) SupersedeDecision(ctx context.Context, decisionID int64, 
 	return a.S.SupersedeDecision(decisionID, newChoice, newReasoning)
 }
 
-func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, evidence string, verified bool) (int64, error) {
+func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, evidence, filePath string, verified bool) (int64, error) {
 	if err := a.preflight(ctx); err != nil {
 		return 0, err
 	}
@@ -193,6 +193,7 @@ func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, eviden
 		SessionID: sessionID,
 		Claim:     claim,
 		Evidence:  evidence,
+		FilePath:  filePath,
 		Verified:  verified,
 	})
 }

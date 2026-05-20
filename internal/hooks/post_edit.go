@@ -272,6 +272,19 @@ func handleMissingFile(opts PostEditOptions, payload PostToolUsePayload, filePat
 	resp := HookResponse{
 		Continue:      true,
 		SystemMessage: fmt.Sprintf("leonard: %s file not found, skipping re-index", filePath),
+		// Bughunt-4 mcp F5: previously this path set only
+		// SystemMessage (user-visible, model-invisible). The model
+		// then saw a successful PostToolUse with no signal that its
+		// edit produced no on-disk result, and would happily claim
+		// the work done. Mirror handleEscapedPath's
+		// additionalContext shape so the model sees the no-op.
+		HookSpecificOutput: &PostToolUseSpecificOutput{
+			HookEventName: "PostToolUse",
+			AdditionalContext: fmt.Sprintf(
+				"Leonard saw the PostToolUse event for %q but the file is not on disk — your edit may have been rejected by the user, vetoed by another hook, or never landed. Re-check the file's existence before claiming the work is done.",
+				filePath,
+			),
+		},
 	}
 	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 		return fmt.Errorf("hooks: encode response: %w", err)

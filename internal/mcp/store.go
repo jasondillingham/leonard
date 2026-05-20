@@ -100,7 +100,7 @@ type ClaimRecord struct {
 // The real StoreAdapter satisfies all three so leonard-mcp exposes the
 // full surface; in-memory test fixtures pick and choose.
 type ClaimStore interface {
-	RecordClaim(ctx context.Context, sessionID, claim, evidence string, verified bool) (int64, error)
+	RecordClaim(ctx context.Context, sessionID, claim, evidence, filePath string, verified bool) (int64, error)
 	// GetUnverifiedClaims returns claims still flagged as unverified. When
 	// includeSuperseded is false (the default for the get_unverified_claims
 	// tool), rows resolved by a later vet=ok run on the same file are
