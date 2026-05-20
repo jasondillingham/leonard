@@ -8,6 +8,12 @@
 .leonard/leonard.db-journal
 .leonard/leonard.db-wal
 .leonard/leonard.db-shm
+# Orphan SQLite shadow files from concurrent leonard runs (Finder/
+# tooling sometimes duplicates the DB and SQLite spawns parallel
+# WAL/SHM per copy).
+.leonard/leonard *.db
+.leonard/leonard *.db-shm
+.leonard/leonard *.db-wal
 
 # Go
 coverage.out
