@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,7 +66,19 @@ func run() error {
 		Version: version,
 	})
 
-	return srv.Run(ctx, &mcp.StdioTransport{})
+	return translateExitErr(srv.Run(ctx, &mcp.StdioTransport{}))
+}
+
+// translateExitErr maps the MCP SDK's run-loop result onto exit semantics.
+// SIGINT, SIGTERM, and the db-watcher's stop() all cancel the run context,
+// which surfaces as context.Canceled — those are clean shutdowns and must
+// exit 0 so process supervisors don't treat them as crashes. Any other
+// error propagates unchanged.
+func translateExitErr(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 // watchDatabase polls the DB path on a ticker and triggers a clean
