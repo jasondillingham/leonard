@@ -254,3 +254,112 @@ func TestExtractRust_MissingExtractorReturnsUnavailable(t *testing.T) {
 		t.Errorf("expected ErrRustExtractorUnavailable, got %v", err)
 	}
 }
+
+// TestExtractRust_NonPathSelfType covers bughunt-3 rust F1. Methods
+// on `impl X for &Foo`, `impl X for (i32, i32)`, etc. used to be
+// silently dropped because visit_item_impl only handled Type::Path.
+func TestExtractRust_NonPathSelfType(t *testing.T) {
+	requireRustExtractor(t)
+	src := `
+pub trait Display { fn fmt(&self) -> String; }
+pub struct Container;
+
+impl Display for &Container {
+    fn fmt(&self) -> String { String::new() }
+}
+
+impl Display for (i32, i32) {
+    fn fmt(&self) -> String { String::new() }
+}
+
+impl Display for [u8; 4] {
+    fn fmt(&self) -> String { String::new() }
+}
+`
+	syms, err := ExtractRust("nonpath.rs", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractRust: %v", err)
+	}
+	byQName := map[string]bool{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = true
+	}
+	// Each impl block must contribute its method, distinguished
+	// by the synthetic impl-target name.
+	for _, want := range []string{
+		"nonpath.&Container.fmt",
+		"nonpath._tuple.fmt",
+		"nonpath._array.fmt",
+	} {
+		if !byQName[want] {
+			t.Errorf("missing method %q — non-Path self_ty regression", want)
+		}
+	}
+}
+
+// TestExtractRust_ForeignTypeImplPreservesPath covers bughunt-3 rust
+// F3. Multi-segment self_ty paths used to keep only the last
+// segment, so `impl Display for std::collections::HashMap` collided
+// with a local-type `HashMap`. The full path is now joined into the
+// impl target name so the qnames stay distinct.
+func TestExtractRust_ForeignTypeImplPreservesPath(t *testing.T) {
+	requireRustExtractor(t)
+	src := `
+pub trait Display { fn fmt(&self) -> String; }
+pub struct HashMap;
+
+impl Display for HashMap {
+    fn fmt(&self) -> String { String::new() }
+}
+
+impl Display for std::collections::HashMap<String, u32> {
+    fn fmt(&self) -> String { String::new() }
+}
+`
+	syms, err := ExtractRust("collision.rs", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractRust: %v", err)
+	}
+	byQName := map[string]bool{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = true
+	}
+	if !byQName["collision.HashMap.fmt"] {
+		t.Errorf("local HashMap.fmt missing")
+	}
+	if !byQName["collision.std::collections::HashMap.fmt"] {
+		t.Errorf("foreign HashMap.fmt should preserve full path, found: %v", byQName)
+	}
+}
+
+// TestExtractRust_StartLineSkipsAttributes covers bughunt-3 rust F2.
+// Python/TS strip leading attributes and doc-comments from start_line;
+// previously Rust included them, producing cross-language inconsistency.
+func TestExtractRust_StartLineSkipsAttributes(t *testing.T) {
+	requireRustExtractor(t)
+	// Lines:
+	//   1: /// doc comment
+	//   2: /// continued
+	//   3: #[derive(Debug)]
+	//   4: pub struct Token {
+	//   5:     name: String,
+	//   6: }
+	// The struct's start_line should be 4, NOT 1.
+	src := "/// doc comment\n/// continued\n#[derive(Debug)]\npub struct Token {\n    name: String,\n}\n"
+	syms, err := ExtractRust("attrs.rs", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractRust: %v", err)
+	}
+	var tok *struct{ start, end int }
+	for _, s := range syms {
+		if s.Name == "Token" {
+			tok = &struct{ start, end int }{s.StartLine, s.EndLine}
+		}
+	}
+	if tok == nil {
+		t.Fatal("Token symbol missing")
+	}
+	if tok.start != 4 {
+		t.Errorf("Token start_line = %d, want 4 (skip attributes + docs)", tok.start)
+	}
+}

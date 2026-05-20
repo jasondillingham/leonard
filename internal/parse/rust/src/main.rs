@@ -77,6 +77,22 @@ impl<'a> Extractor<'a> {
         (start.line.max(1), end.line.max(start.line.max(1)))
     }
 
+    /// Bughunt-3 rust F2: Python/TS report start_line at the
+    /// identifier line (skipping leading attributes and doc-comments).
+    /// Match that — pass the ident's span as the start anchor and the
+    /// item's full span as the end, so the returned range is "from
+    /// the name to the end of the body" rather than "from the first
+    /// attribute to the end".
+    fn item_lines(
+        &self,
+        ident_span: proc_macro2::Span,
+        body_span: proc_macro2::Span,
+    ) -> (usize, usize) {
+        let start = ident_span.start().line.max(1);
+        let end = body_span.end().line.max(start);
+        (start, end)
+    }
+
     fn is_exported(vis: &syn::Visibility) -> bool {
         // syn::Visibility::Public matches `pub`. The other variants
         // (`pub(crate)`, `pub(super)`, ...) are visible inside the
@@ -89,9 +105,8 @@ impl<'a> Extractor<'a> {
 
 impl<'ast> Visit<'ast> for Extractor<'_> {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        // Top-level free function.
         let name = node.sig.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.sig.ident.span(), node.span());
         let signature = render_fn_sig(&node.sig);
         self.out.push(Symbol {
             qualified_name: self.qname(&name),
@@ -102,13 +117,11 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
             end_line: end,
             exported: Self::is_exported(&node.vis),
         });
-        // Don't recurse into the body — Leonard's contract stays
-        // shallow, mirroring the Python and TS extractors.
     }
 
     fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
         let name = node.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.ident.span(), node.span());
         let signature = format!("struct {}", name);
         self.out.push(Symbol {
             qualified_name: self.qname(&name),
@@ -123,7 +136,7 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
 
     fn visit_item_enum(&mut self, node: &'ast syn::ItemEnum) {
         let name = node.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.ident.span(), node.span());
         let signature = format!("enum {}", name);
         self.out.push(Symbol {
             qualified_name: self.qname(&name),
@@ -138,10 +151,8 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
 
     fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
         let name = node.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.ident.span(), node.span());
         let signature = format!("trait {}", name);
-        // Treat traits like interfaces in the cross-language symbol
-        // vocabulary — closest existing kind.
         self.out.push(Symbol {
             qualified_name: self.qname(&name),
             name,
@@ -155,7 +166,7 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
 
     fn visit_item_type(&mut self, node: &'ast syn::ItemType) {
         let name = node.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.ident.span(), node.span());
         let signature = format!("type {}", name);
         self.out.push(Symbol {
             qualified_name: self.qname(&name),
@@ -170,7 +181,7 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
 
     fn visit_item_const(&mut self, node: &'ast syn::ItemConst) {
         let name = node.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.ident.span(), node.span());
         let signature = format!("const {}", name);
         self.out.push(Symbol {
             qualified_name: self.qname(&name),
@@ -185,7 +196,7 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
 
     fn visit_item_static(&mut self, node: &'ast syn::ItemStatic) {
         let name = node.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.ident.span(), node.span());
         let signature = format!("static {}", name);
         self.out.push(Symbol {
             qualified_name: self.qname(&name),
@@ -199,17 +210,18 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
     }
 
     fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
-        // Need the Type name being implemented for. `impl Foo` is
-        // self_ty = Path; `impl Trait for Foo` is also self_ty =
-        // Path (Foo). We extract the last segment of the self_ty
-        // path, which is the bare type name.
+        // Bughunt-3 rust F1: previously only handled syn::Type::Path
+        // self_ty, silently dropping methods for `impl Display for
+        // &Foo`, `impl X for (i32, i32)`, `impl X for [u8; N]`, etc.
+        // Bughunt-3 rust F3: a multi-segment Path (impl Display for
+        // std::collections::HashMap) collided with local-type
+        // qnames because we only kept the last segment. Use the
+        // full joined path for multi-segment self_ty so foreign-type
+        // impl methods stay distinguishable.
         let prior = std::mem::take(&mut self.current_impl);
-        if let syn::Type::Path(tp) = &*node.self_ty {
-            if let Some(seg) = tp.path.segments.last() {
-                self.current_impl = seg.ident.to_string();
-            }
+        if let Some(name) = impl_target_name(&node.self_ty) {
+            self.current_impl = name;
         }
-        // Walk methods inside the block.
         for item in &node.items {
             if let syn::ImplItem::Fn(f) = item {
                 self.visit_impl_item_fn(f);
@@ -220,12 +232,10 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
         if self.current_impl.is_empty() {
-            // Defensive — visit_item_impl should always set this
-            // before walking method items. Skip if somehow not.
             return;
         }
         let name = node.sig.ident.to_string();
-        let (start, end) = self.span_lines(node.span());
+        let (start, end) = self.item_lines(node.sig.ident.span(), node.span());
         let signature = render_fn_sig(&node.sig);
         let exported = Self::is_exported(&node.vis);
         let qualified_name = self.method_qname(&name);
@@ -245,6 +255,47 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
     // shallow-index contract from Python and TS. Override the default
     // visit to no-op.
     fn visit_item_mod(&mut self, _node: &'ast syn::ItemMod) {}
+}
+
+/// impl_target_name renders the type an `impl` block is for, into
+/// a name suitable for use as the impl_qname segment of method
+/// qualified names.
+///
+/// Cases covered (bughunt-3 rust F1 + F3):
+///   - Type::Path with one segment       → "Foo"
+///   - Type::Path with multiple segments → "std::collections::HashMap"
+///     (kept full so foreign-type methods don't collide with local
+///     types that share a final-segment name)
+///   - Type::Reference                  → "&Inner" (recursively)
+///   - Type::Tuple / Array / Slice      → synthetic placeholder
+///   - Anything else                    → "_anon_impl" sentinel
+///
+/// None is reserved for "couldn't render anything"; the caller
+/// treats that as "skip this impl block's methods."
+fn impl_target_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => {
+            if tp.path.segments.is_empty() {
+                None
+            } else if tp.path.segments.len() == 1 {
+                tp.path.segments.last().map(|s| s.ident.to_string())
+            } else {
+                Some(
+                    tp.path
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                )
+            }
+        }
+        syn::Type::Reference(tr) => impl_target_name(&tr.elem).map(|n| format!("&{}", n)),
+        syn::Type::Tuple(_) => Some("_tuple".to_string()),
+        syn::Type::Array(_) => Some("_array".to_string()),
+        syn::Type::Slice(_) => Some("_slice".to_string()),
+        _ => Some("_anon_impl".to_string()),
+    }
 }
 
 /// Render a fn signature as a short string, mirroring the shape the
