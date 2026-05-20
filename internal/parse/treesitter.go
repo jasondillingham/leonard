@@ -173,3 +173,15 @@ func ExtractCSharp(path string, src []byte) ([]store.Symbol, error) {
 func ExtractSwift(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("swift", path, src)
 }
+
+func ExtractKotlin(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("kotlin", path, src)
+}
+
+func ExtractScala(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("scala", path, src)
+}
+
+func ExtractDart(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("dart", path, src)
+}

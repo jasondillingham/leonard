@@ -105,6 +105,28 @@ impl Language {
                     "protocol_declaration",
                 ],
             }),
+            "kotlin" => Some(Self {
+                grammar: tree_sitter_kotlin_ng::LANGUAGE.into(),
+                query_src: KOTLIN_QUERY,
+                parent_container_kinds: &[
+                    "class_declaration",
+                    "object_declaration",
+                ],
+            }),
+            "scala" => Some(Self {
+                grammar: tree_sitter_scala::LANGUAGE.into(),
+                query_src: SCALA_QUERY,
+                parent_container_kinds: &[
+                    "class_definition",
+                    "object_definition",
+                    "trait_definition",
+                ],
+            }),
+            "dart" => Some(Self {
+                grammar: tree_sitter_dart::language(),
+                query_src: DART_QUERY,
+                parent_container_kinds: &["class_definition"],
+            }),
             _ => None,
         }
     }
@@ -210,6 +232,55 @@ const SWIFT_QUERY: &str = r#"
   name: (simple_identifier) @name) @method
 
 (init_declaration) @method.init
+"#;
+
+/// KOTLIN_QUERY (tree-sitter-kotlin-ng). Kotlin's `interface` and
+/// `enum class` ride on `class_declaration` — the keyword is the
+/// discriminator, not a separate node kind. v0.21 maps all to type.
+/// Objects (Kotlin's singleton companion-or-standalone) get
+/// object_declaration.
+const KOTLIN_QUERY: &str = r#"
+(class_declaration
+  name: (identifier) @name) @type
+
+(object_declaration
+  name: (identifier) @name) @type
+
+(function_declaration
+  name: (identifier) @name) @method
+"#;
+
+/// SCALA_QUERY uses Scala's `_definition` suffix (vs Java/C#'s
+/// `_declaration`). Traits map to interface; class + object both
+/// to type. function_definition is concrete; function_declaration
+/// is the abstract trait-method form.
+const SCALA_QUERY: &str = r#"
+(class_definition
+  name: (identifier) @name) @type
+
+(object_definition
+  name: (identifier) @name) @type
+
+(trait_definition
+  name: (identifier) @name) @interface
+
+(function_definition
+  name: (identifier) @name) @method
+
+(function_declaration
+  name: (identifier) @name) @method
+"#;
+
+/// DART_QUERY captures class_definition (used for both regular and
+/// abstract classes) and function_signature (used by both methods
+/// inside classes and top-level free functions — parent-folding
+/// disambiguates).
+const DART_QUERY: &str = r#"
+(class_definition
+  name: (identifier) @name) @type
+
+(function_signature
+  name: (identifier) @name) @function
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's
