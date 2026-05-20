@@ -96,31 +96,47 @@ type PostToolUseSpecificOutput struct {
 }
 
 // PostEditOptions wires the post-edit handler to its collaborators. ProjectRoot
-// is the working directory `go vet ./...` should run in (typically the cwd of
+// is the working directory the verifier should run in (typically the cwd of
 // the Claude Code session). Vet is injected so tests can substitute a stub —
-// the production wire-up passes RunGoVet.
+// the production wire-up passes RunGoVet by default, or a shell-runner built
+// from [post_edit.verify] config when that section is set.
 type PostEditOptions struct {
-	Indexer      Indexer
-	Claims       ClaimRecorder
-	ProjectRoot  string
-	Vet          VetRunner
-	VetTimeout   time.Duration
-	EvidenceCap  int
-	Now          func() time.Time
+	Indexer     Indexer
+	Claims      ClaimRecorder
+	ProjectRoot string
+	Vet         VetRunner
+	// VetVerb is the short label that appears in claim summaries, evidence
+	// blocks, and the model-facing failure message ("go vet=ok",
+	// "cargo check=failed", etc.). Empty defaults to "go vet" to preserve
+	// the v0.1 behavior for projects without [post_edit.verify] config.
+	VetVerb string
+	// AlwaysVet, when true, skips the `hasGoModule` short-circuit in runVet
+	// and unconditionally invokes Vet. Set this when the caller has wired
+	// in a project-defined verifier from config — at that point the
+	// "no go.mod, skip" heuristic is the wrong gate.
+	AlwaysVet   bool
+	VetTimeout  time.Duration
+	EvidenceCap int
+	Now         func() time.Time
 }
 
-// VetRunner shells out to `go vet ./...` (or an equivalent verifier).
-// Returns combined stdout/stderr, a non-nil error if the command exited
-// non-zero. The error must not be returned for a clean vet run.
+// VetRunner shells out to a project verifier (default `go vet ./...`, or
+// the command set in [post_edit.verify] config). Returns combined
+// stdout/stderr, a non-nil error if the command exited non-zero. The
+// error must not be returned for a clean run.
 type VetRunner func(ctx context.Context, projectRoot string) (output string, err error)
 
 // VetResult is what HandlePostEdit synthesises from a VetRunner call so that
-// the claim row carries useful evidence even when vet succeeds.
+// the claim row carries useful evidence even when the verifier succeeds.
 type VetResult struct {
-	Ran      bool   // false when no go.mod was found
-	Passed   bool
-	Output   string
-	ExitErr  string // empty on success
+	Ran     bool   // false when the verifier was skipped (no go.mod and no configured command)
+	Passed  bool
+	Output  string
+	ExitErr string // empty on success
+	// Verb is the short label of the verifier that produced this result
+	// ("go vet", "cargo check", "pnpm tsc"). Used in claim summaries and
+	// evidence blocks. Always populated when Ran is true.
+	Verb string
 }
 
 // defaultEvidenceCap bounds how much vet output we persist. 16 KiB is enough
@@ -144,6 +160,9 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 	}
 	if opts.Vet == nil {
 		opts.Vet = RunGoVet
+	}
+	if opts.VetVerb == "" {
+		opts.VetVerb = "go vet"
 	}
 	if opts.VetTimeout == 0 {
 		opts.VetTimeout = 30 * time.Second
@@ -255,8 +274,8 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 // the tri-state was already reserved for this short-circuit path on
 // ClaimRecord.IndexOK. Returns nil unless persistence fails.
 func handleMissingFile(opts PostEditOptions, payload PostToolUsePayload, filePath string, stdout io.Writer) error {
-	claim := fmt.Sprintf("tool=%s file=%s; index=skipped (file not found); go vet=skipped (file not found)",
-		coalesce(payload.ToolName, "edit"), filePath)
+	claim := fmt.Sprintf("tool=%s file=%s; index=skipped (file not found); %s=skipped (file not found)",
+		coalesce(payload.ToolName, "edit"), filePath, opts.VetVerb)
 	evidence := fmt.Sprintf("file: %s\nfile not found on disk — index and vet skipped\n", filePath)
 	rec := ClaimRecord{
 		SessionID: payload.SessionID,
@@ -300,8 +319,8 @@ func handleMissingFile(opts PostEditOptions, payload PostToolUsePayload, filePat
 // `file_path: /etc/hosts` or `../../other.go` used to skip this
 // guard and get indexed as project content.
 func handleEscapedPath(opts PostEditOptions, payload PostToolUsePayload, filePath string, stdout io.Writer) error {
-	claim := fmt.Sprintf("tool=%s file=%s; index=rejected (path escapes project root); go vet=skipped",
-		coalesce(payload.ToolName, "edit"), filePath)
+	claim := fmt.Sprintf("tool=%s file=%s; index=rejected (path escapes project root); %s=skipped",
+		coalesce(payload.ToolName, "edit"), filePath, opts.VetVerb)
 	evidence := fmt.Sprintf("file: %s\nrejected: path resolves outside the project root; index + vet skipped\n", filePath)
 	rec := ClaimRecord{
 		SessionID: payload.SessionID,
@@ -348,7 +367,7 @@ func modelContext(filePath string, vet VetResult, indexErr error) string {
 		fmt.Fprintf(&b, "- symbol index refresh failed: %s\n", indexErr.Error())
 	}
 	if vet.Ran && !vet.Passed {
-		b.WriteString("- go vet ./... FAILED — the edit you just made did not pass vet. Do not claim this work is done until vet is clean.\n")
+		fmt.Fprintf(&b, "- %s FAILED — the edit you just made did not pass the project verifier. Do not claim this work is done until %s is clean.\n", vet.Verb, vet.Verb)
 		summary := vetErrorSummary(vet)
 		if summary != "" {
 			fmt.Fprintf(&b, "  first error: %s\n", summary)
@@ -373,13 +392,13 @@ func decodePayload(r io.Reader) (PostToolUsePayload, error) {
 }
 
 func runVet(ctx context.Context, opts PostEditOptions, root string) VetResult {
-	if !hasGoModule(root) {
-		return VetResult{Ran: false}
+	if !opts.AlwaysVet && !hasGoModule(root) {
+		return VetResult{Ran: false, Verb: opts.VetVerb}
 	}
 	vctx, cancel := context.WithTimeout(ctx, opts.VetTimeout)
 	defer cancel()
 	out, err := opts.Vet(vctx, root)
-	res := VetResult{Ran: true, Output: filterVetNoise(out)}
+	res := VetResult{Ran: true, Verb: opts.VetVerb, Output: filterVetNoise(out)}
 	if err == nil {
 		res.Passed = true
 	} else {
@@ -508,12 +527,12 @@ func summariseClaim(p PostToolUsePayload, filePath string, vet VetResult, indexE
 	}
 	if vet.Ran {
 		if vet.Passed {
-			parts = append(parts, "go vet=ok")
+			parts = append(parts, vet.Verb+"=ok")
 		} else {
-			parts = append(parts, "go vet=failed")
+			parts = append(parts, vet.Verb+"=failed")
 		}
 	} else {
-		parts = append(parts, "go vet=skipped (no go.mod)")
+		parts = append(parts, vet.Verb+"=skipped (no go.mod)")
 	}
 	return strings.Join(parts, "; ")
 }
@@ -526,15 +545,15 @@ func buildEvidence(filePath string, indexErr error, vet VetResult, cap int) stri
 	}
 	switch {
 	case !vet.Ran:
-		b.WriteString("go vet: skipped (no go.mod at project root)\n")
+		fmt.Fprintf(&b, "%s: skipped (no go.mod at project root)\n", vet.Verb)
 	case vet.Passed:
-		b.WriteString("go vet: ok\n")
+		fmt.Fprintf(&b, "%s: ok\n", vet.Verb)
 		if vet.Output != "" {
 			b.WriteString(vet.Output)
 			b.WriteString("\n")
 		}
 	default:
-		b.WriteString("go vet: failed\n")
+		fmt.Fprintf(&b, "%s: failed\n", vet.Verb)
 		if vet.ExitErr != "" {
 			fmt.Fprintf(&b, "exit: %s\n", vet.ExitErr)
 		}
@@ -560,11 +579,11 @@ func summaryMessage(filePath string, vet VetResult, indexErr error) string {
 	case indexErr != nil:
 		return fmt.Sprintf("leonard: re-index of %s failed: %v", filePath, indexErr)
 	case !vet.Ran:
-		return fmt.Sprintf("leonard: re-indexed %s (go vet skipped, no go.mod)", filePath)
+		return fmt.Sprintf("leonard: re-indexed %s (%s skipped, no go.mod)", filePath, vet.Verb)
 	case vet.Passed:
-		return fmt.Sprintf("leonard: re-indexed %s, go vet ok", filePath)
+		return fmt.Sprintf("leonard: re-indexed %s, %s ok", filePath, vet.Verb)
 	default:
-		return fmt.Sprintf("leonard: re-indexed %s, go vet reported issues — claim recorded as unverified", filePath)
+		return fmt.Sprintf("leonard: re-indexed %s, %s reported issues — claim recorded as unverified", filePath, vet.Verb)
 	}
 }
 

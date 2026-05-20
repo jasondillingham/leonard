@@ -22,7 +22,7 @@ Leonard targets four recurring Claude Code failure modes:
 
 1. **Fabricated APIs/symbols** — pre-edit hook rejects references to symbols that don't exist in any tracked package.
 2. **Drift from prior decisions** — durable decision log surfaced into every new session via the SessionStart hook.
-3. **False "done" claims** — post-edit hook runs `go vet ./...` after each Edit/Write and writes the outcome into a claims ledger; the Stop hook surfaces any unverified claims at session end.
+3. **False "done" claims** — post-edit hook runs a project verifier (default `go vet ./...`, configurable via `[post_edit.verify]` — see below) after each Edit/Write and writes the outcome into a claims ledger; the Stop hook surfaces any unverified claims at session end.
 4. **Stale codebase facts** — incremental re-index on every edit keeps the symbol map fresh; the `recent_changes` MCP tool lets Claude ask "what's moved since I last looked?" instead of relying on memory.
 
 ## Components
@@ -71,6 +71,38 @@ Leonard is wired into its own development through `.claude/settings.local.json` 
 ```
 
 Enable Leonard in a new project: `leonard init .`, then drop the same JSON into that project's `.claude/settings.local.json` and restart Claude Code in the directory.
+
+## Per-project verifier (`[post_edit.verify]`)
+
+By default the post-edit hook runs `go vet ./...` when a `go.mod` is at the project root, and records `verify=skipped (no go.mod)` otherwise. Projects in any other language can opt in to their own verifier by adding a section to `.leonard/config.toml`:
+
+```toml
+[post_edit.verify]
+command = "cargo check --workspace"     # required: runs through `sh -c`
+working_dir = ""                          # optional: defaults to project root
+timeout = "60s"                           # optional: defaults to 60s; parsed via time.ParseDuration
+```
+
+When `command` is set, every Edit/Write triggers it. A non-zero exit becomes an unverified claim and surfaces in the model-facing additional context as `<verb> FAILED` (where `<verb>` is the first program + sub-command, e.g. `cargo check`). A zero exit records a verified claim — same shape as the Go path.
+
+A few examples:
+
+```toml
+# Rust workspace
+[post_edit.verify]
+command = "cargo check --workspace"
+
+# TypeScript (pnpm)
+[post_edit.verify]
+command = "pnpm tsc --noEmit"
+
+# Python (combine ruff + mypy)
+[post_edit.verify]
+command = "ruff check . && mypy ."
+timeout = "120s"
+```
+
+A missing or malformed `[post_edit.verify]` falls back silently to the Go default — so projects that haven't opted in keep their current behavior byte-for-byte.
 
 ## Project layout
 

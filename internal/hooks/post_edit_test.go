@@ -243,7 +243,7 @@ func TestHandlePostEdit_VetFails(t *testing.T) {
 	if resp.HookSpecificOutput.HookEventName != "PostToolUse" {
 		t.Errorf("hookEventName = %q, want PostToolUse", resp.HookSpecificOutput.HookEventName)
 	}
-	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "go vet ./... FAILED") {
+	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "go vet FAILED") {
 		t.Errorf("additionalContext missing vet failure callout: %q", resp.HookSpecificOutput.AdditionalContext)
 	}
 	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "broken.go:1: nope") {
@@ -911,5 +911,181 @@ func TestHandlePostEdit_RejectsEscapedFilePath(t *testing.T) {
 		if !strings.Contains(strings.ToLower(row.Claim), "escapes project root") {
 			t.Errorf("claim should mention rejection: %q", row.Claim)
 		}
+	}
+}
+
+// TestHandlePostEdit_CustomVerifierRunsWithoutGoMod proves that
+// AlwaysVet bypasses the hasGoModule short-circuit and that VetVerb
+// reaches both the claim summary and the evidence block. A non-Go
+// project (no go.mod) used to silently no-op the verifier — this
+// guards the new [post_edit.verify] code path so a future refactor
+// of runVet can't quietly re-introduce the Go-centric gate.
+func TestHandlePostEdit_CustomVerifierRunsWithoutGoMod(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir() // intentionally no go.mod
+	target := filepath.Join(root, "lib.rs")
+	if err := os.WriteFile(target, []byte("fn main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var ran bool
+	stubVet := func(ctx context.Context, dir string) (string, error) {
+		ran = true
+		if dir != root {
+			t.Errorf("verifier ran in %q, want %q", dir, root)
+		}
+		return "Checking purser v0.1.0\n   Finished dev [unoptimized] in 0.42s", nil
+	}
+
+	idx := &fakeIndexer{}
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-rust",
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: target},
+		CWD:       root,
+	}))
+	var stdout bytes.Buffer
+
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer:   idx,
+		Claims:    claims,
+		Vet:       stubVet,
+		VetVerb:   "cargo check",
+		AlwaysVet: true,
+	}, stdin, &stdout)
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+	if !ran {
+		t.Fatal("verifier was never invoked — AlwaysVet did not bypass hasGoModule")
+	}
+	rows := claims.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("claim rows = %d", len(rows))
+	}
+	if !strings.Contains(rows[0].Claim, "cargo check=ok") {
+		t.Errorf("claim summary missing custom verb: %q", rows[0].Claim)
+	}
+	if !strings.Contains(rows[0].Evidence, "cargo check: ok") {
+		t.Errorf("evidence missing custom verb: %q", rows[0].Evidence)
+	}
+}
+
+// TestHandlePostEdit_CustomVerifierFailureUsesVerb confirms that a
+// custom-verb failure routes the right label to the model — without
+// this, a `cargo check` failure would tell Claude "go vet FAILED" and
+// the model would chase a non-existent Go problem.
+func TestHandlePostEdit_CustomVerifierFailureUsesVerb(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	target := seed(t, filepath.Join(root, "lib.rs"))
+
+	stubVet := func(ctx context.Context, dir string) (string, error) {
+		return "error[E0425]: cannot find value `x` in this scope", errors.New("exit status 101")
+	}
+
+	idx := &fakeIndexer{}
+	claims := &fakeClaims{}
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID: "sess-rust-fail",
+		ToolName:  "Write",
+		ToolInput: ToolInput{FilePath: target},
+		CWD:       root,
+	}))
+	var stdout bytes.Buffer
+
+	err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer:   idx,
+		Claims:    claims,
+		Vet:       stubVet,
+		VetVerb:   "cargo check",
+		AlwaysVet: true,
+	}, stdin, &stdout)
+	if err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+
+	var resp HookResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.HookSpecificOutput == nil {
+		t.Fatal("verifier failure must populate hookSpecificOutput.additionalContext")
+	}
+	ctx := resp.HookSpecificOutput.AdditionalContext
+	if !strings.Contains(ctx, "cargo check FAILED") {
+		t.Errorf("model context should use the configured verb, got: %q", ctx)
+	}
+	if strings.Contains(ctx, "go vet") {
+		t.Errorf("model context leaked the default verb into a custom-verifier run: %q", ctx)
+	}
+
+	rows := claims.Rows()
+	if len(rows) != 1 || rows[0].Verified {
+		t.Fatalf("expected one unverified claim, got %+v", rows)
+	}
+	if !strings.Contains(rows[0].Claim, "cargo check=failed") {
+		t.Errorf("claim summary missing custom verb on failure: %q", rows[0].Claim)
+	}
+}
+
+func TestVerifyVerb(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want string
+	}{
+		{"", "verify"},
+		{"cargo", "cargo"},
+		{"cargo check", "cargo check"},
+		{"cargo check --workspace", "cargo check"},
+		{"pnpm tsc --noEmit", "pnpm tsc"},
+		{"go vet ./...", "go vet"},
+		{"ruff", "ruff"},
+		{"sh -c 'echo hi'", "sh"}, // first arg is a flag → label is just the program
+	}
+	for _, tc := range cases {
+		got := VerifyVerb(tc.in)
+		if got != tc.want {
+			t.Errorf("VerifyVerb(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMakeShellRunner_Success(t *testing.T) {
+	t.Parallel()
+	runner := MakeShellRunner("echo hello && echo world", "")
+	out, err := runner(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("runner err: %v", err)
+	}
+	if !strings.Contains(out, "hello") || !strings.Contains(out, "world") {
+		t.Errorf("expected both lines in output, got %q", out)
+	}
+}
+
+func TestMakeShellRunner_Failure(t *testing.T) {
+	t.Parallel()
+	runner := MakeShellRunner("echo nope >&2; exit 7", "")
+	out, err := runner(context.Background(), t.TempDir())
+	if err == nil {
+		t.Fatal("expected non-nil error for non-zero exit")
+	}
+	if !strings.Contains(out, "nope") {
+		t.Errorf("expected stderr captured into combined output, got %q", out)
+	}
+}
+
+func TestMakeShellRunner_WorkingDirOverride(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	runner := MakeShellRunner("pwd", dir)
+	out, err := runner(context.Background(), "/tmp/some-other-projectroot")
+	if err != nil {
+		t.Fatalf("runner err: %v", err)
+	}
+	// On macOS the temp dir resolves through /private/var → tolerate either prefix.
+	if !strings.HasSuffix(strings.TrimSpace(out), filepath.Base(dir)) {
+		t.Errorf("pwd output %q did not end with %q", out, filepath.Base(dir))
 	}
 }
