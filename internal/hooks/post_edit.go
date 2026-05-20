@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jasondillingham/leonard/internal/telemetry"
 )
 
 // Indexer is the minimum surface internal/index.Indexer must satisfy for the
@@ -130,6 +132,9 @@ const defaultEvidenceCap = 16 * 1024
 // stdout. It returns nil on success regardless of vet outcome — vet failures
 // are recorded as unverified claims, not handler errors.
 func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, stdout io.Writer) error {
+	ctx, end := telemetry.Span(ctx, "leonard.post-edit")
+	defer end()
+
 	if opts.Indexer == nil {
 		return errors.New("hooks: Indexer is required")
 	}
@@ -175,9 +180,13 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 		return handleMissingFile(opts, payload, filePath, stdout)
 	}
 
+	_, endIndex := telemetry.Span(ctx, "leonard.post-edit.index")
 	indexErr := opts.Indexer.IndexFile(filePath)
+	endIndex()
 
+	_, endVet := telemetry.Span(ctx, "leonard.post-edit.vet")
 	vet := runVet(ctx, opts, root)
+	endVet()
 
 	claim := summariseClaim(payload, filePath, vet, indexErr)
 	evidence := buildEvidence(filePath, indexErr, vet, opts.EvidenceCap)

@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/jasondillingham/leonard/internal/telemetry"
 )
 
 // SymbolStore is the minimum surface internal/store.Store must satisfy for the
@@ -119,6 +121,9 @@ type PreEditOptions struct {
 // calls other than Edit/Write, non-Go files, and snippets whose references
 // resolve only to stdlib or external packages all pass through.
 func HandlePreEdit(ctx context.Context, opts PreEditOptions, stdin io.Reader, stdout io.Writer) error {
+	ctx, end := telemetry.Span(ctx, "leonard.pre-edit")
+	defer end()
+
 	if opts.Store == nil {
 		return errors.New("hooks: SymbolStore is required")
 	}
@@ -126,7 +131,7 @@ func HandlePreEdit(ctx context.Context, opts PreEditOptions, stdin io.Reader, st
 	if err != nil {
 		return err
 	}
-	decision, err := decidePreEdit(opts, payload)
+	decision, err := decidePreEdit(ctx, opts, payload)
 	if err != nil {
 		return err
 	}
@@ -151,7 +156,7 @@ func decodePreToolUsePayload(r io.Reader) (PreToolUsePayload, error) {
 	return p, nil
 }
 
-func decidePreEdit(opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, error) {
+func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, error) {
 	snippets, targeted := snippetsForTool(p.ToolName, p.ToolInput)
 	if !targeted {
 		return allowResponse(), nil
@@ -174,7 +179,12 @@ func decidePreEdit(opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, e
 	// `pkg.Name` for an in-module package without an explicit import in the
 	// target file still hits the fabrication check (hooks F8). Cheap walk
 	// (PackageClauseOnly parse) — empty result on missing ModuleRoot.
+	// Wrapped in its own span because bughunt-2 pre-edit F3 measured this
+	// as the dominant cost (480ms warm at 10k files); a tagged build lets
+	// operators see the cost per call instead of guessing.
+	_, endSiblings := telemetry.Span(ctx, "leonard.pre-edit.sibling-scan")
 	siblings := readSiblingPackages(opts.ModuleRoot, opts.ModulePath)
+	endSiblings()
 	seen := make(map[string]bool)
 	var fabricated []string
 	for _, snippet := range snippets {

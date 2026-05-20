@@ -74,6 +74,42 @@ internal/hooks                            # hook handler implementations
 internal/config                           # .leonard/config.toml loader
 ```
 
+## Telemetry (optional)
+
+v0.6 added build-tag-gated OpenTelemetry spans on the hot paths the
+bughunt-2 perf round flagged. Default builds have zero overhead — the
+no-op stubs compile in and the OTel SDK doesn't load. To get real
+spans, rebuild with the `otel` tag:
+
+```bash
+go install -tags otel ./cmd/...
+```
+
+Then point the binaries at whatever OTel collector you run:
+
+```bash
+# OTLP (preferred — sends to a collector at the endpoint URL)
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+
+# Or local debugging — writes one JSON span per line to stderr
+export OTEL_TRACES_EXPORTER=stdout
+```
+
+Spans currently produced:
+
+| Span | What it times |
+|---|---|
+| `leonard.pre-edit` | whole PreToolUse handler |
+| `leonard.pre-edit.sibling-scan` | the F8 module-wide walk (bughunt-2's perf concern) |
+| `leonard.post-edit` | whole PostToolUse handler |
+| `leonard.post-edit.index` | the single-file re-index call |
+| `leonard.post-edit.vet` | `go vet ./...` plus result parsing |
+
+With no env vars set the tagged build still runs but exports nothing —
+useful in CI when you want the option available but no traffic going
+out by default.
+
 ## License
 
 Apache 2.0 — see [`LICENSE`](./LICENSE).
