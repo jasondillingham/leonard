@@ -61,6 +61,16 @@ var defaultSkipDirs = map[string]bool{
 	"venv":          true,
 }
 
+// DefaultSkipDir reports whether name is in the indexer's default
+// skip set. Exported so other packages (notably internal/hooks's
+// pre-edit sibling-scan walker) can stay in lockstep with the
+// indexer's view of "directories to avoid descending into."
+// Bughunt-2 pre-edit F1: a divergent local skip list missed
+// build-artifact dirs and wasted time scanning them.
+func DefaultSkipDir(name string) bool {
+	return defaultSkipDirs[name]
+}
+
 // extractor extracts symbols for a single file's source. Returning an error
 // is treated as a parse failure for that file — the indexer logs and moves on.
 type extractor func(path string, src []byte) ([]store.Symbol, error)

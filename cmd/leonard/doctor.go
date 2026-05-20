@@ -70,18 +70,34 @@ func renderDoctorReport(out interface {
 	if len(rep.EmptyFiles) > 0 || len(rep.StaleFiles) > 0 {
 		fmt.Fprintf(out, "\nIssues\n")
 	}
-	if len(rep.EmptyFiles) > 0 {
-		fmt.Fprintf(out, "  parse-failure suspects: %d file(s) with zero extracted symbols\n", len(rep.EmptyFiles))
+	// Bughunt-2 cli F18 (carry-over): a stale file (row exists in
+	// store but file is missing on disk) trivially has zero
+	// extracted symbols, so it gets double-counted as both
+	// "parse-failure suspect" and "stale file." Subtract stale
+	// paths from EmptyFiles before reporting parse-failure suspects
+	// so each issue surfaces in exactly one category.
+	staleSet := map[string]struct{}{}
+	for _, p := range rep.StaleFiles {
+		staleSet[p] = struct{}{}
+	}
+	parseSuspects := make([]string, 0, len(rep.EmptyFiles))
+	for _, p := range rep.EmptyFiles {
+		if _, isStale := staleSet[p]; !isStale {
+			parseSuspects = append(parseSuspects, p)
+		}
+	}
+	if len(parseSuspects) > 0 {
+		fmt.Fprintf(out, "  parse-failure suspects: %d file(s) with zero extracted symbols\n", len(parseSuspects))
 		fmt.Fprintf(out, "    (these likely failed to parse — run `leonard index` for line/message detail)\n")
-		shown := rep.EmptyFiles
+		shown := parseSuspects
 		if len(shown) > emptyFilesSample {
 			shown = shown[:emptyFilesSample]
 		}
 		for _, p := range shown {
 			fmt.Fprintf(out, "    %s\n", p)
 		}
-		if len(rep.EmptyFiles) > emptyFilesSample {
-			fmt.Fprintf(out, "    … and %d more\n", len(rep.EmptyFiles)-emptyFilesSample)
+		if len(parseSuspects) > emptyFilesSample {
+			fmt.Fprintf(out, "    … and %d more\n", len(parseSuspects)-emptyFilesSample)
 		}
 	}
 	if len(rep.StaleFiles) > 0 {

@@ -127,18 +127,31 @@ func newDecisionsStaleCmd(rt Runtime) *cobra.Command {
 }
 
 // dataDirForCwd resolves the project's `.leonard/` directory under the
-// current working directory and verifies it exists. Returns a clear
-// "run leonard init first" error when the dir is missing.
+// current working directory OR any ancestor and verifies it exists.
+// Returns a clear "run leonard init first" error when no ancestor has
+// the dir.
+//
+// Bughunt-2 cli F9 (carry-over): previously this only checked cwd, so
+// `leonard verify Foo` from a subdir of an initialized project failed
+// with "run leonard init first" even though .leonard/ existed in an
+// ancestor. Mirrors leonard-hook's resolveProjectRoot walk-up.
 func dataDirForCwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	dataDir := filepath.Join(cwd, dataDirName)
-	if _, err := os.Stat(dataDir); err != nil {
-		return "", fmt.Errorf("no %s here — run `leonard init` first", dataDirName)
+	dir := cwd
+	for {
+		dataDir := filepath.Join(dir, dataDirName)
+		if _, err := os.Stat(dataDir); err == nil {
+			return dataDir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no %s in %s or any ancestor — run `leonard init` first", dataDirName, cwd)
+		}
+		dir = parent
 	}
-	return dataDir, nil
 }
 
 // formatUnixTime is the timestamp format shared by decisions/claims listings.
