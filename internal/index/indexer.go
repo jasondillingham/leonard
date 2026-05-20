@@ -187,6 +187,14 @@ var langExtractorsByName = map[string]struct {
 	"build.bazel":    {lang: "starlark", extract: parse.ExtractStarlark},
 	"workspace":      {lang: "starlark", extract: parse.ExtractStarlark},
 	"workspace.bazel": {lang: "starlark", extract: parse.ExtractStarlark},
+	// Manifest-aware dependency graph (v0.36). Each manifest file
+	// type emits one Symbol per declared dependency — useful for
+	// `verify_symbol("react")` style checks against the project's
+	// real dependency set without grepping.
+	"package.json": {lang: "manifest", extract: parse.ExtractPackageJSON},
+	"cargo.toml":   {lang: "manifest", extract: parse.ExtractCargoToml},
+	"go.mod":       {lang: "manifest", extract: parse.ExtractGoMod},
+	"pom.xml":      {lang: "manifest", extract: parse.ExtractPomXml},
 }
 
 // dispatchByExt looks up an extractor for the given path. It tries
