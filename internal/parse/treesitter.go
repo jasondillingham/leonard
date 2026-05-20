@@ -185,3 +185,11 @@ func ExtractScala(path string, src []byte) ([]store.Symbol, error) {
 func ExtractDart(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("dart", path, src)
 }
+
+func ExtractC(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("c", path, src)
+}
+
+func ExtractCpp(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("cpp", path, src)
+}

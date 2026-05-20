@@ -127,6 +127,24 @@ impl Language {
                 query_src: DART_QUERY,
                 parent_container_kinds: &["class_definition"],
             }),
+            "c" => Some(Self {
+                grammar: tree_sitter_c::LANGUAGE.into(),
+                query_src: C_QUERY,
+                parent_container_kinds: &[
+                    "struct_specifier",
+                    "union_specifier",
+                ],
+            }),
+            "cpp" => Some(Self {
+                grammar: tree_sitter_cpp::LANGUAGE.into(),
+                query_src: CPP_QUERY,
+                parent_container_kinds: &[
+                    "class_specifier",
+                    "struct_specifier",
+                    "union_specifier",
+                    "namespace_definition",
+                ],
+            }),
             _ => None,
         }
     }
@@ -281,6 +299,73 @@ const DART_QUERY: &str = r#"
 
 (function_signature
   name: (identifier) @name) @function
+"#;
+
+/// C_QUERY captures top-level C declarations. Functions don't use a
+/// `name:` field — the identifier lives inside
+/// `declarator: (function_declarator declarator: (identifier))`.
+/// Tree-sitter queries handle the nesting fine.
+///
+/// typedef in C produces type_definition whose `declarator` IS the
+/// typedef name (a type_identifier at that position, since the typedef
+/// is defining a new type alias).
+const C_QUERY: &str = r#"
+(function_definition
+  declarator: (function_declarator
+    declarator: (identifier) @name)) @function
+
+(struct_specifier
+  name: (type_identifier) @name) @type
+
+(union_specifier
+  name: (type_identifier) @name) @type
+
+(enum_specifier
+  name: (type_identifier) @name) @type
+
+(type_definition
+  declarator: (type_identifier) @name) @type
+"#;
+
+/// CPP_QUERY captures C++ on top of C plus: namespace_definition
+/// (treated as type — Leonard's vocabulary doesn't have a namespace
+/// kind), class_specifier, methods inside class bodies (which are
+/// field_declaration nodes containing function_declarators).
+///
+/// Templates and operator overloads are NOT captured as separate
+/// symbols in v0.22 — the templated class/function is what we want;
+/// template_declaration wraps it transparently.
+const CPP_QUERY: &str = r#"
+(function_definition
+  declarator: (function_declarator
+    declarator: (identifier) @name)) @function
+
+(function_definition
+  declarator: (function_declarator
+    declarator: (qualified_identifier
+      name: (identifier) @name))) @function
+
+(class_specifier
+  name: (type_identifier) @name) @type
+
+(struct_specifier
+  name: (type_identifier) @name) @type
+
+(union_specifier
+  name: (type_identifier) @name) @type
+
+(enum_specifier
+  name: (type_identifier) @name) @type
+
+(namespace_definition
+  name: (namespace_identifier) @name) @type
+
+(type_definition
+  declarator: (type_identifier) @name) @type
+
+(field_declaration
+  declarator: (function_declarator
+    declarator: (field_identifier) @name)) @method
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's

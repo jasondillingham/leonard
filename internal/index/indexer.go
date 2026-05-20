@@ -95,6 +95,13 @@ var langExtractors = map[string]struct {
 	".kts":   {lang: "kotlin", extract: parse.ExtractKotlin},
 	".scala": {lang: "scala", extract: parse.ExtractScala},
 	".dart":  {lang: "dart", extract: parse.ExtractDart},
+	".c":     {lang: "c", extract: parse.ExtractC},
+	".h":     {lang: "c", extract: parse.ExtractC},
+	".cc":    {lang: "cpp", extract: parse.ExtractCpp},
+	".cpp":   {lang: "cpp", extract: parse.ExtractCpp},
+	".cxx":   {lang: "cpp", extract: parse.ExtractCpp},
+	".hpp":   {lang: "cpp", extract: parse.ExtractCpp},
+	".hh":    {lang: "cpp", extract: parse.ExtractCpp},
 }
 
 // ParseFailure is a per-file record of an extractor returning a non-nil
