@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -15,6 +16,14 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
+
+// exportTimeout caps any single batch export attempt. Bughunt-3
+// otel F3: an unreachable OTLP endpoint used to block the hook for
+// ~30s (the batch processor's default). 5s matches the shutdown
+// budget in cmd/leonard-hook/main.go — when the endpoint is down,
+// the first export attempt times out within budget and shutdown
+// can proceed.
+const exportTimeout = 5 * time.Second
 
 // tracerName is the instrumentation-scope name attached to every span
 // Leonard produces. Conventional OTel naming uses the import path; we
@@ -69,7 +78,9 @@ func Init(ctx context.Context) (Shutdown, error) {
 	}
 
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(exporter,
+			sdktrace.WithExportTimeout(exportTimeout),
+		),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
