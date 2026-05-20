@@ -85,6 +85,18 @@ func (f *fakeClaims) SupersedeCalls() []supersedeCall {
 	return out
 }
 
+// seed creates an empty file at path so HandlePostEdit's stat-check (the
+// hooks F5 missing-file guard) doesn't short-circuit. Tests that exercise
+// index/vet logic only care that PostToolUse fired against a touched file —
+// the contents are irrelevant because the indexer and vet are stubbed.
+func seed(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("seed file %s: %v", path, err)
+	}
+	return path
+}
+
 func writeGoMod(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n\ngo 1.22\n"), 0o644); err != nil {
@@ -185,7 +197,7 @@ func TestHandlePostEdit_VetFails(t *testing.T) {
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-2",
 		ToolName:  "Write",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "broken.go")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "broken.go"))},
 		CWD:       root,
 	}))
 	var stdout bytes.Buffer
@@ -246,7 +258,7 @@ func TestHandlePostEdit_IndexFailureReachesModel(t *testing.T) {
 	claims := &fakeClaims{}
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-idx-ctx",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "x.go")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "x.go"))},
 		CWD:       root,
 	}))
 	var stdout bytes.Buffer
@@ -276,7 +288,7 @@ func TestHandlePostEdit_NoModelContextWhenVetSkipped(t *testing.T) {
 	claims := &fakeClaims{}
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-noctx",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "README.md")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "README.md"))},
 		CWD:       root,
 	}))
 	var stdout bytes.Buffer
@@ -305,7 +317,7 @@ func TestHandlePostEdit_SkipsVetWithoutGoMod(t *testing.T) {
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-3",
 		ToolName:  "Edit",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "doc.md")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "doc.md"))},
 		CWD:       root,
 	}))
 	var stdout bytes.Buffer
@@ -346,7 +358,7 @@ func TestHandlePostEdit_IndexFailureRecorded(t *testing.T) {
 	claims := &fakeClaims{}
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-4",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "x.go")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "x.go"))},
 		CWD:       root,
 	}))
 	var stdout bytes.Buffer
@@ -405,7 +417,7 @@ func TestHandlePostEdit_RecordClaimErrorIsFatal(t *testing.T) {
 	claims := &fakeClaims{recordErr: errors.New("disk full")}
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-6",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "x.go")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "x.go"))},
 		CWD:       root,
 	}))
 	err := HandlePostEdit(context.Background(), PostEditOptions{
@@ -427,7 +439,7 @@ func TestHandlePostEdit_EvidenceTruncated(t *testing.T) {
 	claims := &fakeClaims{}
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-7",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "x.go")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "x.go"))},
 		CWD:       root,
 	}))
 	err := HandlePostEdit(context.Background(), PostEditOptions{
@@ -500,7 +512,7 @@ func TestHandlePostEdit_PopulatesStructuredFields(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeGoMod(t, root)
-	target := filepath.Join(root, "broken.go")
+	target := seed(t, filepath.Join(root, "broken.go"))
 	stubVet := func(ctx context.Context, dir string) (string, error) {
 		return "# example.com/project\nvet: broken.go:1: declared and not used: foo", errors.New("exit 1")
 	}
@@ -545,7 +557,7 @@ func TestHandlePostEdit_VetSkippedLeavesVetOKNil(t *testing.T) {
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-nogo",
 		ToolName:  "Write",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "README.md")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "README.md"))},
 		CWD:       root,
 	}))
 	err := HandlePostEdit(context.Background(), PostEditOptions{
@@ -569,7 +581,7 @@ func TestHandlePostEdit_SupersedesOnVetPass(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeGoMod(t, root)
-	target := filepath.Join(root, "x.go")
+	target := seed(t, filepath.Join(root, "x.go"))
 	claims := &fakeClaims{}
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-sup",
@@ -612,7 +624,7 @@ func TestHandlePostEdit_DoesNotSupersedeOnVetFail(t *testing.T) {
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-fail",
 		ToolName:  "Edit",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "broken.go")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "broken.go"))},
 		CWD:       root,
 	}))
 	err := HandlePostEdit(context.Background(), PostEditOptions{
@@ -635,7 +647,7 @@ func TestHandlePostEdit_DoesNotSupersedeWhenVetSkipped(t *testing.T) {
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-skip",
 		ToolName:  "Edit",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "doc.md")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "doc.md"))},
 		CWD:       root,
 	}))
 	err := HandlePostEdit(context.Background(), PostEditOptions{
@@ -723,7 +735,7 @@ func TestHandlePostEdit_StripsVetNoise(t *testing.T) {
 	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
 		SessionID: "sess-noise",
 		ToolName:  "Edit",
-		ToolInput: ToolInput{FilePath: filepath.Join(root, "main.go")},
+		ToolInput: ToolInput{FilePath: seed(t, filepath.Join(root, "main.go"))},
 		CWD:       root,
 	}))
 	err := HandlePostEdit(context.Background(), PostEditOptions{
@@ -743,6 +755,87 @@ func TestHandlePostEdit_StripsVetNoise(t *testing.T) {
 	}
 	if !strings.Contains(rows[0].Evidence, "vet: cmd/app/main.go:1: real error") {
 		t.Errorf("evidence missing real vet error: %q", rows[0].Evidence)
+	}
+}
+
+// TestHandlePostEdit_MissingFileSkipsIndex asserts that when Edit/Write
+// claims to have modified a path that doesn't actually exist on disk, the
+// hook records a "file not found, skipping" claim instead of falsely
+// asserting it re-indexed the file. The indexer silently no-ops on missing
+// paths, so an unchecked path through HandlePostEdit produces the misleading
+// "re-indexed X, go vet reported issues" message documented in hooks F5.
+func TestHandlePostEdit_MissingFileSkipsIndex(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeGoMod(t, root)
+	missing := filepath.Join(root, "ghost.go") // never created
+
+	idx := &fakeIndexer{}
+	claims := &fakeClaims{}
+	vetCalled := false
+	stubVet := func(ctx context.Context, dir string) (string, error) {
+		vetCalled = true
+		return "", nil
+	}
+
+	stdin := bytes.NewReader(encodePayload(t, PostToolUsePayload{
+		SessionID:     "sess-missing",
+		HookEventName: "PostToolUse",
+		ToolName:      "Edit",
+		ToolInput:     ToolInput{FilePath: missing},
+		CWD:           root,
+	}))
+	var stdout bytes.Buffer
+
+	if err := HandlePostEdit(context.Background(), PostEditOptions{
+		Indexer: idx,
+		Claims:  claims,
+		Vet:     stubVet,
+	}, stdin, &stdout); err != nil {
+		t.Fatalf("HandlePostEdit: %v", err)
+	}
+
+	if calls := idx.Calls(); len(calls) != 0 {
+		t.Errorf("indexer should not be called on missing file, got %v", calls)
+	}
+	if vetCalled {
+		t.Error("vet should not run when file is missing")
+	}
+
+	rows := claims.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("claim rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Verified {
+		t.Error("missing file should produce verified=false")
+	}
+	if row.IndexOK != nil {
+		t.Errorf("IndexOK should be nil (index skipped), got %v", *row.IndexOK)
+	}
+	if row.VetOK != nil {
+		t.Errorf("VetOK should be nil (vet skipped), got %v", *row.VetOK)
+	}
+	if !strings.Contains(strings.ToLower(row.Claim), "file not found") {
+		t.Errorf("claim summary should mention file-not-found, got %q", row.Claim)
+	}
+	if strings.Contains(row.Claim, "index=ok") {
+		t.Errorf("claim must not falsely assert index=ok for missing file: %q", row.Claim)
+	}
+
+	var resp HookResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\nstdout=%q", err, stdout.String())
+	}
+	if !resp.Continue {
+		t.Error("Continue should be true even on missing file")
+	}
+	msg := strings.ToLower(resp.SystemMessage)
+	if !strings.Contains(msg, "file not found") {
+		t.Errorf("SystemMessage should say file-not-found, got %q", resp.SystemMessage)
+	}
+	if strings.Contains(msg, "re-indexed") {
+		t.Errorf("SystemMessage must not claim re-indexed for missing file: %q", resp.SystemMessage)
 	}
 }
 

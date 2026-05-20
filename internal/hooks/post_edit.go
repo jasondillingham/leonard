@@ -166,6 +166,15 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 		root = "."
 	}
 
+	// hooks F5: PostToolUse fires whether or not the edit actually landed —
+	// e.g. a write Claude believes succeeded but the user rejected via a hook
+	// veto. The indexer silently no-ops on missing paths, so without this
+	// stat-check we'd happily report "re-indexed X, go vet ok" for files that
+	// don't exist. Short-circuit with an honest claim instead.
+	if _, statErr := os.Stat(filePath); errors.Is(statErr, os.ErrNotExist) {
+		return handleMissingFile(opts, payload, filePath, stdout)
+	}
+
 	indexErr := opts.Indexer.IndexFile(filePath)
 
 	vet := runVet(ctx, opts, root)
@@ -210,6 +219,36 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 			HookEventName:     "PostToolUse",
 			AdditionalContext: ctx,
 		}
+	}
+	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+		return fmt.Errorf("hooks: encode response: %w", err)
+	}
+	return nil
+}
+
+// handleMissingFile records a claim and emits a response describing the
+// PostToolUse event for a file that doesn't exist on disk. IndexOK and VetOK
+// are left nil to distinguish "skipped" from a recorded success or failure —
+// the tri-state was already reserved for this short-circuit path on
+// ClaimRecord.IndexOK. Returns nil unless persistence fails.
+func handleMissingFile(opts PostEditOptions, payload PostToolUsePayload, filePath string, stdout io.Writer) error {
+	claim := fmt.Sprintf("tool=%s file=%s; index=skipped (file not found); go vet=skipped (file not found)",
+		coalesce(payload.ToolName, "edit"), filePath)
+	evidence := fmt.Sprintf("file: %s\nfile not found on disk — index and vet skipped\n", filePath)
+	rec := ClaimRecord{
+		SessionID: payload.SessionID,
+		Claim:     claim,
+		Evidence:  evidence,
+		FilePath:  filePath,
+		Verified:  false,
+		Tool:      payload.ToolName,
+	}
+	if _, err := opts.Claims.RecordClaim(rec); err != nil {
+		return fmt.Errorf("hooks: record claim: %w", err)
+	}
+	resp := HookResponse{
+		Continue:      true,
+		SystemMessage: fmt.Sprintf("leonard: %s file not found, skipping re-index", filePath),
 	}
 	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 		return fmt.Errorf("hooks: encode response: %w", err)
