@@ -7,6 +7,33 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.47.0 — MCP correctness (bughunt-6 Theme C)
+
+Two HIGH findings from the bughunt-6 mcp-and-hooks-deep audit.
+
+- **mcp F1**: `languageFromPath` only knew 5 languages (Go,
+  Python, TypeScript/TSX, JavaScript/JSX). Every other extension
+  returned "" — `verify_symbol(language="rust")` filtered to zero
+  matches for the 22+ tree-sitter languages added since v0.1.
+  Rewrote the mapping to cover all 39 registered languages plus
+  the basename-dispatched cases (Makefile, BUILD, CMakeLists.txt,
+  package.json, Cargo.toml, go.mod, pom.xml). Verified end-to-end:
+  a Rust file now resolves through `leonard verify hello`
+  correctly.
+
+- **mcp F2**: `verify_symbol` and `find_symbol` had no MCP-layer
+  ceiling and no SQL LIMIT. A caller passing `limit=10000000`
+  could materialize the entire symbol table before any cap
+  applied. Added `MaxSymbolResults = 500` and clamp the user-
+  provided limit to min(limit, 500). 500 is well above every
+  real Claude-Code consumer (the reasoning loop is bounded by
+  its own context budget).
+
+mcp F3 (silent truncation in get_unverified_claims) deferred to
+v0.48.0 along with the carry-over promotions.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.46.1 — Launch-surface accuracy sweep (bughunt-6 Theme B)
 
 Pure docs/config polish closing 13 launch-surface findings from

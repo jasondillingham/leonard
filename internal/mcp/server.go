@@ -16,7 +16,7 @@ type Implementation struct {
 // DefaultImplementation is the server identity used when a caller doesn't
 // supply one (e.g. tests).
 func DefaultImplementation() Implementation {
-	return Implementation{Name: "leonard-mcp", Version: "0.46.1"}
+	return Implementation{Name: "leonard-mcp", Version: "0.47.0"}
 }
 
 // NewServer constructs an MCP server with Leonard's v1 tools registered
@@ -142,12 +142,31 @@ func listFiles(ctx context.Context, store SymbolStore, in ListFilesInput) (ListF
 	return ListFilesOutput{Files: out}, nil
 }
 
+// MaxSymbolResults caps the number of SymbolMatch entries any one
+// verify_symbol or find_symbol call can return. Bughunt-6 mcp F2:
+// the v0.1 path had no SQL LIMIT and no MCP-layer ceiling, so a
+// caller passing `limit=10000000` could materialize the entire
+// symbol table before any cap took effect. 500 is well above every
+// real consumer (Claude's reasoning loops are bounded by their own
+// context budget) while preventing runaway materialization.
+const MaxSymbolResults = 500
+
 // filterAndConvert applies kind/language filters to a slice of store
 // symbol records and converts them to the wire format. The MCP layer
 // (not the store) owns language filtering because store.Symbol doesn't
 // carry language directly — we derive it from the file extension here.
+//
+// limit semantics:
+//   - limit <= 0 → use MaxSymbolResults
+//   - limit > 0 → clamp to min(limit, MaxSymbolResults)
+//
+// This protects against the bughunt-6 mcp F2 case where a caller
+// passes a giant limit.
 func filterAndConvert(syms []SymbolRecord, kind, language string, limit int) []SymbolMatch {
-	out := make([]SymbolMatch, 0, len(syms))
+	if limit <= 0 || limit > MaxSymbolResults {
+		limit = MaxSymbolResults
+	}
+	out := make([]SymbolMatch, 0, limit)
 	for _, s := range syms {
 		if kind != "" && s.Kind != kind {
 			continue
@@ -162,7 +181,7 @@ func filterAndConvert(syms []SymbolRecord, kind, language string, limit int) []S
 			Kind:          s.Kind,
 			QualifiedName: s.QualifiedName,
 		})
-		if limit > 0 && len(out) >= limit {
+		if len(out) >= limit {
 			break
 		}
 	}
