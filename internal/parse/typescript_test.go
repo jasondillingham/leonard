@@ -941,3 +941,53 @@ export const after = 1;
 		t.Errorf("post-function const after missing — body leaked as top-level tokens: %+v", byQName)
 	}
 }
+
+// TestExtractTypeScript_ExportDefaultNamed covers TS M1: a named
+// `export default function|class ...` used to emit the symbol with
+// Exported=false because the default branch bailed and the outer
+// parser re-attempted without the export bit. Forward the export
+// bit so default exports show as reachable.
+func TestExtractTypeScript_ExportDefaultNamed(t *testing.T) {
+	t.Parallel()
+	src := `export default function defaultFn() { return 1; }
+export default class DefaultCls { method() { return 1; } }
+export default async function asyncDef(): Promise<number> { return 1; }
+`
+	syms, err := ExtractTypeScript("def.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	byQName := map[string]struct {
+		kind     string
+		exported bool
+	}{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = struct {
+			kind     string
+			exported bool
+		}{s.Kind, s.Exported}
+	}
+	for _, want := range []struct {
+		qname, kind string
+	}{
+		{"def.defaultFn", "function"},
+		{"def.DefaultCls", "type"},
+		{"def.asyncDef", "function"},
+	} {
+		got, ok := byQName[want.qname]
+		if !ok {
+			t.Errorf("%s missing: %v", want.qname, byQName)
+			continue
+		}
+		if got.kind != want.kind {
+			t.Errorf("%s: kind=%q, want %q", want.qname, got.kind, want.kind)
+		}
+		if !got.exported {
+			t.Errorf("%s: Exported=false, want true (default exports are reachable from outside)", want.qname)
+		}
+	}
+	// Methods inside an export-default class should also be Exported=true.
+	if m, ok := byQName["def.DefaultCls.method"]; ok && !m.exported {
+		t.Errorf("DefaultCls.method: Exported=false, want true (inherits from enclosing class)")
+	}
+}

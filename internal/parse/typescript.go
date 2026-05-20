@@ -489,9 +489,12 @@ modifiers:
 		case "declare", "async", "abstract":
 			p.pos++
 		case "default":
-			// `export default ...` is intentionally out of scope for v0.
-			p.pos = saved
-			return false
+			// `export default function|class Name` forwards the export bit
+			// (TS M1): the named decl is reachable from outside the module,
+			// so Exported=true matches the semantics other branches use.
+			// Anonymous `export default function () {}` still produces no
+			// symbol because parseFunction/parseClass require an identifier.
+			p.pos++
 		default:
 			break modifiers
 		}
