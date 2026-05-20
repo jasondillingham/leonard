@@ -465,6 +465,10 @@ const CPP_QUERY: &str = r#"
     declarator: (qualified_identifier
       name: (identifier) @name))) @function
 
+(function_definition
+  declarator: (function_declarator
+    declarator: (field_identifier) @name)) @method
+
 (class_specifier
   name: (type_identifier) @name) @type
 
