@@ -110,9 +110,11 @@ var langExtractors = map[string]struct {
 	".nix":   {lang: "nix", extract: parse.ExtractNix},
 	".ex":    {lang: "elixir", extract: parse.ExtractElixir},
 	".exs":   {lang: "elixir", extract: parse.ExtractElixir},
-	".sol":   {lang: "solidity", extract: parse.ExtractSolidity},
-	".mk":    {lang: "make", extract: parse.ExtractMake},
-	".cmake": {lang: "cmake", extract: parse.ExtractCMake},
+	".sol":    {lang: "solidity", extract: parse.ExtractSolidity},
+	".mk":     {lang: "make", extract: parse.ExtractMake},
+	".cmake":  {lang: "cmake", extract: parse.ExtractCMake},
+	".vue":    {lang: "vue", extract: parse.ExtractVue},
+	".svelte": {lang: "svelte", extract: parse.ExtractSvelte},
 }
 
 // langExtractorsByName handles files whose basename (rather than
