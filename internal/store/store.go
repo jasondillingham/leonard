@@ -489,6 +489,31 @@ func (s *Store) ListFiles(pattern, lang string) ([]File, error) {
 	return out, nil
 }
 
+// SymbolCountsByFile returns file_path → symbol-row count for every file
+// that has at least one symbol. Files with zero symbols are intentionally
+// absent so callers can spot them by diffing against the files table —
+// `leonard doctor` uses this to surface likely parse failures.
+func (s *Store) SymbolCountsByFile() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT file_path, COUNT(*) FROM symbols GROUP BY file_path`)
+	if err != nil {
+		return nil, fmt.Errorf("store: SymbolCountsByFile: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var path string
+		var n int
+		if err := rows.Scan(&path, &n); err != nil {
+			return nil, fmt.Errorf("store: SymbolCountsByFile scan: %w", err)
+		}
+		out[path] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: SymbolCountsByFile iter: %w", err)
+	}
+	return out, nil
+}
+
 // RecordDecision inserts a decision and returns its row ID. If RecordedAt is
 // zero, the current unix time is used. RelatedFiles / RelatedSymbols are
 // serialized as JSON arrays (or left NULL when empty) so GetStaleDecisions

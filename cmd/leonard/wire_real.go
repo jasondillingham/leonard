@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/jasondillingham/leonard/internal/config"
 	"github.com/jasondillingham/leonard/internal/index"
@@ -127,6 +130,101 @@ func (realRuntime) GetStaleDecisions(_ context.Context, dataDir string, limit in
 		}
 	}
 	return out, nil
+}
+
+func (realRuntime) Doctor(_ context.Context, projectRoot, dataDir string) (DoctorReport, error) {
+	dbPath := filepath.Join(dataDir, "leonard.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	defer s.Close()
+
+	files, err := s.ListFiles("", "")
+	if err != nil {
+		return DoctorReport{}, err
+	}
+
+	rep := DoctorReport{StorePath: dbPath, TotalFiles: len(files)}
+
+	// Per-language file counts, max indexed_at, and stale detection
+	// (file row in store, missing on disk).
+	filesByLang := map[string]int{}
+	pathsByLang := map[string]map[string]bool{}
+	for _, f := range files {
+		filesByLang[f.Language]++
+		if pathsByLang[f.Language] == nil {
+			pathsByLang[f.Language] = map[string]bool{}
+		}
+		pathsByLang[f.Language][f.Path] = true
+		if f.IndexedAt > rep.LastIndexedAt {
+			rep.LastIndexedAt = f.IndexedAt
+		}
+		// Stale check: file path is relative to projectRoot.
+		abs := filepath.Join(projectRoot, filepath.FromSlash(f.Path))
+		if _, statErr := os.Stat(abs); errors.Is(statErr, fs.ErrNotExist) {
+			rep.StaleFiles = append(rep.StaleFiles, f.Path)
+		}
+	}
+	rep.FilesByLanguage = sortedLangCounts(filesByLang)
+
+	// Per-language symbol counts, plus zero-symbol files. One aggregate
+	// query gets us file_path → count for files that have any symbols;
+	// files in the files table without an entry here are empty (and for
+	// supported languages, almost certainly parse failures).
+	counts, err := s.SymbolCountsByFile()
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	// docFileSizeCeiling filters out package-comment-only files (e.g.
+	// internal/<pkg>/doc.go) from the parse-failure suspect list — they
+	// legitimately have zero symbols. 512 bytes is comfortably above the
+	// largest doc.go in this repo (~290 bytes) without false-negativing
+	// any real source file. A genuine parse failure on a meaningful file
+	// is almost always thousands of bytes.
+	const docFileSizeCeiling int64 = 512
+	symsByLang := map[string]int{}
+	for _, f := range files {
+		n := counts[f.Path]
+		symsByLang[f.Language] += n
+		rep.TotalSymbols += n
+		if n == 0 && f.SizeBytes > docFileSizeCeiling {
+			rep.EmptyFiles = append(rep.EmptyFiles, f.Path)
+		}
+	}
+	rep.SymbolsByLanguage = sortedLangCounts(symsByLang)
+
+	// Decision + claim health.
+	decisions, err := s.GetDecisions("", 0, 0)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	rep.DecisionCount = len(decisions)
+
+	stale, err := s.GetStaleDecisions(0)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	rep.StaleDecisionCount = len(stale)
+
+	unverified, err := s.GetUnverifiedClaims("")
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	rep.UnverifiedClaims = len(unverified)
+
+	sort.Strings(rep.EmptyFiles)
+	sort.Strings(rep.StaleFiles)
+	return rep, nil
+}
+
+func sortedLangCounts(m map[string]int) []LanguageCount {
+	out := make([]LanguageCount, 0, len(m))
+	for lang, n := range m {
+		out = append(out, LanguageCount{Language: lang, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Language < out[j].Language })
+	return out
 }
 
 func (realRuntime) GetUnverifiedClaims(_ context.Context, dataDir, sessionID string) ([]ClaimRow, error) {

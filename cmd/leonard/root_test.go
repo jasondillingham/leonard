@@ -39,6 +39,15 @@ type fakeRuntime struct {
 	getUnverifiedCalls []getUnverifiedCall
 	getUnverifiedOut   []ClaimRow
 	getUnverifiedErr   error
+
+	doctorCalls []doctorCall
+	doctorOut   DoctorReport
+	doctorErr   error
+}
+
+type doctorCall struct {
+	Root string
+	Data string
 }
 
 type recordDecisionCall struct {
@@ -101,6 +110,11 @@ func (f *fakeRuntime) GetStaleDecisions(_ context.Context, _ string, limit int) 
 func (f *fakeRuntime) GetUnverifiedClaims(_ context.Context, _, sessionID string) ([]ClaimRow, error) {
 	f.getUnverifiedCalls = append(f.getUnverifiedCalls, getUnverifiedCall{sessionID})
 	return f.getUnverifiedOut, f.getUnverifiedErr
+}
+
+func (f *fakeRuntime) Doctor(_ context.Context, root, data string) (DoctorReport, error) {
+	f.doctorCalls = append(f.doctorCalls, doctorCall{root, data})
+	return f.doctorOut, f.doctorErr
 }
 
 func runRoot(t *testing.T, rt Runtime, args ...string) (string, error) {

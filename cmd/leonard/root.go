@@ -43,6 +43,44 @@ type Runtime interface {
 	// GetUnverifiedClaims returns claim rows where verified=false.
 	// sessionID is optional (empty = all sessions).
 	GetUnverifiedClaims(ctx context.Context, dataDir, sessionID string) ([]ClaimRow, error)
+
+	// Doctor inspects store + filesystem state and returns a health report.
+	// Used by `leonard doctor` — opens the store once and collects every
+	// data-point the command surfaces.
+	Doctor(ctx context.Context, projectRoot, dataDir string) (DoctorReport, error)
+}
+
+// DoctorReport is the structured output of `leonard doctor`. Counts and
+// per-language breakdowns mirror what the store can answer cheaply; the
+// EmptyFiles + StaleFiles slices are the "things worth your attention"
+// surface.
+type DoctorReport struct {
+	StorePath        string
+	LastIndexedAt    int64
+	FilesByLanguage  []LanguageCount
+	SymbolsByLanguage []LanguageCount
+	TotalFiles       int
+	TotalSymbols     int
+
+	// EmptyFiles are paths that have a file row but zero symbols. For
+	// supported languages this almost always means a parse failure;
+	// for unsupported languages it just means we don't extract anything.
+	EmptyFiles []string
+
+	// StaleFiles are paths that exist in the store but no longer on disk.
+	// A `leonard index` after a delete/rename should clear these.
+	StaleFiles []string
+
+	DecisionCount      int
+	StaleDecisionCount int
+	UnverifiedClaims   int
+}
+
+// LanguageCount is the per-language tally used in the doctor report's
+// breakdown sections. Sorted by Language ascending by the runtime impl.
+type LanguageCount struct {
+	Language string
+	Count    int
 }
 
 // DecisionRow is the small DTO the decisions subcommand prints. Mirrors
@@ -116,6 +154,7 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newVerifyCmd(rt))
 	root.AddCommand(newDecisionsCmd(rt))
 	root.AddCommand(newClaimsCmd(rt))
+	root.AddCommand(newDoctorCmd(rt))
 	root.AddCommand(newMCPCmd())
 	return root
 }
