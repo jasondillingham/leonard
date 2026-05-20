@@ -205,3 +205,15 @@ func ExtractLua(path string, src []byte) ([]store.Symbol, error) {
 func ExtractBash(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("bash", path, src)
 }
+
+func ExtractZig(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("zig", path, src)
+}
+
+func ExtractNix(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("nix", path, src)
+}
+
+func ExtractElixir(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("elixir", path, src)
+}

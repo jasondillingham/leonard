@@ -106,6 +106,10 @@ var langExtractors = map[string]struct {
 	".lua":   {lang: "lua", extract: parse.ExtractLua},
 	".sh":    {lang: "bash", extract: parse.ExtractBash},
 	".bash":  {lang: "bash", extract: parse.ExtractBash},
+	".zig":   {lang: "zig", extract: parse.ExtractZig},
+	".nix":   {lang: "nix", extract: parse.ExtractNix},
+	".ex":    {lang: "elixir", extract: parse.ExtractElixir},
+	".exs":   {lang: "elixir", extract: parse.ExtractElixir},
 }
 
 // ParseFailure is a per-file record of an extractor returning a non-nil

@@ -169,6 +169,24 @@ impl Language {
                 query_src: BASH_QUERY,
                 parent_container_kinds: &[],
             }),
+            "zig" => Some(Self {
+                grammar: tree_sitter_zig::LANGUAGE.into(),
+                query_src: ZIG_QUERY,
+                parent_container_kinds: &[],
+            }),
+            "nix" => Some(Self {
+                grammar: tree_sitter_nix::LANGUAGE.into(),
+                query_src: NIX_QUERY,
+                parent_container_kinds: &[],
+            }),
+            "elixir" => Some(Self {
+                grammar: tree_sitter_elixir::LANGUAGE.into(),
+                query_src: ELIXIR_QUERY,
+                // Elixir's defmodule wraps a do_block; the parent
+                // walk-up goes through call nodes which are not
+                // useful for qname-folding here. Keep empty for v0.24.
+                parent_container_kinds: &[],
+            }),
             _ => None,
         }
     }
@@ -448,6 +466,65 @@ const BASH_QUERY: &str = r#"
   name: (word) @name) @function
 "#;
 
+/// ZIG_QUERY. Zig structs are values bound to a const, not a
+/// top-level kind: `const Foo = struct { ... };`. To capture them
+/// as types, we match variable_declaration nodes whose RHS is a
+/// struct_declaration.
+const ZIG_QUERY: &str = r#"
+(function_declaration
+  name: (identifier) @name) @function
+
+(variable_declaration
+  (identifier) @name
+  (struct_declaration)) @type
+
+(variable_declaration
+  (identifier) @name
+  (enum_declaration)) @type
+
+(variable_declaration
+  (identifier) @name
+  (union_declaration)) @type
+"#;
+
+/// NIX_QUERY captures top-level function bindings — `foo = arg: ...`
+/// is the Nix idiom for declaring a function. Non-function bindings
+/// (data, strings, derivation attrs) aren't captured in v0.24 — the
+/// generic @const variant produced too many false positives on
+/// realistic flake.nix / default.nix files.
+const NIX_QUERY: &str = r#"
+(binding
+  attrpath: (attrpath attr: (identifier) @name)
+  expression: (function_expression)) @function
+"#;
+
+/// ELIXIR_QUERY uses #eq? predicates to filter call nodes by their
+/// target identifier. defmodule/def/defp/defmacro/defprotocol all
+/// parse as identical-shape `call` nodes — only the target text
+/// differs. The double-paren around (identifier) is needed because
+/// the predicate operates on the capture, not the pattern.
+const ELIXIR_QUERY: &str = r#"
+(call
+  target: ((identifier) @_def
+            (#eq? @_def "defmodule"))
+  (arguments (alias) @name)) @type
+
+(call
+  target: ((identifier) @_def
+            (#eq? @_def "defprotocol"))
+  (arguments (alias) @name)) @interface
+
+(call
+  target: ((identifier) @_def
+            (#any-of? @_def "def" "defp"))
+  (arguments (call target: (identifier) @name))) @method
+
+(call
+  target: ((identifier) @_def
+            (#eq? @_def "defmacro"))
+  (arguments (call target: (identifier) @name))) @method
+"#;
+
 /// capture_kind maps a tree-sitter query capture name to Leonard's
 /// cross-language symbol kind vocabulary. Unknown capture names
 /// fall through to "function" — keep queries in sync with this
@@ -599,11 +676,20 @@ fn extract<'src>(
         let mut kind_node = None;
         let mut kind_capture: &str = "function";
         for cap in m.captures {
+            let cn = capture_names[cap.index as usize];
             if cap.index as usize == name_idx {
                 name_node = Some(cap.node);
+            } else if cn.starts_with('_') {
+                // Capture names prefixed with `_` are predicate-
+                // only (e.g. Elixir's @_def for #eq? filtering on
+                // call targets). They don't carry symbol-kind
+                // information; skip them when picking the
+                // kind_node so the actual @type/@method/etc.
+                // capture wins.
+                continue;
             } else {
                 kind_node = Some(cap.node);
-                kind_capture = capture_names[cap.index as usize];
+                kind_capture = cn;
             }
         }
         let kind_node = match kind_node {
