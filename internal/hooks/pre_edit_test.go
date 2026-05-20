@@ -636,3 +636,68 @@ func TestPreEdit_F8_NoModuleRootKeepsCurrentBehavior(t *testing.T) {
 		t.Fatalf("expected allow when ModuleRoot is empty (no sibling scan), got deny")
 	}
 }
+
+// TestHandlePreEdit_OversizePayloadRejected covers security-1 F2.
+// A 17 MiB payload (one byte over MaxHookPayloadBytes) must be
+// rejected at the decode boundary, not allocate through to parseSnippet.
+func TestHandlePreEdit_OversizePayloadRejected(t *testing.T) {
+	t.Parallel()
+	// Build a payload that's just barely over the cap. We construct
+	// raw bytes rather than json-marshaling so the test isn't sensitive
+	// to encoding overhead.
+	big := make([]byte, MaxHookPayloadBytes+1)
+	for i := range big {
+		big[i] = 'x'
+	}
+	err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+		bytes.NewReader(big), &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected oversize-payload error")
+	}
+	if !errors.Is(err, ErrDecode) {
+		t.Errorf("error should wrap ErrDecode (so exit-code maps to 2): %v", err)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should mention size cap: %v", err)
+	}
+}
+
+// TestHandlePreEdit_OversizeSnippetSkipped covers the per-snippet
+// cap. A 2 MiB new_string (over MaxSnippetBytes) should be silently
+// skipped by capSnippets — the fabrication check passes without
+// running parseSnippet on the oversize input.
+func TestHandlePreEdit_OversizeSnippetSkipped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := writeTarget(t, dir, "main.go", "package main\n\nfunc main() {}\n")
+	huge := strings.Repeat("a", MaxSnippetBytes+1)
+	payload := encodePreToolUsePayload(t, PreToolUsePayload{
+		SessionID:     "s",
+		HookEventName: "PreToolUse",
+		ToolName:      "Edit",
+		ToolInput: PreEditToolInput{
+			FilePath:  target,
+			NewString: huge,
+		},
+	})
+	resp := runPreEdit(t, newFakeSymStore(), payload)
+	if preEditDenied(resp) {
+		t.Errorf("oversize snippet should be skipped (not blocked), got deny: %+v", resp)
+	}
+}
+
+// TestSnippetsForTool_MultiEditElementCap pins MaxMultiEditElements.
+func TestSnippetsForTool_MultiEditElementCap(t *testing.T) {
+	t.Parallel()
+	edits := make([]PreEditMultiEdit, MaxMultiEditElements+50)
+	for i := range edits {
+		edits[i] = PreEditMultiEdit{NewString: "x"}
+	}
+	out, targeted := snippetsForTool("MultiEdit", PreEditToolInput{Edits: edits})
+	if !targeted {
+		t.Fatal("MultiEdit should be targeted")
+	}
+	if len(out) != MaxMultiEditElements {
+		t.Errorf("MultiEdit cap not applied: got %d snippets, want %d", len(out), MaxMultiEditElements)
+	}
+}

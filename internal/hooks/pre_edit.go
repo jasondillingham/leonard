@@ -143,9 +143,9 @@ func HandlePreEdit(ctx context.Context, opts PreEditOptions, stdin io.Reader, st
 
 func decodePreToolUsePayload(r io.Reader) (PreToolUsePayload, error) {
 	var p PreToolUsePayload
-	body, err := io.ReadAll(r)
+	body, err := readPayloadBytes(r)
 	if err != nil {
-		return p, fmt.Errorf("hooks: read stdin: %w", err)
+		return p, err
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return p, fmt.Errorf("%w: empty PreToolUse payload on stdin", ErrDecode)
@@ -250,20 +250,37 @@ func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload
 func snippetsForTool(toolName string, in PreEditToolInput) ([]string, bool) {
 	switch toolName {
 	case "Edit":
-		return []string{in.NewString}, true
+		return capSnippets([]string{in.NewString}), true
 	case "Write":
-		return []string{in.Content}, true
+		return capSnippets([]string{in.Content}), true
 	case "MultiEdit":
-		out := make([]string, 0, len(in.Edits))
-		for _, e := range in.Edits {
+		edits := in.Edits
+		if len(edits) > MaxMultiEditElements {
+			edits = edits[:MaxMultiEditElements]
+		}
+		out := make([]string, 0, len(edits))
+		for _, e := range edits {
 			out = append(out, e.NewString)
 		}
-		return out, true
+		return capSnippets(out), true
 	case "NotebookEdit":
-		return []string{in.NewSource}, true
+		return capSnippets([]string{in.NewSource}), true
 	default:
 		return nil, false
 	}
+}
+
+// capSnippets enforces MaxSnippetBytes per element. Snippets over
+// the cap are zeroed so the downstream `strings.TrimSpace(snippet)
+// == ""` check skips them — equivalent to "don't even attempt parse"
+// without changing the iteration shape. Security-1 F2.
+func capSnippets(snippets []string) []string {
+	for i, s := range snippets {
+		if len(s) > MaxSnippetBytes {
+			snippets[i] = ""
+		}
+	}
+	return snippets
 }
 
 // parseSnippet tries a few wrappers so partial-edit snippets still parse.

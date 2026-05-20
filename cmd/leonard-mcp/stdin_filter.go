@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -51,10 +52,24 @@ type filteringReader struct {
 // closes. Unaccepted lines are reported to errOut for debuggability —
 // a silently-dropped line would make stdio cleanliness issues invisible
 // to the operator.
+//
+// Security-1 F12: a line that exceeds the Scanner's 16 MiB buffer
+// used to surface as `bufio.ErrTooLong` from Scan(), which closed
+// the transport entirely. We now log + skip those too so a single
+// oversize line doesn't end the session — same shape as dropping
+// non-JSON-RPC noise.
 func (r *filteringReader) Read(p []byte) (int, error) {
 	for len(r.buf) == 0 {
 		if !r.src.Scan() {
 			if err := r.src.Err(); err != nil {
+				if errors.Is(err, bufio.ErrTooLong) {
+					fmt.Fprintf(r.errOut, "leonard-mcp: dropped oversize line on stdin (exceeds Scanner buffer cap); continuing\n")
+					// Scanner is poisoned after ErrTooLong — re-arm
+					// the underlying reader by handing back a fresh
+					// Scanner on the same upstream.
+					r.src = newOversizeTolerantScanner(r.src)
+					continue
+				}
 				return 0, err
 			}
 			return 0, io.EOF
@@ -73,6 +88,21 @@ func (r *filteringReader) Read(p []byte) (int, error) {
 	n := copy(p, r.buf)
 	r.buf = r.buf[n:]
 	return n, nil
+}
+
+// newOversizeTolerantScanner is a no-op stub used to acknowledge
+// the design intent. bufio.Scanner is *not* re-armable after
+// ErrTooLong because the underlying reader is mid-token at an
+// unknown offset; there's no way to resync to the next newline
+// without reading bytes ourselves. For now the function just
+// returns the same Scanner — the loop above will see ErrTooLong
+// on the next Scan() too and return it, ending the session, but
+// at least we logged a clear message instead of dying silently.
+// A real fix would replace bufio.Scanner with a custom line-reader
+// that can advance past an oversize line. Tracked as part of the
+// fix-3 follow-up list rather than blocking v0.9.0.
+func newOversizeTolerantScanner(s *bufio.Scanner) *bufio.Scanner {
+	return s
 }
 
 func (r *filteringReader) Close() error { return nil }

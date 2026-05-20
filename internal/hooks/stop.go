@@ -112,9 +112,9 @@ func HandleStop(_ context.Context, opts StopOptions, stdin io.Reader, stdout io.
 
 func decodeStopPayload(r io.Reader) (StopPayload, error) {
 	var p StopPayload
-	body, err := io.ReadAll(r)
+	body, err := readPayloadBytes(r)
 	if err != nil {
-		return p, fmt.Errorf("hooks: read stdin: %w", err)
+		return p, err
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return p, fmt.Errorf("%w: empty Stop payload on stdin", ErrDecode)

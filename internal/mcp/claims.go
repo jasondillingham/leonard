@@ -60,9 +60,24 @@ type GetUnverifiedClaimsOutput struct {
 	Claims []ClaimEntry `json:"claims"`
 }
 
+// Resource caps for claim text. Security-1 F4: post-edit hook's
+// evidence field can run hundreds of KiB on a verbose vet failure;
+// 256 KiB is a generous ceiling that still bounds row growth.
+// claim summary is one-line; cap at 4 KiB.
+const (
+	maxClaimSummaryBytes  = 4 << 10
+	maxClaimEvidenceBytes = 256 << 10
+)
+
 func recordClaim(ctx context.Context, cs ClaimStore, in RecordClaimInput) (RecordClaimOutput, error) {
 	if in.Claim == "" {
 		return RecordClaimOutput{}, errors.New("record_claim: claim is required")
+	}
+	if len(in.Claim) > maxClaimSummaryBytes {
+		return RecordClaimOutput{}, fmt.Errorf("record_claim: claim exceeds %d bytes", maxClaimSummaryBytes)
+	}
+	if len(in.Evidence) > maxClaimEvidenceBytes {
+		return RecordClaimOutput{}, fmt.Errorf("record_claim: evidence exceeds %d bytes", maxClaimEvidenceBytes)
 	}
 	id, err := cs.RecordClaim(ctx, in.SessionID, in.Claim, in.Evidence, in.Verified)
 	if err != nil {

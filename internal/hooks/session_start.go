@@ -138,9 +138,9 @@ func shouldInjectForSource(source string) bool {
 
 func decodeSessionStartPayload(r io.Reader) (SessionStartPayload, error) {
 	var p SessionStartPayload
-	body, err := io.ReadAll(r)
+	body, err := readPayloadBytes(r)
 	if err != nil {
-		return p, fmt.Errorf("hooks: read stdin: %w", err)
+		return p, err
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return p, fmt.Errorf("%w: empty SessionStart payload on stdin", ErrDecode)

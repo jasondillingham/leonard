@@ -90,9 +90,29 @@ const (
 	getDecisionsMaxLimit     = 200
 )
 
+// Resource caps for decision text. Security-1 F4/F8: unbounded
+// inputs let a single record_decision call grow the DB row to
+// megabytes and balloon get_decisions response payloads. Sized
+// generously above realistic real-world entries while preventing
+// the obvious abuse cases.
+const (
+	maxDecisionTopicBytes     = 256
+	maxDecisionChoiceBytes    = 4 << 10  // 4 KiB
+	maxDecisionReasoningBytes = 32 << 10 // 32 KiB
+)
+
 func recordDecision(ctx context.Context, ds DecisionStore, in RecordDecisionInput) (RecordDecisionOutput, error) {
 	if in.Topic == "" {
 		return RecordDecisionOutput{}, errors.New("record_decision: topic is required")
+	}
+	if len(in.Topic) > maxDecisionTopicBytes {
+		return RecordDecisionOutput{}, fmt.Errorf("record_decision: topic exceeds %d bytes", maxDecisionTopicBytes)
+	}
+	if len(in.Choice) > maxDecisionChoiceBytes {
+		return RecordDecisionOutput{}, fmt.Errorf("record_decision: choice exceeds %d bytes", maxDecisionChoiceBytes)
+	}
+	if len(in.Reasoning) > maxDecisionReasoningBytes {
+		return RecordDecisionOutput{}, fmt.Errorf("record_decision: reasoning exceeds %d bytes", maxDecisionReasoningBytes)
 	}
 	id, err := ds.RecordDecision(ctx, in.Topic, in.Choice, in.Reasoning, in.RelatedFiles, in.RelatedSymbols)
 	if err != nil {
