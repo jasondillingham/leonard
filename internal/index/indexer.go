@@ -17,6 +17,7 @@ import (
 	"time"
 
 	ignore "github.com/sabhiram/go-gitignore"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/jasondillingham/leonard/internal/parse"
 	"github.com/jasondillingham/leonard/internal/store"
@@ -226,7 +227,16 @@ func (i *Indexer) pruneStaleFiles() error {
 			toDelete = append(toDelete, f.Path)
 			continue
 		}
-		abs := filepath.Join(i.Root, filepath.FromSlash(f.Path))
+		// Bughunt-4 path-trust F4: a pre-v0.8 store could have rows
+		// with paths like "../sneaky.go" from before path-trust
+		// validation existed. Filter them through ResolveSafe so a
+		// stat on a path that escapes the project root doesn't
+		// happen — these rows get pruned along with the missing ones.
+		abs, ok := ResolveSafe(i.Root, filepath.FromSlash(f.Path))
+		if !ok {
+			toDelete = append(toDelete, f.Path)
+			continue
+		}
 		_, statErr := os.Stat(abs)
 		if statErr == nil {
 			continue
@@ -314,6 +324,18 @@ func (i *Indexer) absPath(p string) (string, error) {
 	return resolved, nil
 }
 
+// isSymlink reports whether path itself is a symbolic link (the link
+// itself — not whether it points at something that is, or whether the
+// target exists). Used by ResolveSafe to reject dangling symlinks
+// whose EvalSymlinks errors out but whose lexical path looks fine.
+func isSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeSymlink != 0
+}
+
 // ResolveSafe joins+cleans+symlink-evaluates claimed against root and
 // returns (abs, true) iff the result has root as a prefix. Exported
 // so internal/hooks can validate hook-payload file_path values with
@@ -365,6 +387,13 @@ func ResolveSafe(root, claimed string) (string, bool) {
 			if !contained(rRoot, rAbs) {
 				return "", false
 			}
+		} else if isSymlink(abs) {
+			// Bughunt-4 path-trust F2: dangling-symlink bypass.
+			// EvalSymlinks errors on a symlink whose target doesn't
+			// exist, which previously fell through to the lexical-
+			// pass branch returning ok. A symlink (live or dangling)
+			// can't be trusted to stay non-escaping — reject.
+			return "", false
 		}
 		return abs, true
 	}
@@ -472,12 +501,19 @@ func (i *Indexer) indexAbs(path string) error {
 // storeKey is the path key written to the store. Paths under Root are stored
 // as forward-slash relative paths so the index is portable across platforms
 // and stable when the root is moved.
+//
+// Bughunt-4 path-trust F3: paths are also Unicode-normalized to NFC so
+// the same on-disk file produces a single row regardless of the input
+// form. macOS HFS+ and APFS normalize filenames internally but the
+// userspace path string can arrive in either NFC or NFD; without this
+// normalization, indexing the same file twice (once via a tool emitting
+// NFC, once via NFD) created two rows with two complete symbol sets.
 func (i *Indexer) storeKey(abs string) string {
 	rel, err := filepath.Rel(i.Root, abs)
 	if err != nil {
-		return filepath.ToSlash(abs)
+		return norm.NFC.String(filepath.ToSlash(abs))
 	}
-	return filepath.ToSlash(rel)
+	return norm.NFC.String(filepath.ToSlash(rel))
 }
 
 func hashBytes(b []byte) string {

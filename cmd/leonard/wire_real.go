@@ -184,7 +184,16 @@ func (realRuntime) Doctor(_ context.Context, projectRoot, dataDir string) (Docto
 			rep.LastIndexedAt = f.IndexedAt
 		}
 		// Stale check: file path is relative to projectRoot.
-		abs := filepath.Join(projectRoot, filepath.FromSlash(f.Path))
+		// Bughunt-4 path-trust F4: filter the row through ResolveSafe
+		// so a pre-v0.8 store row whose path escapes the project
+		// root doesn't get stat'd outside the tree. Such rows are
+		// stale by definition (the v0.14 indexer rejects them at
+		// IndexFile time).
+		abs, ok := index.ResolveSafe(projectRoot, filepath.FromSlash(f.Path))
+		if !ok {
+			rep.StaleFiles = append(rep.StaleFiles, f.Path)
+			continue
+		}
 		if _, statErr := os.Stat(abs); errors.Is(statErr, fs.ErrNotExist) {
 			rep.StaleFiles = append(rep.StaleFiles, f.Path)
 		}

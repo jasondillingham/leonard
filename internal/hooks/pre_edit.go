@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jasondillingham/leonard/internal/index"
 	"github.com/jasondillingham/leonard/internal/telemetry"
 )
 
@@ -179,6 +180,16 @@ func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload
 	}
 	if filePath == "" || !strings.HasSuffix(filePath, ".go") {
 		return allowResponse(), nil
+	}
+	// Bughunt-4 path-trust F1: pre-edit used to read filePath through
+	// go/parser without gating it against the project root, giving a
+	// file-existence oracle and (when the path resolved to a real Go
+	// file outside the project) a parse-as-Go primitive. ResolveSafe
+	// here matches the post-edit and indexer-side wiring.
+	if opts.ModuleRoot != "" {
+		if _, ok := index.ResolveSafe(opts.ModuleRoot, filePath); !ok {
+			return allowResponse(), nil
+		}
 	}
 	// Pre-load the target file's imports once so each snippet can resolve
 	// aliases declared elsewhere in the same source file (Edit-to-a-body

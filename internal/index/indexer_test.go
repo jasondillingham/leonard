@@ -585,3 +585,40 @@ func TestIndexAll_SkipsSymlinkedFiles(t *testing.T) {
 		t.Errorf("real inside.go should still be indexed; got %d rows", len(syms))
 	}
 }
+
+// TestResolveSafe_RejectsDanglingSymlinks covers bughunt-4 path-trust
+// F2. A dangling symlink (live link, missing target) used to slip
+// past ResolveSafe because EvalSymlinks errors and the lexical-pass
+// branch returned ok. The fix detects the symlink-itself via Lstat
+// and rejects.
+func TestResolveSafe_RejectsDanglingSymlinks(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	linkPath := filepath.Join(root, "evil.go")
+	if err := os.Symlink("/this/target/definitely/does/not/exist.go", linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	_, ok := ResolveSafe(root, "evil.go")
+	if ok {
+		t.Error("ResolveSafe accepted a dangling symlink; F2 regression")
+	}
+}
+
+// TestStoreKey_NormalizesNFCNFD covers bughunt-4 path-trust F3. The
+// same on-disk file referenced with NFC and NFD path strings should
+// produce one storeKey, not two. Without normalization, the same file
+// got indexed twice with two complete symbol sets.
+func TestStoreKey_NormalizesNFCNFD(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	idx := New(nil, root)
+	// "café" — NFC = 4 codepoints (caf é-precomposed),
+	//          NFD = 5 codepoints (caf e-combining-acute)
+	nfc := filepath.Join(root, "café.go")
+	nfd := filepath.Join(root, "café.go")
+	keyNFC := idx.storeKey(nfc)
+	keyNFD := idx.storeKey(nfd)
+	if keyNFC != keyNFD {
+		t.Errorf("NFC and NFD should produce the same storeKey:\n NFC: %q\n NFD: %q", keyNFC, keyNFD)
+	}
+}
