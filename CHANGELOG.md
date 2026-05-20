@@ -7,6 +7,30 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.46.1 — Launch-surface accuracy sweep (bughunt-6 Theme B)
+
+Pure docs/config polish closing 13 launch-surface findings from
+bughunt-6 + security-2. Zero behavior changes.
+
+- **launch F2**: status line bumped v0.45.0 → v0.46.1.
+- **launch F3**: language-count consistency. Was "27+" / "Twenty-six" / 28 table rows / 39 in source. Now: 29 tree-sitter + 4 production + 3 SFC + 2 structured-file + 4 manifest formats, with SQL moved from "structured-file inspectors" to "tree-sitter languages" (it's tree-sitter-sequel, not bespoke).
+- **launch F4**: bughunt-1 HIGH count corrected (4 → 8) in the README narrative.
+- **launch F5**: bughunt-3 HIGH count corrected (6 → 3); Security #1's 2 HIGHs already had their own row.
+- **launch F6**: `audits/README.md` rewritten — 9 wrong filenames replaced; 3 missing files added; round-6 entries added.
+- **launch F7**: `examples/pydantic-ai/README.md` line numbers corrected (`Open` 42→103, `IndexAll` 104→274).
+- **launch F8**: v0.37.0 CHANGELOG attribution fixed — the Purser/Leonard PR was filed by the maintainer themselves while scaffolding Purser, not by an outside contributor.
+- **launch F9**: SECURITY.md "MCP stdin filter" row corrected v0.6 → v0.13.
+- **launch F10**: SECURITY.md "email the maintainer" line dropped; PVR is the canonical disclosure path.
+- **launch F14**: README Install section now states Rust toolchain requirement explicitly, plus compile times and `target/` cache footprint.
+- N3: stripped version-stamp parentheticals from language tables.
+
+Round-6 + Security-#2 entry added to the README "Bug-hunt discipline"
+table including the v0.46.0 CRITICAL closure.
+
+Still pending the user (not code-fixable):
+- B1: flip repo visibility to public.
+- launch F1: GitHub Actions billing/spending-limit (CI badge red).
+
 ## v0.45.1 — Launch polish
 
 A second-pass review against the "HN-tomorrow-morning" bar surfaced
@@ -149,7 +173,7 @@ now finds 3 occurrences of `basic_json::dump()` at correct lines.
 
 ## v0.37.0 — Configurable post-edit verifier (PR #3)
 
-External contribution from the Purser project. Adds opt-in
+Filed in the [issue + PR pair](https://github.com/jasondillingham/leonard/pull/3) shape (Issue #2 describes the constraint; PR #3 ships the fix that honors it) while scaffolding a Rust homelab project that wanted Leonard's verify loop driving `cargo check` instead of the hardcoded `go vet ./...`. Adds opt-in
 `[post_edit.verify]` section to `.leonard/config.toml` with
 `command`, `working_dir`, `timeout`. When set, post-edit hook
 runs the configured command through `sh -c` instead of the

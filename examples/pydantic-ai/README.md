@@ -15,8 +15,8 @@ $ ANTHROPIC_API_KEY=... uv run demo.py
 
 symbol                    exists  kind       where
 -------------------------------------------------------------------
-Open                      True    function   internal/store/store.go:42
-IndexAll                  True    function   internal/index/indexer.go:104
+Open                      True    function   internal/store/store.go:103
+IndexAll                  True    function   internal/index/indexer.go:274
 FabricatedDoesNotExist    False   unknown    (no match)
 
 agent summary: Two real Leonard symbols verified; one fabrication caught.

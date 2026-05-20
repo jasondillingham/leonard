@@ -8,11 +8,11 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status: v0.45.0 — stable.** Self-dogfooded across 45 minor releases with **five bug-hunt rounds and one focused security review**; every HIGH-severity finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
+**Status: v0.46.1 — stable.** Self-dogfooded across 46 minor releases with **six bug-hunt rounds and two focused security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ```
-27+ tree-sitter languages   +   4 production-dogfooded parsers   +   3 SFC preprocessors
-+ 3 structured-file inspectors (SQL, Jupyter, OpenAPI)
+29 tree-sitter languages   +   4 production-dogfooded parsers   +   3 SFC preprocessors
++ 2 structured-file inspectors (Jupyter, OpenAPI)
 + 4 manifest dependency-graph formats (package.json, Cargo.toml, go.mod, pom.xml)
 ```
 
@@ -48,7 +48,7 @@ These four ship with bespoke (non-tree-sitter) parsers and have been validated a
 
 ### Tree-sitter parsers
 
-Twenty-six additional languages share a single Rust helper (`internal/parse/treesitter/`) that statically links the tree-sitter runtime + per-language grammars. Build once with `cargo build --release` inside the crate; override via `LEONARD_TREESITTER_EXTRACTOR`.
+Twenty-nine additional languages share a single Rust helper (`internal/parse/treesitter/`) that statically links the tree-sitter runtime + per-language grammars. Build once with `cargo build --release` inside the crate; override via `LEONARD_TREESITTER_EXTRACTOR`.
 
 | Language | Extensions | Notable |
 |---|---|---|
@@ -60,7 +60,7 @@ Twenty-six additional languages share a single Rust helper (`internal/parse/tree
 | Scala | `.scala` | `_definition` convention; trait → interface. |
 | Dart | `.dart` | Flutter-friendly; function_signature parent-folding. |
 | C | `.c`, `.h` | function_definition + struct/union/enum/typedef. |
-| C++ | `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh` | v0.40 added in-class inline method extraction (header-only libraries like nlohmann/json fully indexed). |
+| C++ | `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh` | In-class inline methods extracted; header-only libraries like nlohmann/json fully indexed. |
 | PHP | `.php` | namespace + class/interface/trait/enum + methods. |
 | Lua | `.lua` | Three function-declaration shapes (plain, dot-indexed, method-indexed). |
 | Bash | `.sh`, `.bash` | Function definitions. |
@@ -78,12 +78,13 @@ Twenty-six additional languages share a single Rust helper (`internal/parse/tree
 | GraphQL SDL | `.graphql`, `.gql` | object/interface/enum/scalar/union/input + field_definitions (parent-folded). |
 | Protocol Buffers | `.proto` | message/enum/service/rpc (parent-folded). |
 | WIT | `.wit` | WebAssembly Component Model: interface/world/func/record/enum/variant/flags. |
+| SQL | `.sql` | CREATE TABLE/VIEW/INDEX/FUNCTION + column definitions (parent-folded under their table). |
 | GLSL | `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese` | Functions, struct types, uniform/varying/in/out declarations. |
 | HLSL | `.hlsl`, `.fx`, `.fxh` | Same query shape as GLSL (C-family). |
 
 ### SFC preprocessors
 
-Three frontend formats share a context-aware scanner (v0.42 — string/comment-aware, not regex-based) that extracts the script blocks and routes them through the TypeScript extractor with line-offset adjustment.
+Three frontend formats share a context-aware scanner (quote- and HTML-comment-aware) that extracts the script blocks and routes them through the TypeScript extractor with line-offset adjustment.
 
 | Format | Extension | What gets extracted |
 |---|---|---|
@@ -93,11 +94,10 @@ Three frontend formats share a context-aware scanner (v0.42 — string/comment-a
 
 ### Structured-file inspectors
 
-Specialized walkers for not-quite-code formats where "symbols" means something different from functions/types.
+Specialized walkers for formats where "symbols" means something different from functions/types.
 
 | Format | What gets extracted |
 |---|---|
-| SQL (`.sql`) | CREATE TABLE/VIEW/INDEX/FUNCTION + column definitions (parent-folded under their table). |
 | Jupyter notebooks (`.ipynb`) | Code cells concatenated and routed through the Python extractor (markdown/raw skipped). |
 | OpenAPI / Swagger | Filename-detected (`openapi.{yaml,yml,json}` or `swagger.*`). Operations (`GET /users/{id}`) + schema names. Both Swagger 2.0 (`definitions`) and OpenAPI 3 (`components.schemas`) handled. |
 
@@ -114,20 +114,23 @@ Four manifest formats emit one Symbol per declared dependency with `kind="depend
 
 ## Bug-hunt discipline
 
-Leonard's quality comes from a recurring loop: **bug-hunt → triage → fix → repeat**. Five rounds + one focused security review have shaped the codebase:
+Leonard's quality comes from a recurring loop: **bug-hunt → triage → fix → repeat**. Six rounds + two focused security reviews have shaped the codebase:
 
-| Round | Surface audited | HIGH findings | Documented as |
+| Round | Surface audited | Findings | Documented as |
 |---|---|---|---|
-| Bughunt #1 | Initial v0.1 dogfood surface | 4 HIGH | [`audits/bughunt-1-triage.md`](./audits/bughunt-1-triage.md) |
+| Bughunt #1 | Initial v0.1 dogfood surface | 8 HIGH | [`audits/bughunt-1-triage.md`](./audits/bughunt-1-triage.md) |
 | Bughunt #2 | Hooks, MCP, store, languages | 6 HIGH | [`audits/bughunt-2-triage.md`](./audits/bughunt-2-triage.md) |
-| Bughunt #3 | Rust parser, skip-dirs, OTel, eval framework | 6 HIGH | [`audits/bughunt-3-triage.md`](./audits/bughunt-3-triage.md) |
+| Bughunt #3 | Rust parser, skip-dirs, OTel, eval framework | 3 HIGH | [`audits/bughunt-3-triage.md`](./audits/bughunt-3-triage.md) |
 | Security #1 | Cross-cutting security review | 2 HIGH (confused-deputy + memory amp) | [`audits/security-1-review.md`](./audits/security-1-review.md) |
-| Bughunt #4 | v0.7-v0.12 surfaces | 4 HIGH | [`audits/bughunt-4-triage.md`](./audits/bughunt-4-triage.md) |
-| Bughunt #5 | v0.19-v0.38 surfaces (tree-sitter + 24 languages + ledger hygiene) | 3 HIGH | [`audits/bughunt-5-triage.md`](./audits/bughunt-5-triage.md) |
+| Bughunt #4 | v0.7–v0.12 surfaces | 4 HIGH | [`audits/bughunt-4-triage.md`](./audits/bughunt-4-triage.md) |
+| Bughunt #5 | v0.19–v0.38 surfaces (tree-sitter + ledger hygiene) | 3 HIGH | [`audits/bughunt-5-triage.md`](./audits/bughunt-5-triage.md) |
+| Bughunt #6 + Security #2 | v0.39–v0.45.1 surfaces (post-edit verifier, audits/ move) | **1 CRITICAL** + 9 HIGH | [`audits/bughunt-6-triage.md`](./audits/bughunt-6-triage.md) |
 
-Every HIGH severity finding has been closed. Most MEDIUMs too — the remainder live in the deferred lists per round.
+Every CRITICAL and HIGH severity finding has been closed (CRITICAL was the v0.46.0 RCE-chain fix — see [`audits/security-2-review.md`](./audits/security-2-review.md)). Most MEDIUMs too — the remainder live in the deferred lists per round.
 
 ## Install
+
+Requirements: **Go 1.25+** (auto-fetched via toolchain directive if 1.21+ is installed) and a **Rust toolchain** (`cargo`) for the syn-based Rust extractor and the 29-grammar tree-sitter dispatcher. The `python3` extractor uses whatever Python is already on `PATH`.
 
 ```bash
 git clone https://github.com/jasondillingham/leonard.git
@@ -135,19 +138,19 @@ cd leonard
 go install ./cmd/...   # leonard, leonard-mcp, leonard-hook → $GOPATH/bin
 ```
 
-For Rust source extraction:
+For Rust source extraction (~9 s, 55 MB target):
 
 ```bash
 (cd internal/parse/rust && cargo build --release)
 ```
 
-For the 26 tree-sitter languages:
+For the 29 tree-sitter languages (~15–20 s, ~400 MB target cache):
 
 ```bash
 (cd internal/parse/treesitter && cargo build --release)
 ```
 
-Python source extraction needs `python3` on PATH (no extra install). Requires Go 1.25+ (auto-fetched via toolchain).
+Both Rust helpers compile once per machine. Leonard discovers them automatically; override the paths via `LEONARD_RUST_EXTRACTOR` and `LEONARD_TREESITTER_EXTRACTOR` if you install them elsewhere.
 
 ## Dogfood wiring (this repo)
 
