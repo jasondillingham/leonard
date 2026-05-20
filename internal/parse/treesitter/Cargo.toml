@@ -1,0 +1,21 @@
+[package]
+name = "leonard-extract-treesitter"
+version = "0.1.0"
+edition = "2021"
+description = "Tree-sitter–based symbol extractor for Leonard. Receives source on stdin, emits Leonard's Symbol JSON shape on stdout. One binary, multi-language: --lang java|kotlin|... selects the grammar."
+publish = false
+
+[[bin]]
+name = "leonard-extract-treesitter"
+path = "src/main.rs"
+
+[dependencies]
+tree-sitter = "0.25"
+tree-sitter-java = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
