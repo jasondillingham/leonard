@@ -104,12 +104,19 @@ func TestDeleteFiles_ChunkBoundary(t *testing.T) {
 }
 
 // BenchmarkDeleteFiles_1k seeds 1000 file rows (each with 10 symbols)
-// then deletes them in one batched call. Apple M1 Pro measurement:
-// ~5.8s/op — pure SQLite FK-cascade + WAL fsync cost. The benchmark
-// exists as a regression guard against the v0.6.1 per-row variant,
-// which averaged ~1.3s PER ROW (1k rows ≈ 22 minutes). v0.7 is
-// ~225× faster on this workload; if a future change re-introduces
-// per-row commit overhead, this benchmark catches it.
+// then deletes them in one batched call. Two regression guards:
+//
+//   - The v0.6.1 per-row variant averaged ~1.3s PER ROW (1k rows ≈
+//     22 minutes). The v0.7.0 single-tx batched form cut that to
+//     ~5.8s for the whole 1k.
+//   - v0.7.1 added the idx_symbols_parent index (the v0.7.0 commit
+//     message had misattributed the residual ~5.8s to WAL fsync —
+//     bughunt-3 skip-dirs F1 traced it to the unindexed
+//     self-referential parent_id column). Same benchmark now runs
+//     ~42ms/op on an M1 Pro, ~137× faster than v0.7.0.
+//
+// If a future change re-introduces per-row commit overhead OR drops
+// the parent_id index, this benchmark catches it.
 func BenchmarkDeleteFiles_1k(b *testing.B) {
 	now := time.Now().Unix()
 	for n := 0; n < b.N; n++ {

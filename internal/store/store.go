@@ -15,7 +15,7 @@ import (
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 4
+const schemaVersion = 5
 
 // File describes an indexed source file.
 type File struct {
@@ -146,6 +146,7 @@ var migrations = []func(*sql.Tx) error{
 	migrateV2,
 	migrateV3,
 	migrateV4,
+	migrateV5,
 }
 
 func (s *Store) migrate() error {
@@ -305,6 +306,20 @@ func migrateV4(tx *sql.Tx) error {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
 		}
+	}
+	return nil
+}
+
+// migrateV5 adds an index on the self-referential symbols.parent_id
+// column. Without it, the FK CASCADE that fires when a parent symbol
+// is deleted does a full-table scan of children — which dominated
+// the v0.7.0 BenchmarkDeleteFiles_1k cost (~5.8s/op was attributed
+// to WAL fsync in that commit message; the real bottleneck was this
+// missing index). Bughunt-3 skip-dirs F1 measured ~180× speedup
+// with the index in place: same benchmark drops to ~38ms/op.
+func migrateV5(tx *sql.Tx) error {
+	if _, err := tx.Exec(`CREATE INDEX idx_symbols_parent ON symbols(parent_id)`); err != nil {
+		return fmt.Errorf("exec idx_symbols_parent: %w", err)
 	}
 	return nil
 }
