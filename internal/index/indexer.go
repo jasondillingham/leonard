@@ -124,6 +124,13 @@ var langExtractors = map[string]struct {
 	".sql":     {lang: "sql", extract: parse.ExtractSQL},
 	".ipynb":   {lang: "jupyter", extract: parse.ExtractJupyter},
 	".wit":     {lang: "wit", extract: parse.ExtractWIT},
+	".astro":   {lang: "astro", extract: parse.ExtractAstro},
+	// Solid.js is documented as "a semantic layer on TSX" — the
+	// files are JSX/TSX and the existing TypeScript extractor
+	// covers function-component declarations directly. Register
+	// .jsx so Solid (and other JSX-emitting frameworks) get
+	// indexed without a Solid-specific extractor.
+	".jsx":     {lang: "typescript", extract: parse.ExtractTypeScript},
 }
 
 // langExtractorsByName handles files whose basename (rather than

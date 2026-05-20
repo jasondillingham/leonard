@@ -45,6 +45,58 @@ func ExtractSvelte(path string, src []byte) ([]store.Symbol, error) {
 	return extractEmbeddedScript(path, src)
 }
 
+// astroFrontmatterRe matches an Astro component's frontmatter
+// fence — the `---`-delimited TypeScript block at the top of an
+// .astro file. The body between the fences is the component's
+// imports + local logic; everything after the closing fence is
+// the template. Capture group 1 is the script body.
+var astroFrontmatterRe = regexp.MustCompile(`(?s)\A---\s*\n(.*?)\n---`)
+
+// ExtractAstro handles Astro single-file components. The format
+// has frontmatter (TypeScript) between `---` fences at the top,
+// then HTML-like template + optional `<script>` blocks. v0.32
+// extracts:
+//   - The frontmatter body (routed through ExtractTypeScript).
+//   - Any `<script>...</script>` blocks in the template (same
+//     reuse as Vue/Svelte).
+// Line numbers are SFC-relative thanks to the offset pass.
+func ExtractAstro(path string, src []byte) ([]store.Symbol, error) {
+	var out []store.Symbol
+	// Frontmatter — only one block per file by spec, and only at
+	// the very start. The capture starts after the opening `---\n`.
+	if m := astroFrontmatterRe.FindSubmatchIndex(src); m != nil {
+		bodyStart := m[2]
+		body := src[bodyStart:m[3]]
+		// lineOffset counts newlines from start of file up to bodyStart
+		// (which is after the `---\n` opener). The opener consumed at
+		// least one line, so the script content starts on line 2.
+		lineOffset := 0
+		for _, b := range src[:bodyStart] {
+			if b == '\n' {
+				lineOffset++
+			}
+		}
+		syms, err := ExtractTypeScript(path, body)
+		if err != nil {
+			return out, err
+		}
+		for i := range syms {
+			syms[i].StartLine += lineOffset
+			syms[i].EndLine += lineOffset
+		}
+		out = append(out, syms...)
+	}
+	// Plus any embedded <script>...</script> blocks in the template
+	// body — same shape as Vue/Svelte. Astro client-side scripts
+	// live here.
+	scriptSyms, err := extractEmbeddedScript(path, src)
+	if err != nil {
+		return out, err
+	}
+	out = append(out, scriptSyms...)
+	return out, nil
+}
+
 // extractEmbeddedScript walks every <script>...</script> block in
 // src, runs each through ExtractTypeScript, and offsets each
 // extracted Symbol's start_line/end_line by the script block's
