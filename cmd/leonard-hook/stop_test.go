@@ -87,13 +87,10 @@ func TestStopCmd_SurfacesSeededUnverifiedClaims(t *testing.T) {
 	if !resp.Continue {
 		t.Error("Continue must be true — Stop hook is advisory")
 	}
-	if resp.HookSpecificOutput == nil {
-		t.Fatalf("expected surfacing, got nil hookSpecificOutput; stdout=%s", raw)
+	if resp.SystemMessage == "" {
+		t.Fatalf("expected surfacing, got empty SystemMessage; stdout=%s", raw)
 	}
-	if resp.HookSpecificOutput.HookEventName != "Stop" {
-		t.Errorf("hookEventName = %q", resp.HookSpecificOutput.HookEventName)
-	}
-	ctx := resp.HookSpecificOutput.AdditionalContext
+	ctx := resp.SystemMessage
 	for _, want := range []string{"Renamed Foo to Bar", "Added retry logic"} {
 		if !strings.Contains(ctx, want) {
 			t.Errorf("surfaced context missing %q\n%s", want, ctx)
@@ -116,8 +113,8 @@ func TestStopCmd_VerifiedOnlyEmitsNoSurfacing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v\nstdout=%s", err, raw)
 	}
-	if resp.HookSpecificOutput != nil {
-		t.Errorf("expected no surfacing when all claims verified, got %+v", resp.HookSpecificOutput)
+	if resp.SystemMessage != "" {
+		t.Errorf("expected no surfacing when all claims verified, got SystemMessage=%q", resp.SystemMessage)
 	}
 	if !resp.Continue {
 		t.Error("Continue should be true")
@@ -134,8 +131,8 @@ func TestStopCmd_EmptyStoreEmitsNoSurfacing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v\nstdout=%s", err, raw)
 	}
-	if resp.HookSpecificOutput != nil {
-		t.Errorf("expected no surfacing for empty claims table, got %+v", resp.HookSpecificOutput)
+	if resp.SystemMessage != "" {
+		t.Errorf("expected no surfacing for empty claims table, got SystemMessage=%q", resp.SystemMessage)
 	}
 	if !resp.Continue {
 		t.Error("Continue should be true")
@@ -157,8 +154,8 @@ func TestStopCmd_MissingStoreEmitsNoSurfacing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v\nstdout=%s", err, raw)
 	}
-	if resp.HookSpecificOutput != nil {
-		t.Errorf("expected no surfacing for missing store, got %+v", resp.HookSpecificOutput)
+	if resp.SystemMessage != "" {
+		t.Errorf("expected no surfacing for missing store, got SystemMessage=%q", resp.SystemMessage)
 	}
 	if !resp.Continue {
 		t.Error("Continue should be true even when store is missing")
@@ -190,10 +187,10 @@ func TestStopCmd_ConfigCapHonored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v\nstdout=%s", err, raw)
 	}
-	if resp.HookSpecificOutput == nil {
+	if resp.SystemMessage == "" {
 		t.Fatalf("expected surfacing; stdout=%s", raw)
 	}
-	ctx := resp.HookSpecificOutput.AdditionalContext
+	ctx := resp.SystemMessage
 	if got := strings.Count(ctx, "\n- "); got != 2 {
 		t.Errorf("expected exactly 2 bullets at cap=2, got %d:\n%s", got, ctx)
 	}
@@ -229,10 +226,10 @@ func TestStopCmd_DefaultCapTwentyWhenConfigAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v\nstdout=%s", err, raw)
 	}
-	if resp.HookSpecificOutput == nil {
+	if resp.SystemMessage == "" {
 		t.Fatalf("expected surfacing; stdout=%s", raw)
 	}
-	if got := strings.Count(resp.HookSpecificOutput.AdditionalContext, "\n- "); got != hooks.DefaultStopClaimLimit {
+	if got := strings.Count(resp.SystemMessage, "\n- "); got != hooks.DefaultStopClaimLimit {
 		t.Errorf("expected default cap %d, got %d", hooks.DefaultStopClaimLimit, got)
 	}
 }

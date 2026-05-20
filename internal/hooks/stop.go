@@ -32,21 +32,23 @@ type ClaimsReader interface {
 	GetUnverifiedClaims(sessionID string) ([]store.Claim, error)
 }
 
-// StopResponse follows the same response shape SessionStart uses — surfaced
-// Markdown lives in hookSpecificOutput.additionalContext. Continue is always
-// true: phase 3 keeps the Stop hook advisory, so surfacing claims never
-// blocks the session from ending.
+// StopResponse is the JSON document the Stop hook emits. Claude Code's
+// schema validator only accepts hookSpecificOutput for PreToolUse,
+// UserPromptSubmit, PostToolUse, and PostToolBatch — emitting it from
+// Stop dumps a schema-mismatch error into the user's session every time
+// the hook fires. Stop's surfacing channels are systemMessage (visible
+// to the user, not the model) or decision="block" + reason (visible to
+// the model, but blocks the session from ending).
+//
+// We use systemMessage: the original intent of the surfacing is
+// advisory and per-edit failure context already reaches the model via
+// PostToolUse's hookSpecificOutput.additionalContext (the F4 fix), so
+// duplicating that surface at Stop time would be redundant and would
+// turn every routine session-end into an interrupt.
 type StopResponse struct {
-	Continue           bool                `json:"continue"`
-	SuppressOutput     bool                `json:"suppressOutput,omitempty"`
-	HookSpecificOutput *StopSpecificOutput `json:"hookSpecificOutput,omitempty"`
-}
-
-// StopSpecificOutput carries the surfaced Markdown. HookEventName is set to
-// "Stop" so the response self-identifies to Claude Code.
-type StopSpecificOutput struct {
-	HookEventName     string `json:"hookEventName"`
-	AdditionalContext string `json:"additionalContext"`
+	Continue       bool   `json:"continue"`
+	SuppressOutput bool   `json:"suppressOutput,omitempty"`
+	SystemMessage  string `json:"systemMessage,omitempty"`
 }
 
 // StopOptions wires the Stop handler to its collaborators. A nil Claims
@@ -100,10 +102,7 @@ func HandleStop(_ context.Context, opts StopOptions, stdin io.Reader, stdout io.
 		if len(claims) > limit {
 			claims = claims[:limit]
 		}
-		resp.HookSpecificOutput = &StopSpecificOutput{
-			HookEventName:     "Stop",
-			AdditionalContext: formatUnverifiedClaims(claims),
-		}
+		resp.SystemMessage = formatUnverifiedClaims(claims)
 	}
 	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 		return fmt.Errorf("hooks: encode Stop response: %w", err)

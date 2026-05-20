@@ -78,13 +78,10 @@ func TestHandleStop_SurfacesUnverifiedClaims(t *testing.T) {
 	if !resp.Continue {
 		t.Error("Continue must be true — Stop hook is advisory")
 	}
-	if resp.HookSpecificOutput == nil {
-		t.Fatal("HookSpecificOutput is nil — expected surfacing")
+	if resp.SystemMessage == "" {
+		t.Fatal("SystemMessage is empty — expected surfacing")
 	}
-	if resp.HookSpecificOutput.HookEventName != "Stop" {
-		t.Errorf("hookEventName = %q", resp.HookSpecificOutput.HookEventName)
-	}
-	ctx := resp.HookSpecificOutput.AdditionalContext
+	ctx := resp.SystemMessage
 	if !strings.HasPrefix(ctx, "## Unverified claims (from Leonard)") {
 		t.Errorf("surfaced context missing heading: %q", ctx)
 	}
@@ -117,8 +114,8 @@ func TestHandleStop_NilReaderEmitsNoSurfacing(t *testing.T) {
 	if !resp.Continue {
 		t.Error("Continue should be true for nil reader")
 	}
-	if resp.HookSpecificOutput != nil {
-		t.Errorf("expected no surfacing, got %+v", resp.HookSpecificOutput)
+	if resp.SystemMessage != "" {
+		t.Errorf("expected no surfacing, got SystemMessage=%q", resp.SystemMessage)
 	}
 }
 
@@ -136,8 +133,8 @@ func TestHandleStop_EmptyClaimsEmitsNoSurfacing(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.HookSpecificOutput != nil {
-		t.Errorf("expected no surfacing for empty claims, got %+v", resp.HookSpecificOutput)
+	if resp.SystemMessage != "" {
+		t.Errorf("expected no surfacing for empty claims, got SystemMessage=%q", resp.SystemMessage)
 	}
 	if !resp.Continue {
 		t.Error("Continue should be true")
@@ -164,10 +161,10 @@ func TestHandleStop_ExplicitLimitTruncates(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.HookSpecificOutput == nil {
+	if resp.SystemMessage == "" {
 		t.Fatal("expected surfacing")
 	}
-	ctx := resp.HookSpecificOutput.AdditionalContext
+	ctx := resp.SystemMessage
 	if got := strings.Count(ctx, "\n- "); got != 2 {
 		t.Errorf("expected exactly 2 bullets, got %d:\n%s", got, ctx)
 	}
@@ -198,10 +195,10 @@ func TestHandleStop_ZeroLimitFallsBackToDefault(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.HookSpecificOutput == nil {
+	if resp.SystemMessage == "" {
 		t.Fatal("expected surfacing")
 	}
-	if got := strings.Count(resp.HookSpecificOutput.AdditionalContext, "\n- "); got != DefaultStopClaimLimit {
+	if got := strings.Count(resp.SystemMessage, "\n- "); got != DefaultStopClaimLimit {
 		t.Errorf("expected %d bullets at default limit, got %d", DefaultStopClaimLimit, got)
 	}
 }
@@ -223,7 +220,7 @@ func TestHandleStop_NegativeLimitFallsBackToDefault(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got := strings.Count(resp.HookSpecificOutput.AdditionalContext, "\n- "); got != DefaultStopClaimLimit {
+	if got := strings.Count(resp.SystemMessage, "\n- "); got != DefaultStopClaimLimit {
 		t.Errorf("expected %d bullets at default limit, got %d", DefaultStopClaimLimit, got)
 	}
 }
@@ -269,7 +266,7 @@ func TestHandleStop_LongClaimTruncatedWithEllipsis(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	ctx := resp.HookSpecificOutput.AdditionalContext
+	ctx := resp.SystemMessage
 	if !strings.Contains(ctx, "…") {
 		t.Errorf("expected ellipsis on truncated long claim: %q", ctx)
 	}
