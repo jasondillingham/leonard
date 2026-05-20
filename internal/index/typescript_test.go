@@ -56,33 +56,33 @@ func TestIndexAll_TypeScript(t *testing.T) {
 		qname string
 	}{
 		// From module.ts
-		{"VERSION", "const", "VERSION"},
-		{"PUBLIC_NAME", "const", "PUBLIC_NAME"},
-		{"counter", "var", "counter"},
-		{"legacyFlag", "var", "legacyFlag"},
-		{"a", "const", "a"},
-		{"b", "const", "b"},
-		{"hello", "function", "hello"},
-		{"_helper", "function", "_helper"},
-		{"fetchAll", "function", "fetchAll"},
-		{"Greeter", "interface", "Greeter"},
-		{"ID", "type", "ID"},
-		{"Pair", "type", "Pair"},
-		{"Container", "type", "Container"},
-		{"_PrivateBox", "type", "_PrivateBox"},
-		{"add", "method", "Container.add"},
-		{"_refresh", "method", "Container._refresh"},
-		{"load", "method", "Container.load"},
+		{"VERSION", "const", "module.VERSION"},
+		{"PUBLIC_NAME", "const", "module.PUBLIC_NAME"},
+		{"counter", "var", "module.counter"},
+		{"legacyFlag", "var", "module.legacyFlag"},
+		{"a", "const", "module.a"},
+		{"b", "const", "module.b"},
+		{"hello", "function", "module.hello"},
+		{"_helper", "function", "module._helper"},
+		{"fetchAll", "function", "module.fetchAll"},
+		{"Greeter", "interface", "module.Greeter"},
+		{"ID", "type", "module.ID"},
+		{"Pair", "type", "module.Pair"},
+		{"Container", "type", "module.Container"},
+		{"_PrivateBox", "type", "module._PrivateBox"},
+		{"add", "method", "module.Container.add"},
+		{"_refresh", "method", "module.Container._refresh"},
+		{"load", "method", "module.Container.load"},
 		// `constructor` exists on both Container and _PrivateBox.
 		// From component.tsx
-		{"Props", "interface", "Props"},
-		{"Greeting", "function", "Greeting"},
+		{"Props", "interface", "component.Props"},
+		{"Greeting", "function", "component.Greeting"},
 		// selfhost F2: Counter is `const Counter = (...) => …` — arrow
 		// exports are classified as function, matching how a hand-written
 		// `function Counter(...)` would be recorded.
-		{"Counter", "function", "Counter"},
-		{"Panel", "type", "Panel"},
-		{"render", "method", "Panel.render"},
+		{"Counter", "function", "component.Counter"},
+		{"Panel", "type", "component.Panel"},
+		{"render", "method", "component.Panel.render"},
 	}
 	for _, w := range wantSymbols {
 		syms, err := s.FindSymbolsByName(w.name)

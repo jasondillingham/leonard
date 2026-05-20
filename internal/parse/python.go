@@ -30,9 +30,10 @@ func ExtractPython(path string, src []byte) ([]store.Symbol, error) {
 		return nil, fmt.Errorf("parse %s: top-level node is %T, want *ast.Module", path, mod)
 	}
 
+	prefix := moduleQualifier(path)
 	var syms []store.Symbol
 	for _, stmt := range module.Body {
-		syms = append(syms, pythonTopLevelStmt(path, stmt)...)
+		syms = append(syms, pythonTopLevelStmt(path, prefix, stmt)...)
 	}
 	return syms, nil
 }
@@ -81,14 +82,16 @@ func summarizePythonParseError(err error) string {
 
 // pythonTopLevelStmt extracts symbols from a module-level statement. The brief
 // limits v0 to def/class/assign; anything else (imports, ifs, exprs) is ignored.
-func pythonTopLevelStmt(path string, stmt ast.Stmt) []store.Symbol {
+// prefix is the dotted module qualifier from moduleQualifier(path) — empty for
+// callers that didn't compute one, in which case qualified_names stay bare.
+func pythonTopLevelStmt(path, prefix string, stmt ast.Stmt) []store.Symbol {
 	switch s := stmt.(type) {
 	case *ast.FunctionDef:
-		return []store.Symbol{pythonFunctionSymbol(path, "", s)}
+		return []store.Symbol{pythonFunctionSymbol(path, prefix, "", s)}
 	case *ast.ClassDef:
-		return pythonClassSymbols(path, s)
+		return pythonClassSymbols(path, prefix, s)
 	case *ast.Assign:
-		return pythonAssignSymbols(path, s)
+		return pythonAssignSymbols(path, prefix, s)
 	}
 	return nil
 }
@@ -96,10 +99,13 @@ func pythonTopLevelStmt(path string, stmt ast.Stmt) []store.Symbol {
 // pythonFunctionSymbol builds a function (or method, when classQname is set)
 // symbol from a FunctionDef. Decorators are intentionally ignored for v0 — the
 // brief says to extract the wrapped name as if the decorator were absent.
-func pythonFunctionSymbol(path, classQname string, fn *ast.FunctionDef) store.Symbol {
+//
+// classQname, when non-empty, already includes the module prefix (it was
+// built by pythonClassSymbols), so we don't add prefix again on methods.
+func pythonFunctionSymbol(path, prefix, classQname string, fn *ast.FunctionDef) store.Symbol {
 	name := string(fn.Name)
 	kind := "function"
-	qname := name
+	qname := joinQName(prefix, name)
 	if classQname != "" {
 		kind = "method"
 		qname = classQname + "." + name
@@ -119,12 +125,13 @@ func pythonFunctionSymbol(path, classQname string, fn *ast.FunctionDef) store.Sy
 // pythonClassSymbols returns the class itself plus one entry per method defined
 // directly inside its body. Nested classes and class-body assignments are
 // skipped — v0 only walks one level deep.
-func pythonClassSymbols(path string, cls *ast.ClassDef) []store.Symbol {
+func pythonClassSymbols(path, prefix string, cls *ast.ClassDef) []store.Symbol {
 	name := string(cls.Name)
+	classQname := joinQName(prefix, name)
 	out := []store.Symbol{{
 		FilePath:      path,
 		Name:          name,
-		QualifiedName: name,
+		QualifiedName: classQname,
 		Kind:          "type",
 		Signature:     pythonClassSignature(cls),
 		StartLine:     cls.GetLineno(),
@@ -133,7 +140,7 @@ func pythonClassSymbols(path string, cls *ast.ClassDef) []store.Symbol {
 	}}
 	for _, sub := range cls.Body {
 		if fn, ok := sub.(*ast.FunctionDef); ok {
-			out = append(out, pythonFunctionSymbol(path, name, fn))
+			out = append(out, pythonFunctionSymbol(path, prefix, classQname, fn))
 		}
 	}
 	return out
@@ -141,7 +148,7 @@ func pythonClassSymbols(path string, cls *ast.ClassDef) []store.Symbol {
 
 // pythonAssignSymbols extracts one var symbol per Name target. Non-Name targets
 // (attribute writes like `x.y = …`, subscripts, tuple unpacking) are skipped.
-func pythonAssignSymbols(path string, a *ast.Assign) []store.Symbol {
+func pythonAssignSymbols(path, prefix string, a *ast.Assign) []store.Symbol {
 	end := deepestLineno(a, a.GetLineno())
 	var out []store.Symbol
 	for _, target := range a.Targets {
@@ -156,7 +163,7 @@ func pythonAssignSymbols(path string, a *ast.Assign) []store.Symbol {
 		out = append(out, store.Symbol{
 			FilePath:      path,
 			Name:          name,
-			QualifiedName: name,
+			QualifiedName: joinQName(prefix, name),
 			Kind:          "var",
 			Signature:     "var " + name,
 			StartLine:     a.GetLineno(),

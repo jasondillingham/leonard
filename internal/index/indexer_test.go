@@ -293,3 +293,44 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// TestIndexAll_QualifiedNamesDisambiguateCrossFile covers selfhost F1: two
+// files in different directories defining the same top-level name used to
+// collide on qualified_name=="VERSION", making verify_symbol output
+// ambiguous and reducing the index to "first one wins" semantics for the
+// stale-decisions check. Python and TypeScript symbols now carry a
+// filename-derived dotted prefix so their qualified_names are distinct.
+func TestIndexAll_QualifiedNamesDisambiguateCrossFile(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, map[string]string{
+		"alpha/module.py":  "VERSION = '1.0'\n",
+		"beta/module.py":   "VERSION = '2.0'\n",
+		"src/module.ts":    "export const VERSION = '3.0';\n",
+		"lib/module.ts":    "export const VERSION = '4.0';\n",
+	})
+	idx := New(fx.store, fx.root)
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	syms, err := fx.store.FindSymbolsByName("VERSION")
+	if err != nil {
+		t.Fatalf("FindSymbolsByName: %v", err)
+	}
+	if len(syms) != 4 {
+		t.Fatalf("expected 4 VERSION rows (2 python + 2 typescript), got %d", len(syms))
+	}
+
+	seen := map[string]string{}
+	for _, s := range syms {
+		if prior, dup := seen[s.QualifiedName]; dup {
+			t.Errorf("qualified_name %q collides across files %q and %q — module prefix not applied", s.QualifiedName, prior, s.FilePath)
+		}
+		seen[s.QualifiedName] = s.FilePath
+		// The prefix must include the directory component, not just the basename,
+		// or alpha/module.py and beta/module.py would still collide.
+		if s.QualifiedName == "VERSION" {
+			t.Errorf("bare qualified_name=%q on %s — fix didn't apply", s.QualifiedName, s.FilePath)
+		}
+	}
+}

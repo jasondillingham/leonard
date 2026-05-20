@@ -21,7 +21,7 @@ func ExtractTypeScript(path string, src []byte) ([]store.Symbol, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan %s: %w", path, err)
 	}
-	p := &tsParser{path: path, tokens: tokenizeTS(stripped)}
+	p := &tsParser{path: path, prefix: moduleQualifier(path), tokens: tokenizeTS(stripped)}
 	p.parseFile()
 	return p.syms, nil
 }
@@ -438,7 +438,13 @@ func tokenizeTS(src []byte) []tsToken {
 // not matched is skipped a token at a time so unsupported constructs don't
 // stall the parser.
 type tsParser struct {
-	path   string
+	path string
+	// prefix is the dotted module qualifier (moduleQualifier(path)) that
+	// gets prepended to every top-level qualified_name so two files with
+	// the same base name (e.g. utils.ts in different directories) don't
+	// shadow each other in the index. Methods inherit the prefix
+	// indirectly through their enclosing class's qname.
+	prefix string
 	tokens []tsToken
 	pos    int
 	syms   []store.Symbol
@@ -575,7 +581,7 @@ func (p *tsParser) parseFunction(exported bool, startLine int) bool {
 	p.syms = append(p.syms, store.Symbol{
 		FilePath:      p.path,
 		Name:          nameTok.val,
-		QualifiedName: nameTok.val,
+		QualifiedName: joinQName(p.prefix, nameTok.val),
 		Kind:          "function",
 		Signature:     "function " + nameTok.val + "(" + extractParamNames(params) + ")",
 		StartLine:     startLine,
@@ -634,7 +640,7 @@ func (p *tsParser) parseClass(exported bool, startLine int) bool {
 	p.syms = append(p.syms, store.Symbol{
 		FilePath:      p.path,
 		Name:          nameTok.val,
-		QualifiedName: nameTok.val,
+		QualifiedName: joinQName(p.prefix, nameTok.val),
 		Kind:          "type",
 		Signature:     "class " + nameTok.val,
 		StartLine:     startLine,
@@ -774,7 +780,7 @@ func (p *tsParser) parseClassMember(className string, parentExported bool) bool 
 	p.syms = append(p.syms, store.Symbol{
 		FilePath:      p.path,
 		Name:          memberName,
-		QualifiedName: className + "." + memberName,
+		QualifiedName: joinQName(p.prefix, className) + "." + memberName,
 		Kind:          "method",
 		Signature:     memberName + "(" + extractParamNames(params) + ")",
 		StartLine:     startLine,
@@ -827,7 +833,7 @@ func (p *tsParser) parseInterface(exported bool, startLine int) bool {
 	p.syms = append(p.syms, store.Symbol{
 		FilePath:      p.path,
 		Name:          nameTok.val,
-		QualifiedName: nameTok.val,
+		QualifiedName: joinQName(p.prefix, nameTok.val),
 		Kind:          "interface",
 		Signature:     "interface " + nameTok.val,
 		StartLine:     startLine,
@@ -893,7 +899,7 @@ func (p *tsParser) parseTypeAlias(exported bool, startLine int) bool {
 	p.syms = append(p.syms, store.Symbol{
 		FilePath:      p.path,
 		Name:          nameTok.val,
-		QualifiedName: nameTok.val,
+		QualifiedName: joinQName(p.prefix, nameTok.val),
 		Kind:          "type",
 		Signature:     "type " + nameTok.val,
 		StartLine:     startLine,
@@ -972,7 +978,7 @@ func (p *tsParser) parseVarDecl(kw string, exported bool, startLine int) bool {
 		p.syms = append(p.syms, store.Symbol{
 			FilePath:      p.path,
 			Name:          nameTok.val,
-			QualifiedName: nameTok.val,
+			QualifiedName: joinQName(p.prefix, nameTok.val),
 			Kind:          entryKind,
 			Signature:     signature,
 			StartLine:     startLine,

@@ -57,22 +57,22 @@ func TestIndexAll_Python(t *testing.T) {
 		qname string
 	}{
 		// From module.py
-		{"VERSION", "var", "VERSION"},
-		{"PUBLIC_NAME", "var", "PUBLIC_NAME"},
-		{"_internal", "var", "_internal"},
-		{"hello", "function", "hello"},
-		{"add", "function", "add"},
-		{"_helper", "function", "_helper"},
-		{"Widget", "type", "Widget"},
-		{"_PrivateWidget", "type", "_PrivateWidget"},
+		{"VERSION", "var", "module.VERSION"},
+		{"PUBLIC_NAME", "var", "module.PUBLIC_NAME"},
+		{"_internal", "var", "module._internal"},
+		{"hello", "function", "module.hello"},
+		{"add", "function", "module.add"},
+		{"_helper", "function", "module._helper"},
+		{"Widget", "type", "module.Widget"},
+		{"_PrivateWidget", "type", "module._PrivateWidget"},
 		// From methods.py
-		{"Container", "type", "Container"},
-		{"Renderer", "type", "Renderer"},
-		{"__init__", "method", "Container.__init__"},
-		{"remove", "method", "Container.remove"},
-		{"_refresh", "method", "Container._refresh"},
-		{"render", "method", "Renderer.render"},
-		{"flush", "method", "Renderer.flush"},
+		{"Container", "type", "methods.Container"},
+		{"Renderer", "type", "methods.Renderer"},
+		{"__init__", "method", "methods.Container.__init__"},
+		{"remove", "method", "methods.Container.remove"},
+		{"_refresh", "method", "methods.Container._refresh"},
+		{"render", "method", "methods.Renderer.render"},
+		{"flush", "method", "methods.Renderer.flush"},
 	}
 	for _, w := range wantSymbols {
 		syms, err := s.FindSymbolsByName(w.name)

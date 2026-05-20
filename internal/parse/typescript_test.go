@@ -91,25 +91,25 @@ func TestExtractTypeScript_Symbols(t *testing.T) {
 	}
 
 	expect := map[string]want{
-		"const:VERSION":           {"const", "VERSION", true},
-		"var:counter":             {"var", "counter", false},
-		"var:legacyFlag":          {"var", "legacyFlag", false},
-		"const:a":                 {"const", "a", false},
-		"const:b":                 {"const", "b", false},
-		"function:greet":          {"function", "greet", true},
-		"function:_privateHelper": {"function", "_privateHelper", false},
-		"function:fetchAll":       {"function", "fetchAll", true},
-		"interface:Greeter":       {"interface", "Greeter", true},
-		"type:ID":                 {"type", "ID", true},
-		"type:Pair":               {"type", "Pair", false},
-		"type:Container":          {"type", "Container", true},
-		"type:_Private":           {"type", "_Private", false},
-		"method:Container.constructor": {"method", "Container.constructor", true},
-		"method:Container.add":         {"method", "Container.add", true},
-		"method:Container._refresh":    {"method", "Container._refresh", true},
-		"method:Container.load":        {"method", "Container.load", true},
-		"method:Container.size":        {"method", "Container.size", true},
-		"method:_Private.constructor":  {"method", "_Private.constructor", false},
+		"const:sample.VERSION":           {"const", "sample.VERSION", true},
+		"var:sample.counter":             {"var", "sample.counter", false},
+		"var:sample.legacyFlag":          {"var", "sample.legacyFlag", false},
+		"const:sample.a":                 {"const", "sample.a", false},
+		"const:sample.b":                 {"const", "sample.b", false},
+		"function:sample.greet":          {"function", "sample.greet", true},
+		"function:sample._privateHelper": {"function", "sample._privateHelper", false},
+		"function:sample.fetchAll":       {"function", "sample.fetchAll", true},
+		"interface:sample.Greeter":       {"interface", "sample.Greeter", true},
+		"type:sample.ID":                 {"type", "sample.ID", true},
+		"type:sample.Pair":               {"type", "sample.Pair", false},
+		"type:sample.Container":          {"type", "sample.Container", true},
+		"type:sample._Private":           {"type", "sample._Private", false},
+		"method:sample.Container.constructor": {"method", "sample.Container.constructor", true},
+		"method:sample.Container.add":         {"method", "sample.Container.add", true},
+		"method:sample.Container._refresh":    {"method", "sample.Container._refresh", true},
+		"method:sample.Container.load":        {"method", "sample.Container.load", true},
+		"method:sample.Container.size":        {"method", "sample.Container.size", true},
+		"method:sample._Private.constructor":  {"method", "sample._Private.constructor", false},
 	}
 
 	for key, w := range expect {
@@ -129,7 +129,7 @@ func TestExtractTypeScript_Symbols(t *testing.T) {
 
 	// `created` and `items` are class fields, not methods — they must not show
 	// up as methods or as top-level vars.
-	for _, unwanted := range []string{"method:Container.created", "method:Container.items", "var:created", "var:items"} {
+	for _, unwanted := range []string{"method:sample.Container.created", "method:sample.Container.items", "var:sample.created", "var:sample.items"} {
 		if _, ok := got[unwanted]; ok {
 			t.Errorf("unexpected symbol %s leaked from class field", unwanted)
 		}
@@ -173,17 +173,17 @@ func TestExtractTypeScript_ObjectTypeLiteralReturn(t *testing.T) {
 		t.Fatalf("ExtractTypeScript: %v", err)
 	}
 	want := []string{
-		"method:C.early",
-		"method:C.inline",
-		"method:C.late",
-		"method:C.unionShape",
-		"method:C.arrowShape",
+		"method:c.C.early",
+		"method:c.C.inline",
+		"method:c.C.late",
+		"method:c.C.unionShape",
+		"method:c.C.arrowShape",
 	}
 	got := map[string]bool{}
 	var classEndLine int
 	for _, s := range syms {
 		got[s.Kind+":"+s.QualifiedName] = true
-		if s.QualifiedName == "C" && s.Kind == "type" {
+		if s.QualifiedName == "c.C" && s.Kind == "type" {
 			classEndLine = s.EndLine
 		}
 	}
@@ -343,18 +343,18 @@ func TestExtractTypeScript_Signatures(t *testing.T) {
 		key  string
 		want string
 	}{
-		{"function:greet", "function greet(name)"},
-		{"function:fetchAll", "function fetchAll(urls, opts)"},
-		{"interface:Greeter", "interface Greeter"},
-		{"type:ID", "type ID"},
-		{"type:Container", "class Container"},
-		{"method:Container.constructor", "constructor(initial)"},
-		{"method:Container.add", "add(item)"},
-		{"method:Container.load", "load(url)"},
-		{"method:Container.size", "size()"},
-		{"const:VERSION", "const VERSION"},
-		{"var:counter", "let counter"},
-		{"var:legacyFlag", "var legacyFlag"},
+		{"function:sample.greet", "function greet(name)"},
+		{"function:sample.fetchAll", "function fetchAll(urls, opts)"},
+		{"interface:sample.Greeter", "interface Greeter"},
+		{"type:sample.ID", "type ID"},
+		{"type:sample.Container", "class Container"},
+		{"method:sample.Container.constructor", "constructor(initial)"},
+		{"method:sample.Container.add", "add(item)"},
+		{"method:sample.Container.load", "load(url)"},
+		{"method:sample.Container.size", "size()"},
+		{"const:sample.VERSION", "const VERSION"},
+		{"var:sample.counter", "let counter"},
+		{"var:sample.legacyFlag", "var legacyFlag"},
 	}
 	for _, c := range cases {
 		got, ok := byKey[c.key]
@@ -685,10 +685,10 @@ func TestExtractTypeScript_RegexLiteralsStripped(t *testing.T) {
 		for _, s := range syms {
 			names[s.QualifiedName] = s.Kind
 		}
-		if names["C.m"] != "method" {
+		if names["regex.C.m"] != "method" {
 			t.Errorf("C.m missing: %v", names)
 		}
-		if names["C.n"] != "method" {
+		if names["regex.C.n"] != "method" {
 			t.Errorf("C.n silently lost: %v", names)
 		}
 	})
@@ -759,13 +759,13 @@ func TestExtractTypeScript_StaticInitBlock(t *testing.T) {
 	for _, s := range syms {
 		byQName[s.QualifiedName] = s.Kind
 	}
-	if byQName["Foo"] != "type" {
+	if byQName["static.Foo"] != "type" {
 		t.Errorf("Foo class missing: %v", byQName)
 	}
-	if byQName["Foo.incr"] != "method" {
+	if byQName["static.Foo.incr"] != "method" {
 		t.Errorf("Foo.incr lost after static block: %v", byQName)
 	}
-	if byQName["Foo.method"] != "method" {
+	if byQName["static.Foo.method"] != "method" {
 		t.Errorf("Foo.method lost after static block: %v", byQName)
 	}
 	for _, s := range syms {
@@ -795,7 +795,7 @@ func TestExtractTypeScript_DecoratedClassMembers(t *testing.T) {
 		for _, s := range syms {
 			byQName[s.QualifiedName] = s.Kind
 		}
-		for _, name := range []string{"Foo.a", "Foo.b", "Foo.c"} {
+		for _, name := range []string{"dec.Foo.a", "dec.Foo.b", "dec.Foo.c"} {
 			if byQName[name] != "method" {
 				t.Errorf("%s missing or wrong kind: %v", name, byQName)
 			}
@@ -817,14 +817,14 @@ func TestExtractTypeScript_DecoratedClassMembers(t *testing.T) {
 		for _, s := range syms {
 			byQName[s.QualifiedName] = s.Kind
 		}
-		if byQName["D.greet"] != "method" {
+		if byQName["dec.D.greet"] != "method" {
 			t.Errorf("D.greet missing: %v", byQName)
 		}
-		if byQName["D.shout"] != "method" {
+		if byQName["dec.D.shout"] != "method" {
 			t.Errorf("D.shout missing: %v", byQName)
 		}
 		// The parenthesized form was fabricating a `log` method (F1).
-		if _, leaked := byQName["D.log"]; leaked {
+		if _, leaked := byQName["dec.D.log"]; leaked {
 			t.Errorf("D.log fabricated from decorator name: %v", byQName)
 		}
 	})
@@ -843,10 +843,10 @@ func TestExtractTypeScript_DecoratedClassMembers(t *testing.T) {
 		for _, s := range syms {
 			byQName[s.QualifiedName] = s.Kind
 		}
-		if byQName["E.compute"] != "method" {
+		if byQName["dec.E.compute"] != "method" {
 			t.Errorf("E.compute missing: %v", byQName)
 		}
-		if byQName["E.fetchOne"] != "method" {
+		if byQName["dec.E.fetchOne"] != "method" {
 			t.Errorf("E.fetchOne missing: %v", byQName)
 		}
 	})

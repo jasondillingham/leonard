@@ -60,20 +60,20 @@ func TestExtractPython_Symbols(t *testing.T) {
 		exported bool
 	}
 	expect := map[string]want{
-		"VERSION":         {"var", "VERSION", true},
-		"_internal":       {"var", "_internal", false},
-		"PUBLIC_NAME":     {"var", "PUBLIC_NAME", true},
-		"hello":           {"function", "hello", true},
-		"_helper":         {"function", "_helper", false},
-		"add":             {"function", "add", true},
-		"Widget":          {"type", "Widget", true},
-		"_PrivateWidget":  {"type", "_PrivateWidget", false},
-		"Container":       {"type", "Container", true},
+		"VERSION":         {"var", "sample.VERSION", true},
+		"_internal":       {"var", "sample._internal", false},
+		"PUBLIC_NAME":     {"var", "sample.PUBLIC_NAME", true},
+		"hello":           {"function", "sample.hello", true},
+		"_helper":         {"function", "sample._helper", false},
+		"add":             {"function", "sample.add", true},
+		"Widget":          {"type", "sample.Widget", true},
+		"_PrivateWidget":  {"type", "sample._PrivateWidget", false},
+		"Container":       {"type", "sample.Container", true},
 	}
 	wantMethods := map[string]want{
-		"__init__":         {"method", "Container.__init__", false},
-		"add":              {"method", "Container.add", true},
-		"_internal_helper": {"method", "Container._internal_helper", false},
+		"__init__":         {"method", "sample.Container.__init__", false},
+		"add":              {"method", "sample.Container.add", true},
+		"_internal_helper": {"method", "sample.Container._internal_helper", false},
 	}
 
 	got := map[string]want{}
@@ -146,14 +146,14 @@ func TestExtractPython_Signatures(t *testing.T) {
 		key  string
 		want string
 	}{
-		{"hello:function", "def hello(name)"},
-		{"_helper:function", "def _helper()"},
-		{"add:function", "def add(a, b, *rest, **opts)"},
-		{"Widget:type", "class Widget"},
-		{"_PrivateWidget:type", "class _PrivateWidget(Widget)"},
-		{"Container.__init__:method", "def __init__(self, name)"},
-		{"Container.add:method", "def add(self, item)"},
-		{"VERSION:var", "var VERSION"},
+		{"sample.hello:function", "def hello(name)"},
+		{"sample._helper:function", "def _helper()"},
+		{"sample.add:function", "def add(a, b, *rest, **opts)"},
+		{"sample.Widget:type", "class Widget"},
+		{"sample._PrivateWidget:type", "class _PrivateWidget(Widget)"},
+		{"sample.Container.__init__:method", "def __init__(self, name)"},
+		{"sample.Container.add:method", "def add(self, item)"},
+		{"sample.VERSION:var", "var VERSION"},
 	}
 	for _, c := range cases {
 		got, ok := byKey[c.key]
