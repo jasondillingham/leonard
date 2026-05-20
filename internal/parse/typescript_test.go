@@ -907,3 +907,37 @@ func TestExtractTypeScript_UnterminatedStringLocalizes(t *testing.T) {
 		t.Errorf("realB should extract after unterminated string: %v", byQName)
 	}
 }
+
+// TestExtractTypeScript_ObjectTypeLiteralReturnTopLevel covers TS M4: a
+// top-level function with an object-type-literal return annotation used
+// to truncate at the wrong line and leak the body as orphaned tokens,
+// hiding subsequent decls from extraction. (The class-method variant is
+// already covered by TestExtractTypeScript_ObjectTypeLiteralReturn.)
+func TestExtractTypeScript_ObjectTypeLiteralReturnTopLevel(t *testing.T) {
+	t.Parallel()
+	src := `export function f(): {
+    a: number;
+    b: string;
+} {
+    return { a: 1, b: '' };
+}
+export const after = 1;
+`
+	syms, err := ExtractTypeScript("m4.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	byQName := map[string]int{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = s.EndLine
+	}
+	if _, ok := byQName["m4.f"]; !ok {
+		t.Fatalf("function f missing; have %+v", byQName)
+	}
+	if got := byQName["m4.f"]; got < 6 {
+		t.Errorf("f end_line = %d, want >= 6 (real closing brace on line 6)", got)
+	}
+	if _, ok := byQName["m4.after"]; !ok {
+		t.Errorf("post-function const after missing — body leaked as top-level tokens: %+v", byQName)
+	}
+}
