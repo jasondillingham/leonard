@@ -1047,11 +1047,14 @@ fn extract<'src>(
             continue;
         };
         let kind = capture_kind(kind_capture);
-        // For method-shaped captures, fold the enclosing container's
-        // name into the qname so `Greeter` (class) and `Greeter()`
-        // (constructor) don't share `Greeter.Greeter`. v0.19 left
-        // this collision in; v0.20 fixes it.
-        let qualified_name = if matches!(kind, "method" | "function")
+        // Fold the enclosing container's name into the qname for
+        // every "scoped" capture — methods, functions, AND consts.
+        // The const case was added in v0.41 (bughunt-5 treesitter F3):
+        // SQL columns under create_table and GraphQL fields under
+        // object_type_definition are emitted as @const, and without
+        // parent-folding two tables with `id` columns produce
+        // colliding `module.id` qnames.
+        let qualified_name = if matches!(kind, "method" | "function" | "const")
             && !lang.parent_container_kinds.is_empty()
         {
             if let Some(parent) =
@@ -1135,9 +1138,31 @@ fn is_exported(_kind: &str, node: &tree_sitter::Node, src: &str) -> bool {
 }
 
 /// find_parent_name walks node's ancestors looking for the first
-/// node whose kind is in container_kinds, then returns the text of
-/// that node's `name:` child. Used to fold a method's enclosing
-/// class name into the method's qualified_name.
+/// node whose kind is in container_kinds, then returns its name
+/// text. Used to fold a method's enclosing class name into the
+/// method's qualified_name.
+///
+/// Bughunt-5 Theme B: the v0.20 implementation only checked
+/// `child_by_field_name("name")`, which silently failed for
+/// grammars using named-child instead of a `name:` field
+/// (GraphQL: `object_type_definition` has `(name)` as a child
+/// without field-binding; Proto: `service` has
+/// `(service_name (identifier))` — two levels deep, no `name:`).
+/// Methods in those grammars got bare qnames, colliding across
+/// types in the same file.
+///
+/// New behavior: try several strategies in order until one
+/// resolves a name:
+///   1. `child_by_field_name("name")` — Java/Ruby/Kotlin etc.
+///   2. First direct child of kind `name` or `identifier` —
+///      GraphQL.
+///   3. A child whose kind ends in `_name` and contains an
+///      identifier — Proto (service_name -> identifier),
+///      Lua (method_index_expression, etc.).
+///   4. First descendant of kind `type_identifier` or
+///      `identifier` — last-resort heuristic.
+///
+/// Returns None only when none of the four resolve.
 fn find_parent_name(
     node: &tree_sitter::Node,
     container_kinds: &[&str],
@@ -1146,16 +1171,53 @@ fn find_parent_name(
     let mut cur = node.parent();
     while let Some(p) = cur {
         if container_kinds.iter().any(|k| *k == p.kind()) {
-            // Try the conventional `name:` field first; some
-            // grammars use different field names (Ruby's `name`
-            // points at a constant node).
-            if let Some(name_node) = p.child_by_field_name("name") {
-                if let Ok(text) = name_node.utf8_text(src.as_bytes()) {
-                    return Some(text.to_string());
-                }
+            if let Some(name) = extract_container_name(&p, src) {
+                return Some(name);
             }
         }
         cur = p.parent();
+    }
+    None
+}
+
+/// extract_container_name applies a layered name-finding strategy
+/// from find_parent_name to a single container node.
+fn extract_container_name(p: &tree_sitter::Node, src: &str) -> Option<String> {
+    // Strategy 1: conventional `name:` field on the container itself.
+    if let Some(name_node) = p.child_by_field_name("name") {
+        if let Ok(text) = name_node.utf8_text(src.as_bytes()) {
+            return Some(text.to_string());
+        }
+    }
+    // Strategies 2-4: walk direct children.
+    let mut cursor = p.walk();
+    for child in p.children(&mut cursor) {
+        let kind = child.kind();
+        // Strategy 2: direct identifier child (GraphQL).
+        if kind == "name" || kind == "identifier" || kind == "type_identifier" {
+            if let Ok(text) = child.utf8_text(src.as_bytes()) {
+                return Some(text.to_string());
+            }
+        }
+        // Strategy 3: `<container>_name` wrapping an identifier
+        // (Proto: service_name > identifier, etc.).
+        if kind.ends_with("_name") {
+            let mut inner = child.walk();
+            for grand in child.children(&mut inner) {
+                if grand.kind() == "identifier" || grand.kind() == "type_identifier" {
+                    if let Ok(text) = grand.utf8_text(src.as_bytes()) {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+        }
+        // Strategy 4: child with its own `name:` field (SQL's
+        // `create_table > object_reference name: (identifier)`).
+        if let Some(grand) = child.child_by_field_name("name") {
+            if let Ok(text) = grand.utf8_text(src.as_bytes()) {
+                return Some(text.to_string());
+            }
+        }
     }
     None
 }
