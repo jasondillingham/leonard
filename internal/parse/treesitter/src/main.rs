@@ -206,6 +206,25 @@ impl Language {
                 query_src: CMAKE_QUERY,
                 parent_container_kinds: &[],
             }),
+            "hcl" => Some(Self {
+                grammar: tree_sitter_hcl::LANGUAGE.into(),
+                query_src: HCL_QUERY,
+                parent_container_kinds: &[],
+            }),
+            "graphql" => Some(Self {
+                grammar: tree_sitter_graphql::LANGUAGE.into(),
+                query_src: GRAPHQL_QUERY,
+                parent_container_kinds: &[
+                    "object_type_definition",
+                    "interface_type_definition",
+                    "input_object_type_definition",
+                ],
+            }),
+            "proto" => Some(Self {
+                grammar: tree_sitter_proto::LANGUAGE.into(),
+                query_src: PROTO_QUERY,
+                parent_container_kinds: &["message", "service"],
+            }),
             _ => None,
         }
     }
@@ -599,6 +618,69 @@ const CMAKE_QUERY: &str = r#"
   (argument_list
     . (argument (unquoted_argument) @name))
   (#any-of? @_cmd "add_library" "add_executable" "option")) @type
+"#;
+
+/// HCL_QUERY captures Terraform / HCL declaration blocks. Every
+/// resource/variable/module/output/data/provider/locals block has
+/// shape `(block (identifier) (string_lit (template_literal)) ...)`.
+/// The identifier is the keyword (resource/variable/etc.); the
+/// first string_lit's template_literal child is the block's name.
+///
+/// v0.27 captures only the first label. Multi-label blocks
+/// (`resource "aws_instance" "web"`) keep just the type name in
+/// the Symbol; the resource instance name is lost — refinement
+/// for a later version.
+const HCL_QUERY: &str = r#"
+(block
+  (identifier) @_kind
+  (string_lit (template_literal) @name)
+  (#any-of? @_kind "resource" "variable" "module" "output"
+                    "data" "provider" "locals" "terraform")) @type
+"#;
+
+/// GRAPHQL_QUERY covers SDL declarations. object/interface/enum/
+/// scalar/union/input — all map to type or interface in Leonard's
+/// vocabulary. Field definitions inside an object/interface are
+/// captured as @method so parent-folding gives them parent-scoped
+/// qnames.
+const GRAPHQL_QUERY: &str = r#"
+(object_type_definition
+  (name) @name) @type
+
+(interface_type_definition
+  (name) @name) @interface
+
+(enum_type_definition
+  (name) @name) @type
+
+(scalar_type_definition
+  (name) @name) @type
+
+(union_type_definition
+  (name) @name) @type
+
+(input_object_type_definition
+  (name) @name) @type
+
+(field_definition
+  (name) @name) @method
+"#;
+
+/// PROTO_QUERY captures Protocol Buffers schema elements. Messages
+/// and enums are types; services are interfaces; RPCs are methods
+/// (parent-folded under their service).
+const PROTO_QUERY: &str = r#"
+(message
+  (message_name (identifier) @name)) @type
+
+(enum
+  (enum_name (identifier) @name)) @type
+
+(service
+  (service_name (identifier) @name)) @interface
+
+(rpc
+  (rpc_name (identifier) @name)) @method
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's

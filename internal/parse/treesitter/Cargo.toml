@@ -29,6 +29,9 @@ tree-sitter-elixir = "0.3"
 tree-sitter-solidity = "1.2"
 tree-sitter-make = "1.1"
 tree-sitter-cmake = "0.7"
+tree-sitter-hcl = "1.1"
+tree-sitter-graphql = "0.1"
+tree-sitter-proto = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

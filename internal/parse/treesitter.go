@@ -229,3 +229,15 @@ func ExtractMake(path string, src []byte) ([]store.Symbol, error) {
 func ExtractCMake(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("cmake", path, src)
 }
+
+func ExtractHCL(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("hcl", path, src)
+}
+
+func ExtractGraphQL(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("graphql", path, src)
+}
+
+func ExtractProto(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("proto", path, src)
+}
