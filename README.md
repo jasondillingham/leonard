@@ -4,17 +4,13 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status:** v0.17.0, self-dogfooded on this repo. Four bug-hunt rounds + one focused security review have driven the project through 17 minor releases; the deferred-MEDIUM lists in [`bughunt-{1,2,3,4}-triage.md`](.) track what's left. See [`DESIGN.md`](./DESIGN.md) for the architecture.
+**Status: v0.45.0.** Self-dogfooded on this repo through 45 minor releases. **Five bug-hunt rounds + one focused security review** have driven the project; see [`bughunt-{1..5}-triage.md`](.) for the discipline trail. Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
-Security and correctness fixes since v0.1:
-- v0.7.1 — `idx_symbols_parent` (~137× prune speedup)
-- v0.8.0 — path-trust sweep: file_path values from hook payloads are now rejected when they resolve outside the project root (was a confused-deputy)
-- v0.9.0 — resource caps on hook payloads, decisions, claims, MultiEdit
-- v0.13.0 — cap completeness: real line reader replaces a busted `bufio.Scanner` that busy-spun on oversize lines; per-response and per-bullet truncation everywhere
-- v0.14.0 — path-trust completeness: pre-edit, prune, doctor all wired through; dangling-symlink rejection; NFC normalization at storeKey
-- v0.15.0 — store-perf: three missing indexes + N+1 fix in get_stale_decisions + WAL checkpointing
-- v0.16.0 — MCP-recorded claims can now be superseded by post-edit vet=ok runs
-- v0.17.0 — three multi-round carry-over MEDIUMs closed
+```
+27+ tree-sitter languages   +   4 production-dogfooded parsers   +   3 SFC preprocessors
++ 3 structured-file inspectors (SQL, Jupyter, OpenAPI)
++ 4 manifest dependency-graph formats (package.json, Cargo.toml, go.mod, pom.xml)
+```
 
 ## What it does
 
@@ -27,7 +23,7 @@ Leonard targets four recurring Claude Code failure modes:
 
 ## Components
 
-- **`leonard`** — CLI: `init`, `index`, `verify`, `doctor`, `decisions`, `claims`, `mcp`. CLI now walks up looking for `.leonard/` so invocations from subdirs work.
+- **`leonard`** — CLI: `init`, `index`, `verify`, `doctor`, `decisions`, `claims`, `mcp`. Walks up looking for `.leonard/` so invocations from subdirs work.
 - **`leonard-mcp`** — stdio MCP server. Tools: `verify_symbol`, `find_symbol`, `list_files`, `record_decision`, `get_decisions`, `supersede_decision`, `get_stale_decisions`, `record_claim`, `get_unverified_claims`, `recent_changes`. All read tools cap response size (≤1 MiB). All write tools cap input text and reject oversize payloads cleanly.
 - **`leonard-hook`** — hook dispatcher with `pre-edit`, `post-edit`, `session-start`, `stop` subcommands. Path-trust guard rejects file_path values outside the project root. Resource caps on payload (16 MiB), snippet (1 MiB), MultiEdit element count (100).
 
@@ -35,22 +31,119 @@ All three share a single SQLite store at `.leonard/leonard.db` in the project ro
 
 ## Language support
 
-| Language | Parser | Status |
+### Production-dogfooded parsers
+
+These four ship with bespoke (non-tree-sitter) parsers and have been validated against substantial real-world corpora.
+
+| Language | Parser | Validation |
 |---|---|---|
-| Go | stdlib `go/parser` | Production. Self-dogfooded on this repo; vet+test invariant enforced via the post-edit hook. |
-| TypeScript / TSX | hand-rolled (`internal/parse/typescript.go`) | Real-world tested on 401-file / 7k-symbol Zod corpus plus a 22-file Next.js App-Router project. Functions (including `export const f = () => …` arrow forms — async, generic, typed-return, single-param sugar), classes (with generic defaults, abstract, methods named after keywords like `default`/`type`, inline `{ a: T }`-shaped return types), interfaces, type aliases, const/let/var all extract with accurate file/line. |
-| Python | host `python3` via subprocess | Production. v0.2 swapped gpython for an exec of the host's `python3` running an embedded `ast` walker. Every Python version the user has installed is supported — f-strings, PEP 526/585/604/695, walrus, `match`, async, etc. Cost: ~40ms per parse vs gpython's ~35µs, still well under the 200ms hook latency budget. Requires `python3` on PATH (override via `LEONARD_PYTHON`); a missing interpreter surfaces as a per-file parse failure rather than tanking the whole index. |
-| Rust | syn-based subprocess (`leonard-extract-rust`) | Production. v0.5 added a small Rust binary at `internal/parse/rust/` that uses the canonical `syn` crate to walk the AST and emit JSON. Same dependency model as Python — a helper binary the host has to build once via `cargo build --release` (or install on PATH). Dogfooded against ripgrep: 100 of 100 files indexed, 2,678 symbols extracted, every modern syntax handled (async fn, generics, impl Trait, GATs, const generics). Override via `LEONARD_RUST_EXTRACTOR`; v0 scope is top-level fn/struct/enum/trait/type alias/const/static + methods one level deep inside `impl` blocks. |
+| **Go** | stdlib `go/parser` | Self-dogfooded on this repo; vet+test invariant enforced via the post-edit hook. |
+| **TypeScript / TSX / JSX** | hand-rolled (`internal/parse/typescript.go`) | 401-file / 7k-symbol Zod corpus + 22-file Next.js App-Router project. Functions (including arrow forms), classes (with generic defaults, abstract), interfaces, type aliases, const/let/var. JSX/Solid use the same extractor. |
+| **Python** | host `python3` via subprocess | Embedded `ast` walker; every modern Python construct (f-strings, PEP 526/585/604/695, walrus, `match`, async). Override via `LEONARD_PYTHON`. |
+| **Rust** | syn-based subprocess (`leonard-extract-rust`) | Dogfooded against ripgrep (100/100 files, 2,678 symbols) and clap-rs. Full async/generics/impl Trait/GATs/const generics coverage. Override via `LEONARD_RUST_EXTRACTOR`. |
+
+### Tree-sitter parsers
+
+Twenty-six additional languages share a single Rust helper (`internal/parse/treesitter/`) that statically links the tree-sitter runtime + per-language grammars. Build once with `cargo build --release` inside the crate; override via `LEONARD_TREESITTER_EXTRACTOR`.
+
+| Language | Extensions | Notable |
+|---|---|---|
+| Java | `.java` | Dogfooded against Gson (262 files / 4,136 symbols). |
+| Ruby | `.rb` | Dogfooded against Sinatra (147 files / 1,132 symbols). |
+| C# | `.cs` | Class/struct/record/enum/delegate/method/constructor. |
+| Swift | `.swift` | Including `init_declaration` synthesis. |
+| Kotlin | `.kt`, `.kts` | Includes `object_declaration`. |
+| Scala | `.scala` | `_definition` convention; trait → interface. |
+| Dart | `.dart` | Flutter-friendly; function_signature parent-folding. |
+| C | `.c`, `.h` | function_definition + struct/union/enum/typedef. |
+| C++ | `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh` | v0.40 added in-class inline method extraction (header-only libraries like nlohmann/json fully indexed). |
+| PHP | `.php` | namespace + class/interface/trait/enum + methods. |
+| Lua | `.lua` | Three function-declaration shapes (plain, dot-indexed, method-indexed). |
+| Bash | `.sh`, `.bash` | Function definitions. |
+| Zig | `.zig` | const-bound struct/enum/union, function_declaration. |
+| Nix | `.nix` | Function bindings inside attrsets. |
+| Elixir | `.ex`, `.exs` | defmodule/def/defp/defmacro/defprotocol (predicate-filtered). |
+| Solidity | `.sol` | Contracts/interfaces/libraries + function/modifier/event/constructor. |
+| Erlang | `.erl`, `.hrl` | module_attribute, record_decl, fun_decl. |
+| R | `.r` (case-insensitive) | `x <- function(...)` idiom captured. |
+| Just | basename `justfile`/`Justfile` | Recipes as functions. |
+| Starlark (Bazel) | `.bzl`, `.bazel`, `.star` + basename `BUILD`/`BUILD.bazel`/`WORKSPACE`/`WORKSPACE.bazel` | `function_def` + rule calls with `name = "..."` (filter-anchored). |
+| Make | `.mk` + basename `Makefile`/`GNUmakefile` | Rules and variable_assignment. |
+| CMake | `.cmake` + basename `CMakeLists.txt` | function_def + `add_library`/`add_executable`/`option`. |
+| HCL / Terraform | `.tf`, `.tfvars`, `.hcl` | `resource`/`variable`/`module`/`output`/`data`/`provider`/`locals`/`terraform` blocks. |
+| GraphQL SDL | `.graphql`, `.gql` | object/interface/enum/scalar/union/input + field_definitions (parent-folded). |
+| Protocol Buffers | `.proto` | message/enum/service/rpc (parent-folded). |
+| WIT | `.wit` | WebAssembly Component Model: interface/world/func/record/enum/variant/flags. |
+| GLSL | `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese` | Functions, struct types, uniform/varying/in/out declarations. |
+| HLSL | `.hlsl`, `.fx`, `.fxh` | Same query shape as GLSL (C-family). |
+
+### SFC preprocessors
+
+Three frontend formats share a context-aware scanner (v0.42 — string/comment-aware, not regex-based) that extracts the script blocks and routes them through the TypeScript extractor with line-offset adjustment.
+
+| Format | Extension | What gets extracted |
+|---|---|---|
+| Vue | `.vue` | `<script>` and `<script setup>` blocks (script symbols only — template/style ignored). |
+| Svelte | `.svelte` | Same shape as Vue. |
+| Astro | `.astro` | Frontmatter (between `---` fences) PLUS embedded `<script>` blocks. |
+
+### Structured-file inspectors
+
+Specialized walkers for not-quite-code formats where "symbols" means something different from functions/types.
+
+| Format | What gets extracted |
+|---|---|
+| SQL (`.sql`) | CREATE TABLE/VIEW/INDEX/FUNCTION + column definitions (parent-folded under their table). |
+| Jupyter notebooks (`.ipynb`) | Code cells concatenated and routed through the Python extractor (markdown/raw skipped). |
+| OpenAPI / Swagger | Filename-detected (`openapi.{yaml,yml,json}` or `swagger.*`). Operations (`GET /users/{id}`) + schema names. Both Swagger 2.0 (`definitions`) and OpenAPI 3 (`components.schemas`) handled. |
+
+### Manifest dependency graph
+
+Four manifest formats emit one Symbol per declared dependency with `kind="dependency"` so Claude can run `verify_symbol("react")` to confirm a package is actually in the project's dependency set before fabricating an import.
+
+| Manifest | Coverage |
+|---|---|
+| `package.json` | `dependencies` + `devDependencies` + `peerDependencies` + `optionalDependencies`. Handles both bare-string and pnpm/yarn object-form versions. |
+| `Cargo.toml` | `[dependencies]` + `[dev-dependencies]` + `[build-dependencies]`. Inline-table versions handled; path/git deps tagged. |
+| `go.mod` | Every `require` directive via `golang.org/x/mod/modfile`; indirect requires marked. |
+| `pom.xml` | Top-level `<dependencies>/<dependency>`; signature folds `groupId:artifactId@version`. |
+
+## Bug-hunt discipline
+
+Leonard's quality comes from a recurring loop: **bug-hunt → triage → fix → repeat**. Five rounds + one focused security review have shaped the codebase:
+
+| Round | Surface audited | HIGH findings | Documented as |
+|---|---|---|---|
+| Bughunt #1 | Initial v0.1 dogfood surface | 4 HIGH | `bughunt-1-triage.md` |
+| Bughunt #2 | Hooks, MCP, store, languages | 6 HIGH | `bughunt-2-triage.md` |
+| Bughunt #3 | Rust parser, skip-dirs, OTel, eval framework | 6 HIGH | `bughunt-3-triage.md` |
+| Security #1 | Cross-cutting security review | 2 HIGH (confused-deputy + memory amp) | `security-1-review.md` |
+| Bughunt #4 | v0.7-v0.12 surfaces | 4 HIGH | `bughunt-4-triage.md` |
+| Bughunt #5 | v0.19-v0.38 surfaces (tree-sitter + 24 languages + ledger hygiene) | 3 HIGH | `bughunt-5-triage.md` |
+
+Every HIGH severity finding has been closed. Most MEDIUMs too — the remainder live in the deferred lists per round.
 
 ## Install
 
 ```bash
-git clone <this repo>
+git clone https://github.com/jasondillingham/leonard.git
 cd leonard
-go install ./cmd/...   # puts leonard, leonard-mcp, leonard-hook in $GOPATH/bin
+go install ./cmd/...   # leonard, leonard-mcp, leonard-hook → $GOPATH/bin
 ```
 
-Requires Go 1.25+ (auto-fetched via toolchain directive if you have 1.21+).
+For Rust source extraction:
+
+```bash
+(cd internal/parse/rust && cargo build --release)
+```
+
+For the 26 tree-sitter languages:
+
+```bash
+(cd internal/parse/treesitter && cargo build --release)
+```
+
+Python source extraction needs `python3` on PATH (no extra install). Requires Go 1.25+ (auto-fetched via toolchain).
 
 ## Dogfood wiring (this repo)
 
@@ -85,8 +178,6 @@ timeout = "60s"                           # optional: defaults to 60s; parsed vi
 
 When `command` is set, every Edit/Write triggers it. A non-zero exit becomes an unverified claim and surfaces in the model-facing additional context as `<verb> FAILED` (where `<verb>` is the first program + sub-command, e.g. `cargo check`). A zero exit records a verified claim — same shape as the Go path.
 
-A few examples:
-
 ```toml
 # Rust workspace
 [post_edit.verify]
@@ -102,61 +193,46 @@ command = "ruff check . && mypy ."
 timeout = "120s"
 ```
 
-A missing or malformed `[post_edit.verify]` falls back silently to the Go default — so projects that haven't opted in keep their current behavior byte-for-byte.
+A missing or malformed `[post_edit.verify]` falls back silently to the Go default — projects that haven't opted in keep their current behavior byte-for-byte.
 
 ## Project layout
 
 ```
-cmd/{leonard,leonard-mcp,leonard-hook}   # the three binaries
-internal/store                            # SQLite-backed data layer
+cmd/{leonard,leonard-mcp,leonard-hook}    # the three binaries
+internal/store                            # SQLite-backed data layer (schema v7)
 internal/index                            # file walker + incremental dispatch
-internal/parse                            # Go (stdlib), Python (subprocess), Rust (syn subprocess), TypeScript (hand-rolled) extractors
-internal/parse/rust                       # Cargo crate for the syn-based extractor
+internal/parse                            # extractors — Go, Python, Rust, TypeScript natively; everything else via subprocess
+internal/parse/rust                       # Cargo crate: syn-based Rust extractor
+internal/parse/treesitter                 # Cargo crate: tree-sitter dispatcher (26 grammars)
+internal/mcp                              # MCP tool handlers + StoreAdapter
+internal/hooks                            # PreToolUse / PostToolUse / SessionStart / Stop handlers
+internal/config                           # .leonard/config.toml loader
 internal/telemetry                        # OTel instrumentation (build-tag-gated)
 examples/pydantic-ai                      # Python demo wiring leonard-mcp into a pydantic-ai agent
 evals/inspect                             # Anthropic Inspect eval framework for fabrication rate
-internal/mcp                              # MCP tool handlers + StoreAdapter
-internal/hooks                            # hook handler implementations
-internal/config                           # .leonard/config.toml loader
 ```
 
 ## Telemetry (optional)
 
-v0.6 added build-tag-gated OpenTelemetry spans on the hot paths the
-bughunt-2 perf round flagged. **`leonard-hook` is the only binary
-currently instrumented** — `leonard-mcp` and `leonard` CLI compile
-identically under the tag (no spans emitted). Default builds have
-zero overhead — the no-op stubs compile in and the OTel SDK doesn't
-load. To get real spans, rebuild with the `otel` tag:
+v0.6 added build-tag-gated OpenTelemetry spans on the hot paths the bughunt-2 perf round flagged. **`leonard-hook` is the only binary currently instrumented** — `leonard-mcp` and `leonard` CLI compile identically under the tag (no spans emitted). Default builds have zero overhead — the no-op stubs compile in and the OTel SDK doesn't load. Rebuild with the `otel` tag to opt in:
 
 ```bash
 go install -tags otel ./cmd/...
-```
-
-Then point the binaries at whatever OTel collector you run:
-
-```bash
-# OTLP (preferred — sends to a collector at the endpoint URL)
 export OTEL_TRACES_EXPORTER=otlp
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-
-# Or local debugging — writes one JSON span per line to stderr
+# Or for local debugging:
 export OTEL_TRACES_EXPORTER=stdout
 ```
 
-Spans currently produced:
+Spans produced: `leonard.pre-edit` / `.sibling-scan`, `leonard.post-edit` / `.index` / `.vet`. With no env vars set the tagged build still runs but exports nothing.
 
-| Span | What it times |
-|---|---|
-| `leonard.pre-edit` | whole PreToolUse handler |
-| `leonard.pre-edit.sibling-scan` | the F8 module-wide walk (bughunt-2's perf concern) |
-| `leonard.post-edit` | whole PostToolUse handler |
-| `leonard.post-edit.index` | the single-file re-index call |
-| `leonard.post-edit.vet` | `go vet ./...` plus result parsing |
+## Contributing
 
-With no env vars set the tagged build still runs but exports nothing —
-useful in CI when you want the option available but no traffic going
-out by default.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the bug-hunt → triage → fix loop, language-addition pattern, and PR review expectations.
+
+## Security
+
+See [`SECURITY.md`](./SECURITY.md) for disclosure process. The path-trust + resource-cap + verifier-isolation guards are documented in the security review file (`security-1-review.md`).
 
 ## License
 

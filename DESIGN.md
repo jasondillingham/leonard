@@ -240,37 +240,59 @@ leonard/
 
 ## 6. MVP phasing
 
-### Phase 1 — kills fabricated APIs + false "done" (target: 1-2 weekends)
+The historical MVP phases are all complete. Leonard's current state
+(as of v0.45) extends far beyond the original three-phase plan:
 
-- [ ] `leonard init`, `leonard index` (Go-only first)
-- [ ] SQLite store + schema
-- [ ] Tree-sitter Go parser, symbol extraction
-- [ ] `leonard-mcp` with `verify_symbol`, `find_symbol`, `list_files`
-- [ ] `leonard-hook post-edit` — re-index touched files, run `go vet`, write to claims
-- [ ] Self-host: dogfood Leonard's own development
+### Phase 1 — Fabricated APIs + false "done" ✅ DONE
 
-### Phase 2 — kills drift + pre-edit fabrication (target: +1 weekend)
+- [x] `leonard init`, `leonard index` (Go-only first)
+- [x] SQLite store + schema (now at schemaVersion 7)
+- [x] Tree-sitter Go parser → stdlib `go/parser` (more accurate)
+- [x] `leonard-mcp` with `verify_symbol`, `find_symbol`, `list_files`
+- [x] `leonard-hook post-edit` — re-index touched files, run `go vet`, write to claims
+- [x] Self-host: dogfood Leonard's own development
 
-- [ ] `record_decision` / `get_decisions` MCP tools
-- [ ] `SessionStart` hook injecting recent decisions
-- [ ] `pre-edit` hook with symbol-reference verification
-- [ ] Python parser
+### Phase 2 — Drift + pre-edit fabrication ✅ DONE
 
-### Phase 3 — kills stale facts + claim discipline
+- [x] `record_decision` / `get_decisions` MCP tools
+- [x] `SessionStart` hook injecting recent decisions
+- [x] `pre-edit` hook with symbol-reference verification
+- [x] Python parser (host `python3` via subprocess; full modern syntax)
 
-- [ ] `record_claim` / `get_unverified_claims`
-- [ ] `Stop` hook surfacing unverified claims
-- [ ] TypeScript parser
-- [ ] `recent_changes` MCP tool wired in
-- [ ] **pre-edit follow-ups** (deferred from phase 2): cross-module symbol resolution; generic type-parameter checking; verifying *method signatures* in addition to name existence; Python pre-edit (Python coverage matures first); an override path / `--force` flag (Claude Code's existing hook-deny override is enough for v0).
+### Phase 3 — Stale facts + claim discipline ✅ DONE
 
-### Future / explicit non-MVP
+- [x] `record_claim` / `get_unverified_claims`
+- [x] `Stop` hook surfacing unverified claims
+- [x] TypeScript parser
+- [x] `recent_changes` MCP tool wired in
 
-- Other languages (Rust, Swift, Ruby, Java, C/C++)
-- Cross-file/cross-package symbol resolution
-- Decision export/import (for OSS positioning if it goes public)
-- Web UI for browsing decisions/claims
-- Multi-project / global mode
+### Beyond MVP (v0.4 onward) — also shipped
+
+- [x] **Languages**: Rust (v0.5, syn-subprocess), then the tree-sitter
+      dispatcher (v0.19) absorbing Java, Ruby, C#, Swift, Kotlin,
+      Scala, Dart, C, C++, PHP, Lua, Bash, Zig, Nix, Elixir, Solidity,
+      Erlang, R, Just, Starlark, GLSL, HLSL, HCL/Terraform, GraphQL,
+      Protocol Buffers, WIT, SQL, plus Vue/Svelte/Astro/Jupyter/
+      OpenAPI preprocessors and manifest dep-graph (package.json,
+      Cargo.toml, go.mod, pom.xml).
+- [x] **Inspect eval framework** (v0.4): fabrication-rate measurement.
+- [x] **Pydantic AI demo** (v0.3): example integration.
+- [x] **OpenTelemetry tracing** (v0.6, build-tag-gated).
+- [x] **Configurable post-edit verifier** (v0.37, external PR from
+      the Purser project).
+- [x] **Five bug-hunt rounds + one security review** with full
+      triage docs in the repo.
+
+### Future / explicitly deferred
+
+- Cross-file/cross-package symbol resolution (e.g. confirming
+  `import { Foo } from './bar'` resolves to a real export — currently
+  symbol verification is by name only, not by import-path provenance).
+- Live Inspect eval run with `ANTHROPIC_API_KEY` to produce concrete
+  fabrication-rate numbers (framework is ready, waiting on the run).
+- Smithy support (blocked on tree-sitter-smithy grammar version drift).
+- Web UI for browsing decisions/claims.
+- Multi-project / global mode (still an explicit non-goal — see §2).
 
 ## 7. Open questions
 

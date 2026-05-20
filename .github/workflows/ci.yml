@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  go:
+    name: Go (vet + test + race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+      - name: go test -race
+        run: go test -race ./...
+      - name: go test -tags otel
+        run: go test -tags otel ./...
+      - name: go build (pure-Go, CGO_ENABLED=0)
+        env:
+          CGO_ENABLED: '0'
+        run: go build ./cmd/...
+
+  rust:
+    name: Rust helpers (syn + tree-sitter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build syn-based Rust extractor
+        run: cargo build --release --manifest-path internal/parse/rust/Cargo.toml
+      - name: Build tree-sitter dispatcher
+        run: cargo build --release --manifest-path internal/parse/treesitter/Cargo.toml

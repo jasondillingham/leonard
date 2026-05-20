@@ -6,6 +6,252 @@ Cadence: each minor bump bundles one coherent change (a feature, a
 bug-hunt theme fix, or a perf sweep) and ships with an updated
 `leonard-mcp --version` string + test coverage.
 
+## v0.45.0 — Docs + release infra sweep (bughunt-5 Theme E)
+
+- README rewritten end-to-end: language table now lists all 27+
+  tree-sitter languages, the 4 production-dogfooded parsers, the
+  3 SFC preprocessors, the 3 structured-file inspectors, and the
+  4 manifest dep-graph formats (was 4 rows total).
+- Status line jumped from v0.17 to v0.45; bug-hunt discipline
+  narrative added (5 rounds + security review).
+- DESIGN.md §6 updated — languages previously called "Future" now
+  reflect their production status.
+- CHANGELOG.md caught up (v0.19 → v0.45 below).
+- `.github/` directory added: CI workflow, CONTRIBUTING.md,
+  SECURITY.md, Code of Conduct.
+- First git tag: `v0.45.0`.
+
+## v0.44.0 — Perf fixes (bughunt-5 Theme F partial, 3 items)
+
+- **F1**: lowered `maxIndexedFileBytes` from 8 MiB to 4 MiB. The
+  tree-sitter helper amplifies source size ~100× in RSS during
+  parse; a 7.8 MiB Ruby file hit 839 MB RSS. 4 MiB caps the
+  worst-case helper RSS at ~400 MB.
+- **F2**: `queryUnverifiedClaims` pushes `LIMIT 1000` into the SQL.
+  On a 500k-claim ledger the v0.38 unbounded query took 1.15s to
+  materialize every row before the Go-side slice truncated.
+- **F9**: manifest deps switched from `kind="const"` to
+  `kind="dependency"`. v0.36 polluted the const namespace on
+  monorepos (7000 const symbols mixed with real-source consts).
+
+## v0.43.0 — Tree-sitter dispatcher polish (bughunt-5 Theme D)
+
+- **F1**: invalid UTF-8 now exits 2 (parse error) instead of 1
+  (infra). Read source as `Vec<u8>`, then validate via
+  `std::str::from_utf8`.
+- **F2**: HCL multi-label blocks no longer emit duplicate symbols
+  — added `.` anchor in `HCL_QUERY` so only the FIRST string_lit
+  is captured as `@name`.
+- **F4 + languages F3**: `is_exported` overhauled to tokenize
+  modifier text on word boundaries (so C#'s `protected internal`
+  resolves to exported via the `internal` token). Added
+  `Language.default_exported_methods` flag so each grammar picks
+  the right default for Ruby/Lua/Swift/Kotlin/Scala/etc.
+
+## v0.42.0 — Preprocessor regex robustness (bughunt-5 Theme C)
+
+Replaced the v0.26 / v0.32 `.*?` regex extractors with
+context-aware scanners that respect JS string + template literal +
+HTML comment lexical state.
+
+- **F1**: `</script>` inside a string literal no longer truncates
+  the body.
+- **F2**: `<script>` inside an `<!-- ... -->` HTML comment no
+  longer fires.
+- **F30**: Astro frontmatter regex truncated on `\n---\n` inside a
+  template literal — the new `findAstroFrontmatter` mirrors the
+  context tracking.
+- **F3**: `package.json` dep value handling switched to
+  `json.RawMessage` so pnpm/yarn object-form versions don't nuke
+  the whole file.
+
+## v0.41.0 — Parent-folding completeness (bughunt-5 Theme B)
+
+`find_parent_name` had a single-strategy lookup that silently
+failed for grammars using named-child shapes. Replaced with a
+four-step `extract_container_name`:
+
+1. `child_by_field_name("name")` — Java/Ruby/Kotlin/etc.
+2. Direct child of kind `name`/`identifier`/`type_identifier` —
+   GraphQL.
+3. Child of kind `<container>_name` wrapping an identifier — Proto.
+4. Child carrying its own `name:` field — SQL (`create_table
+   (object_reference name: (identifier))`).
+
+Also widened parent-folding to include `const` so SQL columns get
+`module.users.id` instead of colliding on `module.id`.
+
+## v0.40.0 — C++ in-class inline methods (bughunt-5 languages F4, HIGH)
+
+The CPP_QUERY captured `field_declaration` with
+`function_declarator` (method declarations) but NOT
+`function_definition` with `field_identifier` declarator (inline
+method definitions). nlohmann/json — the most-downloaded C++
+library on the planet — indexed 551 files and produced ZERO
+method symbols.
+
+Added the missing query arm. End-to-end dogfood: `verify dump`
+now finds 3 occurrences of `basic_json::dump()` at correct lines.
+
+## v0.39.0 — v0.38 ledger correctness (bughunt-5 Theme A, 1 HIGH + 4 MED)
+
+- **verifier F1 HIGH**: `SupersedeOutstandingFailures` was using
+  `claim LIKE '%=failed%'`, which matched any text containing
+  "=failed" (e.g. a user claim `user_input=failed to load`).
+  Switched to the existing `vet_ok = 0` integer column.
+- **integration F3**: `migrateV7` deleted `index=skipped (file
+  not found)` rows but `handleMissingFile` STILL wrote them. The
+  cleanup was one-shot but the symptom regenerated. Stopped
+  recording the claim entirely (same shape as v0.38's
+  `handleEscapedPath` change).
+- **verifier F4**: rejected negative/zero `verify.Timeout`.
+- **verifier F6**: `ResolveClaim` `--note` now capped at 4 KiB.
+- **verifier F11**: whitespace-only `command` no longer treated
+  as set.
+
+## v0.38.0 — Claim-ledger hygiene (4 fixes)
+
+- `handleEscapedPath` stops recording claims — path-escape is a
+  tool-layer rejection, not an unverified work claim.
+- New `SupersedeOutstandingFailures` — project-wide supersede on
+  vet=ok to catch multi-file fix-cascade case.
+- `leonard claims resolve <id> [--note "..."]` CLI escape hatch.
+- `migrateV7` one-time cleanup of historical escape-path +
+  missing-file claim rows.
+
+## v0.37.0 — Configurable post-edit verifier (PR #3)
+
+External contribution from the Purser project. Adds opt-in
+`[post_edit.verify]` section to `.leonard/config.toml` with
+`command`, `working_dir`, `timeout`. When set, post-edit hook
+runs the configured command through `sh -c` instead of the
+hardcoded `go vet ./...`. Default behavior unchanged.
+
+## v0.36.0 — Manifest-aware dependency graph
+
+Walks four canonical manifest formats and emits one Symbol per
+declared dependency:
+
+- `package.json`: dependencies / devDependencies /
+  peerDependencies / optionalDependencies.
+- `Cargo.toml`: [dependencies] / [dev-dependencies] /
+  [build-dependencies]. Inline-table form handled.
+- `go.mod`: every `require` via `golang.org/x/mod/modfile`.
+- `pom.xml`: top-level `<dependencies>/<dependency>`.
+
+Use case: `verify_symbol("react")` tells Claude whether the
+project actually depends on react before fabricating an import.
+
+## v0.35.0 — GLSL + HLSL (shader languages)
+
+Both grammars are C-family — one shared `SHADER_QUERY` captures
+function_definition, struct_specifier, and declaration (top-level
+uniforms / varyings / inputs / outputs as `@const`). Extensions
+include per-stage shorthand: `.glsl`, `.vert`, `.frag`, `.geom`,
+`.comp`, `.tesc`, `.tese`, `.hlsl`, `.fx`, `.fxh`.
+
+## v0.34.0 — Just + Starlark (Bazel)
+
+- **Just** (tree-sitter-just): recipes → function, top-level
+  assignments → const. Dispatch on `.just` + `justfile` basename.
+- **Starlark** (Bazel BUILD/`.bzl`): `def` macros → function; rule
+  calls with `name = "..."` → type (Bazel target). Basenames
+  BUILD, BUILD.bazel, WORKSPACE, WORKSPACE.bazel.
+
+## v0.33.0 — Erlang + R
+
+- **Erlang**: module_attribute, record_decl, fun_decl.
+- **R**: function definitions via the `<-` assignment idiom.
+
+## v0.32.0 — Astro + Solid
+
+- **Astro**: frontmatter (between `---` fences) + embedded
+  `<script>` blocks both routed through the TypeScript extractor.
+- **Solid**: `.jsx` registered to the TypeScript extractor (Solid
+  is documented as "a semantic layer on TSX").
+
+## v0.31.0 — WIT (Smithy deferred)
+
+WebAssembly Component Model types. Smithy was in the original
+scope but tree-sitter-smithy 0.0.1 pinned tree-sitter v0.20 —
+incompatible with the v0.25 main runtime; deferred until a
+compatible grammar surfaces.
+
+## v0.30.0 — OpenAPI / Swagger inspector
+
+Structured-file extractor for API specs. Walks
+`paths.<path>.<method>` and `components.schemas` / `definitions`.
+Filename-based dispatch (openapi.{yaml,yml,json},
+swagger.{yaml,yml,json}).
+
+## v0.29.0 — Jupyter notebooks
+
+Parses .ipynb JSON, concatenates code cells with blank-line
+separators, routes through ExtractPython. Markdown/raw cells
+skipped.
+
+## v0.28.0 — SQL migration files
+
+tree-sitter-sequel. CREATE TABLE/VIEW/INDEX/FUNCTION + column
+definitions. Schema-as-source-of-truth use case for verifying
+migration history.
+
+## v0.27.0 — HCL/Terraform + GraphQL SDL + Protocol Buffers
+
+Three IDL/config languages added in one batch.
+
+## v0.26.0 — Vue + Svelte SFC
+
+Regex-based `<script>` block extraction, routed through
+TypeScript extractor with line-offset adjustment. (v0.42 later
+replaced the regex with a context-aware scanner.)
+
+## v0.25.0 — Solidity + Make + CMake
+
+Build tools beyond Make/CMake plus smart contracts. Introduced
+basename-based dispatch (`langExtractorsByName`) for Makefile +
+CMakeLists.txt.
+
+## v0.24.0 — Zig + Nix + Elixir
+
+Three smaller-ecosystem languages. Elixir's `defmodule`/`def`/etc.
+required the predicate-binder pattern (`@_def` capture filtered
+out at the dispatcher level).
+
+## v0.23.0 — PHP + Lua + Bash
+
+Three scripting languages. Lua's three function-declaration
+shapes (plain, dot-indexed, method-indexed) all captured.
+
+## v0.22.0 — C + C++
+
+Lower-level languages. C/C++ have deeper nesting; function names
+live two levels deep inside `declarator: (function_declarator
+declarator: (identifier))`. v0.40 later added in-class inline
+method coverage.
+
+## v0.21.0 — Kotlin + Scala + Dart
+
+JVM/Flutter ecosystem languages. Kotlin's `interface` rides on
+`class_declaration`; Scala uses `_definition` suffix convention;
+Dart's `function_signature` is shared between methods and free
+functions.
+
+## v0.20.0 — Ruby + C# + Swift
+
+First batch on the v0.19 tree-sitter strategy. Also closed the
+v0.19 known-limitation around method/constructor qname collisions
+(via `parent_container_kinds` parent-folding).
+
+## v0.19.0 — Tree-sitter parser strategy + Java validation
+
+The architectural unlock. New Cargo crate at
+`internal/parse/treesitter/` — one binary that handles every
+supported language, `--lang <name>` selects the grammar. Per-
+language wrappers in Go (`ExtractJava`, etc.) are one-liner aliases
+routing to `ExtractTreeSitter`. Validated against google/gson:
+262 files / 4,136 symbols.
+
 ## v0.18.0 — Documentation reality-gap sweep (bughunt-4 Theme C)
 
 - README now reflects v0.17+ reality: version stamp, language table,
