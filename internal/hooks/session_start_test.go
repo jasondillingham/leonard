@@ -231,6 +231,93 @@ func TestHandleSessionStart_ReaderErrorBubblesUp(t *testing.T) {
 	}
 }
 
+func TestHandleSessionStart_SkipsInjectionForCompactSource(t *testing.T) {
+	t.Parallel()
+	reader := &fakeDecisionReader{
+		rows: []store.Decision{{Topic: "t", Choice: "c", Reasoning: "r"}},
+	}
+	stdin := bytes.NewReader(encodeSessionStart(t, SessionStartPayload{
+		HookEventName: "SessionStart",
+		Source:        "compact",
+	}))
+	var stdout bytes.Buffer
+
+	if err := HandleSessionStart(context.Background(), SessionStartOptions{Decisions: reader}, stdin, &stdout); err != nil {
+		t.Fatalf("HandleSessionStart: %v", err)
+	}
+
+	var resp SessionStartResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\nstdout=%q", err, stdout.String())
+	}
+	if !resp.Continue {
+		t.Error("Continue should be true on skip-injection path")
+	}
+	if resp.HookSpecificOutput != nil {
+		t.Errorf("expected no injection on source=compact, got %+v", resp.HookSpecificOutput)
+	}
+	if calls := reader.Calls(); len(calls) != 0 {
+		t.Errorf("expected zero GetDecisions calls on source=compact, got %d (%+v)", len(calls), calls)
+	}
+}
+
+func TestHandleSessionStart_SkipsInjectionForClearSource(t *testing.T) {
+	t.Parallel()
+	reader := &fakeDecisionReader{
+		rows: []store.Decision{{Topic: "t", Choice: "c", Reasoning: "r"}},
+	}
+	stdin := bytes.NewReader(encodeSessionStart(t, SessionStartPayload{
+		HookEventName: "SessionStart",
+		Source:        "clear",
+	}))
+	var stdout bytes.Buffer
+
+	if err := HandleSessionStart(context.Background(), SessionStartOptions{Decisions: reader}, stdin, &stdout); err != nil {
+		t.Fatalf("HandleSessionStart: %v", err)
+	}
+
+	var resp SessionStartResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\nstdout=%q", err, stdout.String())
+	}
+	if !resp.Continue {
+		t.Error("Continue should be true on skip-injection path")
+	}
+	if resp.HookSpecificOutput != nil {
+		t.Errorf("expected no injection on source=clear, got %+v", resp.HookSpecificOutput)
+	}
+	if calls := reader.Calls(); len(calls) != 0 {
+		t.Errorf("expected zero GetDecisions calls on source=clear, got %d (%+v)", len(calls), calls)
+	}
+}
+
+func TestHandleSessionStart_InjectsForResumeSource(t *testing.T) {
+	t.Parallel()
+	reader := &fakeDecisionReader{
+		rows: []store.Decision{{Topic: "t", Choice: "c", Reasoning: "r"}},
+	}
+	stdin := bytes.NewReader(encodeSessionStart(t, SessionStartPayload{
+		HookEventName: "SessionStart",
+		Source:        "resume",
+	}))
+	var stdout bytes.Buffer
+
+	if err := HandleSessionStart(context.Background(), SessionStartOptions{Decisions: reader}, stdin, &stdout); err != nil {
+		t.Fatalf("HandleSessionStart: %v", err)
+	}
+
+	var resp SessionStartResponse
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v\nstdout=%q", err, stdout.String())
+	}
+	if resp.HookSpecificOutput == nil {
+		t.Fatal("expected injection on source=resume, got nil HookSpecificOutput")
+	}
+	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "**t**") {
+		t.Errorf("injected context missing decision: %q", resp.HookSpecificOutput.AdditionalContext)
+	}
+}
+
 func TestFormatDecisions_OmitsEmptyReasoning(t *testing.T) {
 	t.Parallel()
 	out := formatDecisions([]store.Decision{

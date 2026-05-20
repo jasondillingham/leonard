@@ -12,9 +12,9 @@ import (
 )
 
 // SessionStartPayload mirrors the Claude Code SessionStart hook envelope.
-// We don't actually consume any of these fields today — decoding is purely a
-// well-formedness check so a malformed invocation surfaces as an error rather
-// than silently emitting a no-op response.
+// Source is the only field we currently branch on (see shouldInjectForSource).
+// Decoding the rest is a well-formedness check so a malformed invocation
+// surfaces as an error rather than silently emitting a no-op response.
 type SessionStartPayload struct {
 	SessionID     string `json:"session_id"`
 	HookEventName string `json:"hook_event_name"`
@@ -67,9 +67,24 @@ const DefaultDecisionsLimit = 10
 //
 // When opts.Decisions is nil (no store yet) or returns an empty slice, the
 // handler emits a minimal response with Continue=true and no injection.
+//
+// The payload.Source field gates injection: on "compact" Claude already has
+// the prior decisions via the transcript summary, and on "clear" the user
+// explicitly asked for a fresh slate. In both cases we skip the store read
+// and emit a no-injection response. See shouldInjectForSource.
 func HandleSessionStart(_ context.Context, opts SessionStartOptions, stdin io.Reader, stdout io.Writer) error {
-	if _, err := decodeSessionStartPayload(stdin); err != nil {
+	payload, err := decodeSessionStartPayload(stdin)
+	if err != nil {
 		return err
+	}
+
+	resp := SessionStartResponse{Continue: true}
+
+	if !shouldInjectForSource(payload.Source) {
+		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+			return fmt.Errorf("hooks: encode SessionStart response: %w", err)
+		}
+		return nil
 	}
 
 	limit := opts.Limit
@@ -86,7 +101,6 @@ func HandleSessionStart(_ context.Context, opts SessionStartOptions, stdin io.Re
 		decisions = got
 	}
 
-	resp := SessionStartResponse{Continue: true}
 	if len(decisions) > 0 {
 		resp.HookSpecificOutput = &SessionStartSpecificOutput{
 			HookEventName:     "SessionStart",
@@ -97,6 +111,29 @@ func HandleSessionStart(_ context.Context, opts SessionStartOptions, stdin io.Re
 		return fmt.Errorf("hooks: encode SessionStart response: %w", err)
 	}
 	return nil
+}
+
+// shouldInjectForSource reports whether SessionStart should inject the prior-
+// decisions block for the given source value. Claude Code documents four
+// source values: "startup", "resume", "clear", "compact".
+//
+// Skip injection on:
+//   - "compact" — the transcript summary already carries the prior context;
+//     re-injecting the decisions block is duplicate context that wastes
+//     tokens on every compaction.
+//   - "clear"   — the user explicitly asked for a fresh slate.
+//
+// Inject otherwise (startup, resume, empty, or any future-unknown value).
+// Defaulting unknown to inject preserves the original feature for callers
+// that don't set source, and gives a future Claude Code source the
+// startup-equivalent behavior.
+func shouldInjectForSource(source string) bool {
+	switch source {
+	case "compact", "clear":
+		return false
+	default:
+		return true
+	}
 }
 
 func decodeSessionStartPayload(r io.Reader) (SessionStartPayload, error) {
