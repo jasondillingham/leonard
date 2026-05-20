@@ -217,3 +217,15 @@ func ExtractNix(path string, src []byte) ([]store.Symbol, error) {
 func ExtractElixir(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("elixir", path, src)
 }
+
+func ExtractSolidity(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("solidity", path, src)
+}
+
+func ExtractMake(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("make", path, src)
+}
+
+func ExtractCMake(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("cmake", path, src)
+}

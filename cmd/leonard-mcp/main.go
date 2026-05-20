@@ -21,7 +21,7 @@ import (
 )
 
 // version is overridable at build time via -ldflags "-X main.version=...".
-var version = "0.24.0"
+var version = "0.25.0"
 
 // dbWatchInterval is how often the active watcher polls the DB path for a
 // swap. Two seconds is a generous balance: well under the human latency of

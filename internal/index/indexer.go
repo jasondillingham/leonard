@@ -110,6 +110,44 @@ var langExtractors = map[string]struct {
 	".nix":   {lang: "nix", extract: parse.ExtractNix},
 	".ex":    {lang: "elixir", extract: parse.ExtractElixir},
 	".exs":   {lang: "elixir", extract: parse.ExtractElixir},
+	".sol":   {lang: "solidity", extract: parse.ExtractSolidity},
+	".mk":    {lang: "make", extract: parse.ExtractMake},
+	".cmake": {lang: "cmake", extract: parse.ExtractCMake},
+}
+
+// langExtractorsByName handles files whose basename (rather than
+// extension) identifies the language. Makefiles have no extension;
+// CMakeLists.txt has a non-trivial name. Lookup is case-insensitive.
+// Add to this map for new no-extension languages.
+var langExtractorsByName = map[string]struct {
+	lang    string
+	extract extractor
+}{
+	"makefile":      {lang: "make", extract: parse.ExtractMake},
+	"gnumakefile":   {lang: "make", extract: parse.ExtractMake},
+	"cmakelists.txt": {lang: "cmake", extract: parse.ExtractCMake},
+}
+
+// dispatchByExt looks up an extractor for the given path. It tries
+// the file extension first (the common case), then falls back to
+// the basename for extension-less or specially-named build files.
+// Returns ok=false when nothing matches.
+func dispatchByExt(path string) (struct {
+	lang    string
+	extract extractor
+}, bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	if spec, ok := langExtractors[ext]; ok {
+		return spec, true
+	}
+	base := strings.ToLower(filepath.Base(path))
+	if spec, ok := langExtractorsByName[base]; ok {
+		return spec, true
+	}
+	return struct {
+		lang    string
+		extract extractor
+	}{}, false
 }
 
 // ParseFailure is a per-file record of an extractor returning a non-nil
@@ -209,8 +247,7 @@ func (i *Indexer) IndexAll() error {
 			return nil
 		}
 
-		ext := strings.ToLower(filepath.Ext(path))
-		if _, ok := langExtractors[ext]; !ok {
+		if _, ok := dispatchByExt(path); !ok {
 			return nil
 		}
 
@@ -323,8 +360,7 @@ func (i *Indexer) IndexFile(path string) error {
 		return nil
 	}
 
-	ext := strings.ToLower(filepath.Ext(abs))
-	if _, ok := langExtractors[ext]; !ok {
+	if _, ok := dispatchByExt(abs); !ok {
 		return nil
 	}
 
@@ -486,8 +522,7 @@ func (i *Indexer) indexAbs(path string) error {
 		return nil
 	}
 
-	ext := strings.ToLower(filepath.Ext(path))
-	spec, ok := langExtractors[ext]
+	spec, ok := dispatchByExt(path)
 	if !ok {
 		return nil
 	}

@@ -187,6 +187,25 @@ impl Language {
                 // useful for qname-folding here. Keep empty for v0.24.
                 parent_container_kinds: &[],
             }),
+            "solidity" => Some(Self {
+                grammar: tree_sitter_solidity::LANGUAGE.into(),
+                query_src: SOLIDITY_QUERY,
+                parent_container_kinds: &[
+                    "contract_declaration",
+                    "interface_declaration",
+                    "library_declaration",
+                ],
+            }),
+            "make" => Some(Self {
+                grammar: tree_sitter_make::LANGUAGE.into(),
+                query_src: MAKE_QUERY,
+                parent_container_kinds: &[],
+            }),
+            "cmake" => Some(Self {
+                grammar: tree_sitter_cmake::LANGUAGE.into(),
+                query_src: CMAKE_QUERY,
+                parent_container_kinds: &[],
+            }),
             _ => None,
         }
     }
@@ -523,6 +542,63 @@ const ELIXIR_QUERY: &str = r#"
   target: ((identifier) @_def
             (#eq? @_def "defmacro"))
   (arguments (call target: (identifier) @name))) @method
+"#;
+
+/// SOLIDITY_QUERY captures the smart-contract structural elements
+/// Leonard's symbol model maps onto: contract/interface/library as
+/// the type-or-interface, function/modifier/event/constructor as
+/// methods. Solidity's grammar names are explicit (no overloading
+/// of one node kind for multiple purposes), so the query is direct.
+const SOLIDITY_QUERY: &str = r#"
+(contract_declaration
+  name: (identifier) @name) @type
+
+(interface_declaration
+  name: (identifier) @name) @interface
+
+(library_declaration
+  name: (identifier) @name) @type
+
+(function_definition
+  name: (identifier) @name) @method
+
+(modifier_definition
+  name: (identifier) @name) @method
+
+(event_definition
+  name: (identifier) @name) @method
+
+(constructor_definition) @method.init
+"#;
+
+/// MAKE_QUERY captures Makefile build targets and top-level variable
+/// assignments. Make's "symbols" are sparse — targets and vars are
+/// the unit. Targets become @function (the build action); variables
+/// become @const.
+const MAKE_QUERY: &str = r#"
+(rule
+  (targets (word) @name)) @function
+
+(variable_assignment
+  name: (word) @name) @const
+"#;
+
+/// CMAKE_QUERY captures CMake function definitions plus the
+/// common target-introducing commands (add_library, add_executable,
+/// option). Functions defined via `function(name)...endfunction()`
+/// look distinct from regular commands; add_library / add_executable
+/// look like normal_command nodes filtered by their identifier text.
+const CMAKE_QUERY: &str = r#"
+(function_def
+  (function_command
+    (argument_list
+      . (argument (unquoted_argument) @name)))) @function
+
+(normal_command
+  (identifier) @_cmd
+  (argument_list
+    . (argument (unquoted_argument) @name))
+  (#any-of? @_cmd "add_library" "add_executable" "option")) @type
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's
