@@ -14,54 +14,36 @@ import (
 // .leonard/ directory.
 const Filename = "config.toml"
 
-// Config mirrors the schema described in DESIGN.md §4.6. Fields are slices of
-// strings so a missing key in the TOML round-trips to an empty slice rather
-// than nil-vs-empty ambiguity at the call site.
+// Config holds the project-local Leonard tunables. Bughunt-2 Theme A
+// trimmed this schema to only the fields actually consumed at runtime:
+//
+//   - [verifiers]: the post-edit hook hardcodes `go vet ./...`; per-
+//     language verifier customization is a separate feature, not a
+//     hidden default that vanishes on `leonard init` re-runs.
+//   - [index].languages, [index].ignore: language dispatch is
+//     extension-driven; ignore paths are handled by .gitignore +
+//     .leonardignore at the project root.
+//   - [hooks].block_on_fabricated_symbol: the fabrication guard is
+//     core to the project's purpose; an opt-out knob is a footgun.
+//
+// What remains are the two knobs that actually wire through:
+// inject_decisions_at_session_start (read by SessionStart) and
+// surface_unverified_claims_at_stop (read by Stop).
 type Config struct {
-	Index     IndexConfig     `toml:"index"`
-	Verifiers VerifiersConfig `toml:"verifiers"`
-	Hooks     HooksConfig     `toml:"hooks"`
-}
-
-// IndexConfig controls which languages the walker dispatches and which paths
-// it ignores in addition to .gitignore.
-type IndexConfig struct {
-	Languages []string `toml:"languages"`
-	Ignore    []string `toml:"ignore"`
-}
-
-// VerifiersConfig holds the per-language commands the post-edit hook runs
-// against the project. The phase-1 hook hard-codes "go vet ./..." but reads
-// these for parity with the documented config surface.
-type VerifiersConfig struct {
-	Go         []string `toml:"go"`
-	Python     []string `toml:"python"`
-	TypeScript []string `toml:"typescript"`
+	Hooks HooksConfig `toml:"hooks"`
 }
 
 // HooksConfig holds tunables for the Claude Code hook dispatchers.
 type HooksConfig struct {
-	InjectDecisionsAtSessionStart  int  `toml:"inject_decisions_at_session_start"`
-	BlockOnFabricatedSymbol        bool `toml:"block_on_fabricated_symbol"`
-	SurfaceUnverifiedClaimsAtStop  int  `toml:"surface_unverified_claims_at_stop"`
+	InjectDecisionsAtSessionStart int `toml:"inject_decisions_at_session_start"`
+	SurfaceUnverifiedClaimsAtStop int `toml:"surface_unverified_claims_at_stop"`
 }
 
-// Default returns the config Leonard writes during `leonard init`. The values
-// match DESIGN.md §4.6 verbatim so the file on disk doubles as documentation.
+// Default returns the config Leonard writes during `leonard init`.
 func Default() Config {
 	return Config{
-		Index: IndexConfig{
-			Languages: []string{"go", "python", "typescript"},
-			Ignore:    []string{"vendor/", "node_modules/", "dist/", "build/"},
-		},
-		Verifiers: VerifiersConfig{
-			Go:         []string{"go build ./...", "go vet ./..."},
-			Python:     []string{"ruff check ."},
-			TypeScript: []string{"tsc --noEmit"},
-		},
 		Hooks: HooksConfig{
 			InjectDecisionsAtSessionStart: 10,
-			BlockOnFabricatedSymbol:       true,
 			SurfaceUnverifiedClaimsAtStop: 20,
 		},
 	}

@@ -190,20 +190,28 @@ leonard mcp                      # exec leonard-mcp (convenience)
 ### 4.6 Configuration (`.leonard/config.toml`)
 
 ```toml
-[index]
-languages = ["go", "python", "typescript"]
-ignore = ["vendor/", "node_modules/", "dist/", "build/"]
-
-[verifiers]
-# Commands run by post-edit hook. Stdout/exit code stored in `claims`.
-go = ["go build ./...", "go vet ./..."]
-python = ["ruff check ."]
-typescript = ["tsc --noEmit"]
-
 [hooks]
-inject_decisions_at_session_start = 10  # last N
-block_on_fabricated_symbol = true       # v2
+inject_decisions_at_session_start = 10   # last N
+surface_unverified_claims_at_stop = 20   # cap on Stop-hook nag
 ```
+
+The schema is intentionally small. Bughunt-2 Theme A removed knobs that
+had drifted into the doc without ever being read at runtime:
+
+- Language dispatch is extension-driven, not config-driven (`.go` → Go,
+  `.py` → Python, `.ts/.tsx` → TypeScript). Adding a language is a code
+  change.
+- Ignore rules come from `.gitignore` and `.leonardignore` at the project
+  root, not a TOML key.
+- Per-language verifier commands (`[verifiers]`) are a future feature;
+  the v0 post-edit hook hardcodes `go vet ./...` on Go projects only.
+- `block_on_fabricated_symbol` was a tempting opt-out for the
+  fabrication guard, but the guard is the project's reason to exist;
+  removing the toggle removes a footgun.
+
+The Python interpreter path is honored from the `LEONARD_PYTHON` env
+var rather than the config file (a per-shell setting maps more naturally
+than a checked-in TOML field).
 
 ## 5. Project layout
 
