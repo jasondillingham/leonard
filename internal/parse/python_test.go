@@ -1,8 +1,11 @@
 package parse
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const samplePythonSrc = `"""Top-level fixture module."""
@@ -334,5 +337,70 @@ def kind_of(v: int | str) -> str:
 		if got := byQName[want.qname]; got != want.kind {
 			t.Errorf("%s: kind=%q, want %q (have %v)", want.qname, got, want.kind, byQName)
 		}
+	}
+}
+
+// TestExtractPython_HonorsLeonardPythonEnv covers fix-2 / python F1.
+// The earlier code documented LEONARD_PYTHON in the error string and
+// comment but never read os.Getenv. Setting the var to a stub script
+// must route the exec through it.
+func TestExtractPython_HonorsLeonardPythonEnv(t *testing.T) {
+	tmp := t.TempDir()
+	stub := filepath.Join(tmp, "stub-python.sh")
+	// The stub ignores args + stdin and emits an empty JSON array, the
+	// minimum response the extractor accepts as "no symbols found".
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncat >/dev/null\necho '[]'\n"), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("LEONARD_PYTHON", stub)
+
+	syms, err := ExtractPython("ignored.py", []byte("# whatever\n"))
+	if err != nil {
+		t.Fatalf("ExtractPython with env override: %v", err)
+	}
+	if len(syms) != 0 {
+		t.Errorf("stub returns [], got %v", syms)
+	}
+}
+
+// TestExtractPython_TimeoutKillsHungInterpreter covers fix-2 / python F2.
+// A pyenv/uv shim or NFS stall that hangs python3 used to freeze the
+// indexer indefinitely (no exec.CommandContext, no Cancel). The
+// extractor now caps each call at pythonTimeout — verify by pointing
+// LEONARD_PYTHON at a script that never exits.
+func TestExtractPython_TimeoutKillsHungInterpreter(t *testing.T) {
+	tmp := t.TempDir()
+	hang := filepath.Join(tmp, "hang.sh")
+	if err := os.WriteFile(hang, []byte("#!/bin/sh\nsleep 60\n"), 0o755); err != nil {
+		t.Fatalf("write hang script: %v", err)
+	}
+	t.Setenv("LEONARD_PYTHON", hang)
+	oldTimeout := pythonTimeout
+	pythonTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { pythonTimeout = oldTimeout })
+
+	start := time.Now()
+	_, err := ExtractPython("x.py", []byte("x = 1\n"))
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error should mention timeout, got %q", err.Error())
+	}
+	// Generous upper bound: even on a loaded CI box, 1s should be plenty.
+	if elapsed > time.Second {
+		t.Errorf("timeout took %v, want under 1s (timeout was %v)", elapsed, pythonTimeout)
+	}
+}
+
+// TestExtractPython_MissingInterpreterReturnsUnavailable covers the
+// no-python3-on-PATH case: the indexer should get ErrPythonUnavailable
+// (which it surfaces as a per-file ParseFailure), not a hard crash.
+func TestExtractPython_MissingInterpreterReturnsUnavailable(t *testing.T) {
+	t.Setenv("LEONARD_PYTHON", "/definitely/not/a/real/binary")
+	_, err := ExtractPython("x.py", []byte("x = 1\n"))
+	if err != ErrPythonUnavailable {
+		t.Errorf("expected ErrPythonUnavailable, got %v", err)
 	}
 }
