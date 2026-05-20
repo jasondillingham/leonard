@@ -1291,11 +1291,31 @@ fn extract_container_name(p: &tree_sitter::Node, src: &str) -> Option<String> {
 }
 
 /// module_name derives the Leonard "module" prefix for qualified
-/// names. v0.19 uses the file's basename minus extension — same as
-/// the syn extractor's default. Per-language refinements (e.g.
-/// reading Java package decls) can land in later versions.
+/// names. Path segments become dots and the extension is stripped,
+/// mirroring `internal/parse/qname.go`'s moduleQualifier for the
+/// Python/TypeScript/Rust extractors so two files with the same
+/// basename in different directories don't collide in the index.
+///
+///     "module.rs"              → "module"
+///     "src/foo.rs"             → "src.foo"
+///     "lib/parse/foo.rs"       → "lib.parse.foo"
+///     "C:\\\\proj\\\\foo.java" → "C..proj..foo"  (Windows path normalized)
+///
+/// Bughunt-6 languages F1 (PROMOTED to HIGH): the v0.19 basename-
+/// only form silently collided across same-name files in different
+/// dirs — `src/foo.rs` and `lib/foo.rs` both produced module "foo"
+/// for 29 tree-sitter languages, breaking the index's identity
+/// contract. The Go-side extractors already did the path-aware
+/// form; v0.48 brings the Rust side in line.
 fn module_name(path: &str) -> String {
-    let last = path.rsplit('/').next().unwrap_or(path);
-    let stem = last.rsplit_once('.').map(|(s, _)| s).unwrap_or(last);
-    stem.to_string()
+    if path.is_empty() {
+        return String::new();
+    }
+    let normalized = path.replace('\\', "/");
+    // Strip the final extension if it doesn't contain a path separator.
+    let stripped = match normalized.rfind('.') {
+        Some(idx) if !normalized[idx..].contains('/') => &normalized[..idx],
+        _ => &normalized,
+    };
+    stripped.replace('/', ".")
 }

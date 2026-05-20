@@ -6,12 +6,27 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"golang.org/x/text/unicode/norm"
 	_ "modernc.org/sqlite"
 )
+
+// normalizeClaimPath canonicalizes a file_path destined for the
+// claims table the same way the indexer's storeKey does for the
+// files table: forward-slash separators + NFC Unicode normalization.
+// Bughunt-6 store-eval F6: without this, a claim recorded with a
+// path Claude Code emitted in NFD form fails to match the file
+// row stored in NFC, breaking SupersedeClaimsForFile.
+func normalizeClaimPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	return norm.NFC.String(filepath.ToSlash(p))
+}
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
@@ -1034,6 +1049,7 @@ func (s *Store) RecordClaim(c Claim) (int64, error) {
 	if c.RecordedAt == 0 {
 		c.RecordedAt = time.Now().Unix()
 	}
+	c.FilePath = normalizeClaimPath(c.FilePath)
 	res, err := s.db.Exec(`INSERT INTO claims(
 		session_id, claim, evidence, verified, recorded_at,
 		file_path, tool, index_ok, vet_ok, vet_error_summary
@@ -1058,6 +1074,7 @@ func (s *Store) SupersedeClaimsForFile(filePath string, supersedingClaimID int64
 	if filePath == "" {
 		return 0, nil
 	}
+	filePath = normalizeClaimPath(filePath)
 	res, err := s.db.Exec(`UPDATE claims
 		SET superseded_by_claim_id = ?
 		WHERE file_path = ?

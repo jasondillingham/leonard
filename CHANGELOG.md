@@ -7,6 +7,49 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.48.0 — Carry-over promotions + supply-chain fixes (bughunt-6 Theme D, partial)
+
+Three of the seven items from Theme D. The bigger refactors (otel
+F4 binary instrumentation; perf F4 indexer worker pool; perf F6
+WAL checkpoint cadence) are deferred to a future round — they're
+meaningful changes that need design work, not load-bearing for
+launch.
+
+- **languages F1 (PROMOTED to HIGH)**: tree-sitter `module_name`
+  rewrite. The v0.19 basename-only form silently collided across
+  same-name files in different dirs — `src/foo.rs` and `lib/foo.rs`
+  both produced module "foo" for 29 tree-sitter languages,
+  breaking the index's identity contract. The fix mirrors the
+  Go-side `internal/parse/qname.go::moduleQualifier`:
+  path-separator-to-dot + extension strip. So `src/foo.rs` →
+  `src.foo`, `lib/parse/qname.go` → `lib.parse.qname`.
+- **security-2 F3**: Cargo.lock now committed for both
+  `internal/parse/rust/` and `internal/parse/treesitter/`. The
+  v0.19 .gitignore excluded them, so every fresh tree-sitter
+  build resolved grammars without lockfile pins — a hijacked
+  point-release of any of the 28 grammars would have run its
+  build.rs on the CI runner. With the lockfiles in tree, CI's
+  cargo build resolves deterministically.
+- **store-eval F6**: NFC normalization gap in claim writes. The
+  indexer's `storeKey` normalized file paths to NFC, but
+  `RecordClaim` accepted whatever path Claude Code's hook
+  envelope emitted. A claim recorded with an NFD path failed to
+  match the file row (NFC) on `SupersedeClaimsForFile`. Added
+  `normalizeClaimPath` and called it on both write and supersede
+  paths.
+
+Deferred to a future round (still in the carry-over backlog):
+- otel F4 (leonard-mcp + leonard CLI byte-identical with/without
+  -tags otel — instrument the hot paths in both binaries)
+- perf F4 (indexer worker pool, 42× speedup)
+- perf F6 (WAL checkpoint cadence on long-running processes)
+- store-eval F10 (migrateV7 LIKE-text matching could in principle
+  match a legit MCP claim; not seen in practice, low risk)
+- mcp F3 (silent truncation in get_unverified_claims response —
+  no `truncated` flag yet)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.47.0 — MCP correctness (bughunt-6 Theme C)
 
 Two HIGH findings from the bughunt-6 mcp-and-hooks-deep audit.
