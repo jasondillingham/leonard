@@ -44,13 +44,17 @@ func depSymbol(path, name, version string) store.Symbol {
 }
 
 // packageJSON is the minimum shape needed to walk dependency
-// blocks. The four blocks below cover the npm convention; older
-// `bundledDependencies` arrays aren't carried.
+// blocks. Each block's values are RawMessage because npm allows
+// either a version string OR an object form (e.g.
+// `"foo": { "version": "1.0", "registry": "..." }` — supported by
+// pnpm/yarn extensions). v0.42 (bughunt-5 preproc F3) made the
+// value handling polymorphic so an object-form dep doesn't nuke
+// the entire file's symbols on json.Unmarshal failure.
 type packageJSON struct {
-	Dependencies         map[string]string `json:"dependencies"`
-	DevDependencies      map[string]string `json:"devDependencies"`
-	PeerDependencies     map[string]string `json:"peerDependencies"`
-	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	Dependencies         map[string]json.RawMessage `json:"dependencies"`
+	DevDependencies      map[string]json.RawMessage `json:"devDependencies"`
+	PeerDependencies     map[string]json.RawMessage `json:"peerDependencies"`
+	OptionalDependencies map[string]json.RawMessage `json:"optionalDependencies"`
 }
 
 // ExtractPackageJSON walks dependencies / devDependencies /
@@ -62,14 +66,36 @@ func ExtractPackageJSON(path string, src []byte) ([]store.Symbol, error) {
 		return nil, fmt.Errorf("manifest: parse package.json: %w", err)
 	}
 	var out []store.Symbol
-	for _, m := range []map[string]string{
+	for _, m := range []map[string]json.RawMessage{
 		p.Dependencies, p.DevDependencies, p.PeerDependencies, p.OptionalDependencies,
 	} {
-		for name, version := range m {
-			out = append(out, depSymbol(path, name, version))
+		for name, raw := range m {
+			out = append(out, depSymbol(path, name, npmVersion(raw)))
 		}
 	}
 	return out, nil
+}
+
+// npmVersion extracts a printable version string from either form
+// npm allows: a bare string (`"1.0.0"`) or an object whose
+// `version` key carries the constraint (pnpm/yarn extensions). An
+// object without a recognizable version field returns "" — the
+// symbol is still emitted but the signature drops the @<version>.
+func npmVersion(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asStr string
+	if err := json.Unmarshal(raw, &asStr); err == nil {
+		return asStr
+	}
+	var asObj struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &asObj); err == nil && asObj.Version != "" {
+		return asObj.Version
+	}
+	return ""
 }
 
 // cargoToml is the minimal Cargo.toml shape. The `[dependencies]`
