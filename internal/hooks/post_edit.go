@@ -284,35 +284,27 @@ func HandlePostEdit(ctx context.Context, opts PostEditOptions, stdin io.Reader, 
 	return nil
 }
 
-// handleMissingFile records a claim and emits a response describing the
-// PostToolUse event for a file that doesn't exist on disk. IndexOK and VetOK
-// are left nil to distinguish "skipped" from a recorded success or failure —
-// the tri-state was already reserved for this short-circuit path on
-// ClaimRecord.IndexOK. Returns nil unless persistence fails.
+// handleMissingFile emits a hook response describing the PostToolUse
+// event for a file that doesn't exist on disk.
+//
+// v0.39 dropped the claim-record on this path (same shape as v0.38's
+// handleEscapedPath change). Bughunt-5 integration F3 caught a real
+// inconsistency: migrateV7 deletes `index=skipped (file not found)`
+// claim rows but handleMissingFile STILL wrote them on every
+// missing-file event, so the cleanup was one-shot but the symptom
+// regenerated — AND the rows didn't match SupersedeOutstandingFailures'
+// vet_ok=0 filter (they had vet_ok=nil), so they never auto-resolved
+// either. Stop recording. The model still gets additionalContext at
+// decision time; nothing for Stop to surface later.
 func handleMissingFile(opts PostEditOptions, payload PostToolUsePayload, filePath string, stdout io.Writer) error {
-	claim := fmt.Sprintf("tool=%s file=%s; index=skipped (file not found); %s=skipped (file not found)",
-		coalesce(payload.ToolName, "edit"), filePath, opts.VetVerb)
-	evidence := fmt.Sprintf("file: %s\nfile not found on disk — index and vet skipped\n", filePath)
-	rec := ClaimRecord{
-		SessionID: payload.SessionID,
-		Claim:     claim,
-		Evidence:  evidence,
-		FilePath:  filePath,
-		Verified:  false,
-		Tool:      payload.ToolName,
-	}
-	if _, err := opts.Claims.RecordClaim(rec); err != nil {
-		return fmt.Errorf("hooks: record claim: %w", err)
-	}
+	_ = opts // claims recorder no longer used here; keep param for shape
+	_ = payload
 	resp := HookResponse{
 		Continue:      true,
 		SystemMessage: fmt.Sprintf("leonard: %s file not found, skipping re-index", filePath),
-		// Bughunt-4 mcp F5: previously this path set only
-		// SystemMessage (user-visible, model-invisible). The model
-		// then saw a successful PostToolUse with no signal that its
-		// edit produced no on-disk result, and would happily claim
-		// the work done. Mirror handleEscapedPath's
-		// additionalContext shape so the model sees the no-op.
+		// Bughunt-4 mcp F5 (still load-bearing): the model sees the
+		// no-op via additionalContext. Without this, a missing-file
+		// PostToolUse looks like a successful edit to the model.
 		HookSpecificOutput: &PostToolUseSpecificOutput{
 			HookEventName: "PostToolUse",
 			AdditionalContext: fmt.Sprintf(

@@ -1076,11 +1076,11 @@ func (s *Store) SupersedeClaimsForFile(filePath string, supersedingClaimID int64
 }
 
 // SupersedeOutstandingFailures marks every unverified, not-yet-
-// superseded claim that recorded a verifier failure (vet=failed,
-// check=failed, etc.) as resolved by supersedingClaimID. Used by
-// the post-edit hook when a fresh vet=ok run lands and the project
-// as a whole is now clean — earlier failure claims, even for files
-// the current edit didn't touch, are no longer accurate.
+// superseded claim with vet_ok=0 (an explicit verifier failure) as
+// resolved by supersedingClaimID. Used by the post-edit hook when
+// a fresh vet=ok run lands and the project as a whole is now
+// clean — earlier failure claims, even for files the current edit
+// didn't touch, are no longer accurate.
 //
 // This catches the multi-file fix-cascade case
 // SupersedeClaimsForFile misses: a vet failure in file A is
@@ -1088,16 +1088,19 @@ func (s *Store) SupersedeClaimsForFile(filePath string, supersedingClaimID int64
 // touching A again. The file-specific supersede never fires for A;
 // the failure claim hangs in the ledger forever.
 //
-// Pattern match is intentionally broad (`%=failed%`) to cover
-// every verb the [post_edit.verify] config might use (`cargo
-// check=failed`, `pnpm tsc=failed`, etc.) without baking in a
-// fixed list.
+// Bughunt-5 verifier F1: the v0.38 implementation used
+// `claim LIKE '%=failed%'`, which matched any claim text
+// containing the substring (e.g. a user `record_claim` with text
+// "user_input=failed to load gracefully" got silently superseded).
+// The fix switches to the existing `vet_ok` integer column added
+// in migrateV3, which is set only by the post-edit hook based on
+// the verifier's actual exit status. Uses idx_claims_vet_ok.
 func (s *Store) SupersedeOutstandingFailures(supersedingClaimID int64) (int, error) {
 	res, err := s.db.Exec(`UPDATE claims
 		SET superseded_by_claim_id = ?
 		WHERE verified = 0
 		  AND superseded_by_claim_id IS NULL
-		  AND claim LIKE '%=failed%'
+		  AND vet_ok = 0
 		  AND id != ?`,
 		supersedingClaimID, supersedingClaimID)
 	if err != nil {
@@ -1121,9 +1124,18 @@ func (s *Store) SupersedeOutstandingFailures(supersedingClaimID int64) (int, err
 //
 // Returns ErrNoRows when no claim with the given ID exists.
 func (s *Store) ResolveClaim(claimID int64, note string) error {
+	// Bughunt-5 verifier F6: v0.13's MaxClaimEvidenceBytes cap
+	// bound RecordClaim's evidence at 256 KiB, but ResolveClaim
+	// appended notes without checking. A pathological `--note`
+	// flag could grow a row past the cap. Truncate before append.
+	const noteCap = 4 << 10 // 4 KiB note; the existing evidence column already obeys the 256 KiB total cap
+	trimmed := strings.TrimSpace(note)
+	if len(trimmed) > noteCap {
+		trimmed = trimmed[:noteCap] + " …(truncated)"
+	}
 	suffix := "\n\nmanually resolved by operator"
-	if strings.TrimSpace(note) != "" {
-		suffix = "\n\nmanually resolved by operator: " + note
+	if trimmed != "" {
+		suffix = "\n\nmanually resolved by operator: " + trimmed
 	}
 	res, err := s.db.Exec(`UPDATE claims
 		SET verified = 1,

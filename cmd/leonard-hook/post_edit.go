@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -57,7 +58,12 @@ func newPostEditCmd(b Backend) *cobra.Command {
 			cfg, cfgErr := config.LoadOrDefault(filepath.Join(root, dataDirName, config.Filename))
 			if cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "leonard: config load failed, falling back to defaults: %v\n", cfgErr)
-			} else if verify := cfg.PostEdit.Verify; verify.Command != "" {
+			} else if verify := cfg.PostEdit.Verify; strings.TrimSpace(verify.Command) != "" {
+				// Bughunt-5 verifier F11: trim whitespace before
+				// treating the command as set. `command = " "`
+				// previously passed the != "" gate and ran
+				// `sh -c " "`, which always succeeds and produced
+				// a silent permissive verifier.
 				opts.Vet = hooks.MakeShellRunner(verify.Command, verify.WorkingDir)
 				opts.VetVerb = hooks.VerifyVerb(verify.Command)
 				opts.AlwaysVet = true
@@ -72,10 +78,12 @@ func newPostEditCmd(b Backend) *cobra.Command {
 }
 
 // parseVerifyTimeout returns the duration parsed from raw, or
-// defaultVerifyTimeout when raw is empty or unparseable. Bad values emit
-// a one-line stderr hint and fall back rather than crashing the hook —
-// a malformed timeout in config.toml shouldn't take down the post-edit
-// loop for an unrelated edit.
+// defaultVerifyTimeout when raw is empty, unparseable, or
+// semantically invalid. Bughunt-5 verifier F4: time.ParseDuration
+// accepts negative + zero durations (e.g. "-30s"), which then
+// produce a verifier run that fires `context deadline exceeded`
+// immediately with no useful output. Reject those cases the same
+// way as a syntax error — stderr hint + fallback.
 func parseVerifyTimeout(raw string, stderr interface{ Write([]byte) (int, error) }) time.Duration {
 	if raw == "" {
 		return defaultVerifyTimeout
@@ -83,6 +91,10 @@ func parseVerifyTimeout(raw string, stderr interface{ Write([]byte) (int, error)
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		fmt.Fprintf(stderr, "leonard: invalid [post_edit.verify].timeout %q, using %s: %v\n", raw, defaultVerifyTimeout, err)
+		return defaultVerifyTimeout
+	}
+	if d <= 0 {
+		fmt.Fprintf(stderr, "leonard: [post_edit.verify].timeout %q must be positive, using %s\n", raw, defaultVerifyTimeout)
 		return defaultVerifyTimeout
 	}
 	return d

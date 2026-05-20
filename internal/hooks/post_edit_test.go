@@ -824,25 +824,11 @@ func TestHandlePostEdit_MissingFileSkipsIndex(t *testing.T) {
 		t.Error("vet should not run when file is missing")
 	}
 
-	rows := claims.Rows()
-	if len(rows) != 1 {
-		t.Fatalf("claim rows = %d, want 1", len(rows))
-	}
-	row := rows[0]
-	if row.Verified {
-		t.Error("missing file should produce verified=false")
-	}
-	if row.IndexOK != nil {
-		t.Errorf("IndexOK should be nil (index skipped), got %v", *row.IndexOK)
-	}
-	if row.VetOK != nil {
-		t.Errorf("VetOK should be nil (vet skipped), got %v", *row.VetOK)
-	}
-	if !strings.Contains(strings.ToLower(row.Claim), "file not found") {
-		t.Errorf("claim summary should mention file-not-found, got %q", row.Claim)
-	}
-	if strings.Contains(row.Claim, "index=ok") {
-		t.Errorf("claim must not falsely assert index=ok for missing file: %q", row.Claim)
+	// v0.39 (bughunt-5 integration F3): missing-file path no
+	// longer records a claim — it's a tool-layer signal, not an
+	// unverified work claim. Model still gets additionalContext.
+	if rows := claims.Rows(); len(rows) != 0 {
+		t.Errorf("v0.39: missing-file PostToolUse must NOT record claim rows; got %d", len(rows))
 	}
 
 	var resp HookResponse
@@ -855,6 +841,12 @@ func TestHandlePostEdit_MissingFileSkipsIndex(t *testing.T) {
 	msg := strings.ToLower(resp.SystemMessage)
 	if !strings.Contains(msg, "file not found") {
 		t.Errorf("SystemMessage should say file-not-found, got %q", resp.SystemMessage)
+	}
+	if resp.HookSpecificOutput == nil {
+		t.Fatal("v0.39: missing-file must populate additionalContext so the model sees the no-op")
+	}
+	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "not on disk") {
+		t.Errorf("additionalContext should mention file is not on disk, got %q", resp.HookSpecificOutput.AdditionalContext)
 	}
 	if strings.Contains(msg, "re-indexed") {
 		t.Errorf("SystemMessage must not claim re-indexed for missing file: %q", resp.SystemMessage)
