@@ -1184,8 +1184,16 @@ func (s *Store) queryUnverifiedClaims(sessionID string, includeSuperseded bool) 
 		clauses = append(clauses, "session_id = ?")
 		args = append(args, sessionID)
 	}
+	// v0.44 (bughunt-5 perf F2): cap the materialized row count at
+	// the SQL layer. On a 500k-claim ledger the previous unbounded
+	// query took 1.15s to materialize every row before the
+	// caller's Go-side slice truncated to 50/200. The MCP-layer
+	// cap is at most 200; CLI doesn't paginate; the Stop hook
+	// uses at most ~20. 1000 is well above every real consumer.
+	const queryRowCap = 1000
 	q := selectCols + " FROM claims WHERE " + strings.Join(clauses, " AND ") +
-		" ORDER BY recorded_at DESC, id DESC"
+		" ORDER BY recorded_at DESC, id DESC LIMIT ?"
+	args = append(args, queryRowCap)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: GetUnverifiedClaims: %w", err)

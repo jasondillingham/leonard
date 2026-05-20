@@ -26,6 +26,13 @@ import (
 // depSymbol builds a Symbol for one declared dependency. version
 // can be empty (some manifest formats don't carry a constraint
 // at the dep declaration site).
+//
+// Bughunt-5 perf F9: v0.36 used kind="const" here, which polluted
+// the const namespace on monorepo projects — 200 workspaces × 35
+// deps = 7000 const symbols mixed with real-source consts.
+// v0.44 introduces kind="dependency" so manifest entries are
+// distinguishable in find_symbol output, doctor reports, and
+// MCP tool kind filters.
 func depSymbol(path, name, version string) store.Symbol {
 	sig := "dependency " + name
 	if version != "" {
@@ -35,7 +42,7 @@ func depSymbol(path, name, version string) store.Symbol {
 		FilePath:      path,
 		Name:          name,
 		QualifiedName: moduleQualifier(path) + "." + name,
-		Kind:          "const",
+		Kind:          "dependency",
 		Signature:     sig,
 		StartLine:     1,
 		EndLine:       1,
