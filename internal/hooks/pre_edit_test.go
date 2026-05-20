@@ -533,3 +533,106 @@ func Foo() {}
 		t.Fatalf("expected allow when ModulePath is empty, got %+v", resp)
 	}
 }
+
+// TestPreEdit_F8_SiblingPackageReferenceCaught covers hooks F8: an Edit whose
+// new_string references a sibling package without a matching import in the
+// target file used to bypass the fabrication guard, because the snippet's
+// wrapped AST had no imports and the target file didn't import the sibling
+// either. The handler now scans the module for sibling package names and
+// uses them as a fallback alias map. Fabricated references trip the guard
+// even when no import alias is visible.
+func TestPreEdit_F8_SiblingPackageReferenceCaught(t *testing.T) {
+	t.Parallel()
+	moduleRoot := t.TempDir()
+	libDir := filepath.Join(moduleRoot, "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatalf("mkdir lib: %v", err)
+	}
+	// A sibling package with one real symbol. The bug case is the snippet
+	// referencing a name *not* in the index.
+	writeTarget(t, libDir, "lib.go", "package lib\n\nfunc RealOne() {}\n")
+	// The file under edit lives at module root, doesn't import lib.
+	target := writeTarget(t, moduleRoot, "main.go", "package main\n\nfunc main() {}\n")
+
+	store := newFakeSymStore("RealOne") // RealOne known; NonExistent is not.
+
+	// Negative case: fabricated reference must block.
+	payload := encodePreToolUsePayload(t, PreToolUsePayload{
+		SessionID:     "s",
+		HookEventName: "PreToolUse",
+		ToolName:      "Edit",
+		ToolInput: PreEditToolInput{
+			FilePath:  target,
+			NewString: "lib.NonExistent()",
+		},
+	})
+	var out bytes.Buffer
+	if err := HandlePreEdit(context.Background(), PreEditOptions{
+		Store:      store,
+		ModulePath: testModulePath,
+		ModuleRoot: moduleRoot,
+	}, bytes.NewReader(payload), &out); err != nil {
+		t.Fatalf("HandlePreEdit: %v", err)
+	}
+	var resp PreEditResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v\nstdout=%q", err, out.String())
+	}
+	if !preEditDenied(resp) {
+		t.Fatalf("expected deny for lib.NonExistent (sibling fabrication), got %s", out.String())
+	}
+	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "lib.NonExistent") {
+		t.Errorf("deny reason should mention lib.NonExistent, got %q", resp.HookSpecificOutput.PermissionDecisionReason)
+	}
+
+	// Positive case: real reference must still pass.
+	out.Reset()
+	payload = encodePreToolUsePayload(t, PreToolUsePayload{
+		SessionID:     "s",
+		HookEventName: "PreToolUse",
+		ToolName:      "Edit",
+		ToolInput: PreEditToolInput{
+			FilePath:  target,
+			NewString: "lib.RealOne()",
+		},
+	})
+	if err := HandlePreEdit(context.Background(), PreEditOptions{
+		Store:      store,
+		ModulePath: testModulePath,
+		ModuleRoot: moduleRoot,
+	}, bytes.NewReader(payload), &out); err != nil {
+		t.Fatalf("HandlePreEdit (positive): %v", err)
+	}
+	resp = PreEditResponse{}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("decode positive: %v", err)
+	}
+	if preEditDenied(resp) {
+		t.Fatalf("expected allow for lib.RealOne, got deny: %s", out.String())
+	}
+}
+
+// TestPreEdit_F8_NoModuleRootKeepsCurrentBehavior pins the backwards-compat
+// contract: when ModuleRoot is empty (e.g. the cmd-layer couldn't locate
+// the project root), the sibling scan is skipped and the existing
+// allow-on-unresolved behavior is preserved. Otherwise existing tests
+// would inherit the new strictness silently.
+func TestPreEdit_F8_NoModuleRootKeepsCurrentBehavior(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := writeTarget(t, dir, "main.go", "package main\n\nfunc main() {}\n")
+	payload := encodePreToolUsePayload(t, PreToolUsePayload{
+		SessionID:     "s",
+		HookEventName: "PreToolUse",
+		ToolName:      "Edit",
+		ToolInput: PreEditToolInput{
+			FilePath:  target,
+			NewString: "anything.Goes()",
+		},
+	})
+	store := newFakeSymStore()
+	resp := runPreEdit(t, store, payload) // ModuleRoot unset via runPreEdit's options
+	if preEditDenied(resp) {
+		t.Fatalf("expected allow when ModuleRoot is empty (no sibling scan), got deny")
+	}
+}

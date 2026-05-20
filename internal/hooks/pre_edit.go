@@ -10,6 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -101,9 +102,15 @@ type PreToolUseSpecificOutput struct {
 // that fall outside that prefix are treated as external and skipped. An empty
 // ModulePath disables blocking entirely — a useful safety net when go.mod
 // can't be located.
+//
+// ModuleRoot is the absolute filesystem path containing go.mod, used by the
+// F8 sibling-package scan to enumerate in-module packages whose symbols
+// the snippet might reference without an explicit import. An empty
+// ModuleRoot skips the scan and preserves the pre-F8 alias-only behavior.
 type PreEditOptions struct {
 	Store      SymbolStore
 	ModulePath string
+	ModuleRoot string
 }
 
 // HandlePreEdit reads a PreToolUse JSON payload from stdin, decides whether
@@ -163,6 +170,11 @@ func decidePreEdit(opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, e
 	// aliases declared elsewhere in the same source file (Edit-to-a-body
 	// snippets typically don't carry their own import block).
 	fileImports := readFileImports(filePath)
+	// Pre-load sibling packages in the same module so a snippet referencing
+	// `pkg.Name` for an in-module package without an explicit import in the
+	// target file still hits the fabrication check (hooks F8). Cheap walk
+	// (PackageClauseOnly parse) — empty result on missing ModuleRoot.
+	siblings := readSiblingPackages(opts.ModuleRoot, opts.ModulePath)
 	seen := make(map[string]bool)
 	var fabricated []string
 	for _, snippet := range snippets {
@@ -178,6 +190,16 @@ func decidePreEdit(opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, e
 		}
 		imports := collectImportsFromFile(snippetFile)
 		for alias, path := range fileImports {
+			if _, exists := imports[alias]; !exists {
+				imports[alias] = path
+			}
+		}
+		// Sibling map is the last-resort layer: only kicks in when neither
+		// the snippet's wrapped imports nor the target file's imports
+		// supplied an alias. An explicit import always wins, so a snippet
+		// that does `import "external/lib"` and writes `lib.X` doesn't get
+		// mis-resolved against an in-module `lib` package.
+		for alias, path := range siblings {
 			if _, exists := imports[alias]; !exists {
 				imports[alias] = path
 			}
@@ -309,6 +331,66 @@ func isMajorVersionSegment(s string) bool {
 		}
 	}
 	return true
+}
+
+// readSiblingPackages walks moduleRoot for .go files and returns a map of
+// package name → import path for every non-main, non-test package detected
+// in the module. Used as a last-resort alias map (hooks F8): a snippet that
+// references `pkg.X` for an in-module package gets caught by the
+// fabrication guard even when neither the snippet nor the target file
+// imports the package explicitly.
+//
+// Returns an empty map when moduleRoot or modulePath is empty (preserves
+// pre-F8 behavior in tests / mis-configured projects) or when the walk hits
+// an unreadable directory mid-stream. Per-file PackageClauseOnly parse is
+// cheap — a single read up to the package keyword.
+//
+// First package name wins on collisions. The map is small (one entry per
+// in-module package, not per file) so allocation cost is negligible even
+// for large modules.
+func readSiblingPackages(moduleRoot, modulePath string) map[string]string {
+	out := map[string]string{}
+	if moduleRoot == "" || modulePath == "" {
+		return out
+	}
+	_ = filepath.Walk(moduleRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if path != moduleRoot && (strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" || name == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		fset := token.NewFileSet()
+		f, perr := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly)
+		if perr != nil || f.Name == nil {
+			return nil
+		}
+		pkgName := f.Name.Name
+		if pkgName == "" || pkgName == "main" {
+			return nil
+		}
+		rel, rerr := filepath.Rel(moduleRoot, filepath.Dir(path))
+		if rerr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		importPath := modulePath
+		if rel != "." {
+			importPath = modulePath + "/" + rel
+		}
+		if _, exists := out[pkgName]; !exists {
+			out[pkgName] = importPath
+		}
+		return nil
+	})
+	return out
 }
 
 // readFileImports parses just the import block of the target file (if it
