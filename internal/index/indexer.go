@@ -151,8 +151,40 @@ func (i *Indexer) IndexAll() error {
 		}
 		return nil
 	})
+	if walkErr != nil {
+		return walkErr
+	}
 
-	return walkErr
+	// Prune file rows for paths that have vanished from disk. Without
+	// this sweep, deleting a file and re-running `leonard index` left
+	// the stale row in the store — verify_symbol kept returning
+	// matches for code that no longer existed. Bughunt-2 cli F2.
+	return i.pruneStaleFiles()
+}
+
+// pruneStaleFiles iterates every known file row and removes the ones whose
+// path no longer resolves on disk. Symbols cascade via FK. Paths excluded
+// by ignore rules (.gitignore, .leonardignore) that are still on disk are
+// left in place — only file-not-found triggers the delete.
+func (i *Indexer) pruneStaleFiles() error {
+	files, err := i.Store.ListFiles("", "")
+	if err != nil {
+		return fmt.Errorf("prune: list files: %w", err)
+	}
+	for _, f := range files {
+		abs := filepath.Join(i.Root, filepath.FromSlash(f.Path))
+		_, statErr := os.Stat(abs)
+		if statErr == nil {
+			continue
+		}
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			return fmt.Errorf("prune: stat %s: %w", f.Path, statErr)
+		}
+		if err := i.Store.DeleteFile(f.Path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IndexFile indexes a single file. The path may be absolute or relative to

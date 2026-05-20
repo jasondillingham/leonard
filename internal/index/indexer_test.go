@@ -334,3 +334,86 @@ func TestIndexAll_QualifiedNamesDisambiguateCrossFile(t *testing.T) {
 		}
 	}
 }
+
+// TestIndexAll_PrunesDeletedFiles covers bughunt-2 cli F2. The prior
+// IndexAll walked the filesystem and updated rows but never deleted
+// rows for files that had vanished — `verify_symbol` kept returning
+// matches for code that no longer existed, the exact ground-truth-
+// drift failure the project exists to prevent.
+func TestIndexAll_PrunesDeletedFiles(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, map[string]string{
+		"keep.go":   "package keep\nfunc Stay() {}\n",
+		"doomed.go": "package doomed\nfunc Vanish() {}\n",
+	})
+	idx := New(fx.store, fx.root)
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("first IndexAll: %v", err)
+	}
+	// Sanity: both files indexed, both symbols visible.
+	files, _ := fx.store.ListFiles("", "")
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files after first index, got %d", len(files))
+	}
+	if syms, _ := fx.store.FindSymbolsByName("Vanish"); len(syms) != 1 {
+		t.Fatalf("Vanish should index initially; got %d rows", len(syms))
+	}
+
+	// User deletes doomed.go from disk and re-indexes.
+	if err := os.Remove(filepath.Join(fx.root, "doomed.go")); err != nil {
+		t.Fatalf("remove doomed.go: %v", err)
+	}
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("second IndexAll: %v", err)
+	}
+
+	// The file row must be gone.
+	files, _ = fx.store.ListFiles("", "")
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file after delete+reindex, got %d: %+v", len(files), files)
+	}
+	if files[0].Path != "keep.go" {
+		t.Errorf("surviving file = %q, want keep.go", files[0].Path)
+	}
+	// And so must its symbols (FK CASCADE).
+	if syms, _ := fx.store.FindSymbolsByName("Vanish"); len(syms) != 0 {
+		t.Errorf("Vanish should be pruned after delete; got %d rows", len(syms))
+	}
+	// The surviving file's symbol is still there.
+	if syms, _ := fx.store.FindSymbolsByName("Stay"); len(syms) != 1 {
+		t.Errorf("Stay should survive prune; got %d rows", len(syms))
+	}
+}
+
+// TestIndexAll_PruneIgnoresLeonardIgnoredFiles confirms the prune
+// only fires on file-not-found. A path that's still on disk but
+// excluded via .leonardignore must remain in the store (the user
+// added an ignore rule, they didn't delete the file).
+func TestIndexAll_PruneIgnoresLeonardIgnoredFiles(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t, map[string]string{
+		"keep.go":   "package keep\nfunc Stay() {}\n",
+		"legacy.go": "package legacy\nfunc Old() {}\n",
+	})
+	idx := New(fx.store, fx.root)
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("first IndexAll: %v", err)
+	}
+	files, _ := fx.store.ListFiles("", "")
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files after first index, got %d", len(files))
+	}
+
+	// User adds legacy.go to .leonardignore (file still on disk).
+	if err := os.WriteFile(filepath.Join(fx.root, ".leonardignore"), []byte("legacy.go\n"), 0o644); err != nil {
+		t.Fatalf("write .leonardignore: %v", err)
+	}
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("second IndexAll: %v", err)
+	}
+	// The ignored file must NOT be pruned — it still exists on disk.
+	files, _ = fx.store.ListFiles("", "")
+	if len(files) != 2 {
+		t.Errorf("ignored-but-on-disk file should not be pruned; got %d files", len(files))
+	}
+}

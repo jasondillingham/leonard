@@ -489,6 +489,23 @@ func (s *Store) ListFiles(pattern, lang string) ([]File, error) {
 	return out, nil
 }
 
+// DeleteFile removes a file row and (via FK CASCADE) its symbols. Used by
+// the indexer's stale-row pruner — when a path vanishes from disk between
+// IndexAll runs, the prior file/symbol rows must come out of the store or
+// verify_symbol keeps returning matches that no longer exist.
+//
+// An empty path is rejected to avoid accidentally clearing the whole table
+// via a typo. Deleting a path that isn't in the store is a silent no-op.
+func (s *Store) DeleteFile(path string) error {
+	if path == "" {
+		return errors.New("store: DeleteFile: empty path")
+	}
+	if _, err := s.db.Exec(`DELETE FROM files WHERE path = ?`, path); err != nil {
+		return fmt.Errorf("store: DeleteFile: %w", err)
+	}
+	return nil
+}
+
 // SymbolCountsByFile returns file_path → symbol-row count for every file
 // that has at least one symbol. Files with zero symbols are intentionally
 // absent so callers can spot them by diffing against the files table —
