@@ -15,7 +15,7 @@ import (
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 5
+const schemaVersion = 6
 
 // File describes an indexed source file.
 type File struct {
@@ -147,6 +147,7 @@ var migrations = []func(*sql.Tx) error{
 	migrateV3,
 	migrateV4,
 	migrateV5,
+	migrateV6,
 }
 
 func (s *Store) migrate() error {
@@ -320,6 +321,29 @@ func migrateV4(tx *sql.Tx) error {
 func migrateV5(tx *sql.Tx) error {
 	if _, err := tx.Exec(`CREATE INDEX idx_symbols_parent ON symbols(parent_id)`); err != nil {
 		return fmt.Errorf("exec idx_symbols_parent: %w", err)
+	}
+	return nil
+}
+
+// migrateV6 adds three indexes the bughunt-4 store-perf lane found
+// missing via EXPLAIN QUERY PLAN:
+//
+//   - idx_files_indexed_at: ListFilesIndexedSince (powers recent_changes)
+//     full-scanned the files table sorting by indexed_at DESC.
+//   - idx_claims_verified: GetUnverifiedClaims full-scanned the claims
+//     table when no session_id was supplied (the common case).
+//   - idx_decisions_recorded_at: GetDecisions ORDER BY recorded_at DESC
+//     could scan when no topic filter was present.
+func migrateV6(tx *sql.Tx) error {
+	stmts := []string{
+		`CREATE INDEX idx_files_indexed_at ON files(indexed_at)`,
+		`CREATE INDEX idx_claims_verified ON claims(verified)`,
+		`CREATE INDEX idx_decisions_recorded_at ON decisions(recorded_at)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
+		}
 	}
 	return nil
 }
@@ -570,6 +594,16 @@ func (s *Store) DeleteFiles(paths []string) (int, error) {
 	if err := tx.Commit(); err != nil {
 		return total, fmt.Errorf("store: DeleteFiles: commit: %w", err)
 	}
+	// Bughunt-4 store-perf F7: WAL grows unbounded during bulk
+	// wipes. SQLite normally checkpoints automatically every ~1000
+	// frames, but a single multi-megabyte transaction can blow past
+	// that and leave a huge WAL file behind. After a bulk delete
+	// (>= 100 rows), force a PASSIVE checkpoint so the WAL can
+	// truncate. Errors here are non-fatal — the data is committed,
+	// checkpointing is just housekeeping.
+	if total >= 100 {
+		_, _ = s.db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
+	}
 	return total, nil
 }
 
@@ -694,19 +728,67 @@ func (s *Store) GetStaleDecisions(limit int) ([]StaleDecision, error) {
 	}
 	defer rows.Close()
 
-	var out []StaleDecision
+	// Bughunt-4 store-perf F4: previously this loop issued one
+	// `SELECT 1 FROM files WHERE path=?` per related-file ref and
+	// one `SELECT 1 FROM symbols ...` per related-symbol ref. With
+	// 200 decisions × ~10 refs = 2000+ round-trips per call.
+	//
+	// New shape: collect every unique ref across all decisions
+	// upfront, run one IN-clause query per category, then membership-
+	// check during iteration. O(refs_total) work instead of
+	// O(refs_total × decisions).
+	var decisions []Decision
+	uniqueFiles := map[string]bool{}
+	uniqueSyms := map[string]bool{}
 	for rows.Next() {
 		d, err := scanDecision(rows)
 		if err != nil {
 			return nil, fmt.Errorf("store: GetStaleDecisions scan: %w", err)
 		}
-		missingFiles, err := s.missingFiles(d.RelatedFiles)
-		if err != nil {
-			return nil, err
+		for _, f := range d.RelatedFiles {
+			if f != "" {
+				uniqueFiles[f] = true
+			}
 		}
-		missingSyms, err := s.missingSymbols(d.RelatedSymbols)
-		if err != nil {
-			return nil, err
+		for _, n := range d.RelatedSymbols {
+			if n != "" {
+				uniqueSyms[n] = true
+			}
+		}
+		decisions = append(decisions, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: GetStaleDecisions iter: %w", err)
+	}
+
+	existingFiles, err := s.existingFiles(keysOf(uniqueFiles))
+	if err != nil {
+		return nil, err
+	}
+	existingSyms, err := s.existingSymbols(keysOf(uniqueSyms))
+	if err != nil {
+		return nil, err
+	}
+
+	var out []StaleDecision
+	for _, d := range decisions {
+		var missingFiles []string
+		for _, f := range d.RelatedFiles {
+			if f == "" {
+				continue
+			}
+			if !existingFiles[f] {
+				missingFiles = append(missingFiles, f)
+			}
+		}
+		var missingSyms []string
+		for _, n := range d.RelatedSymbols {
+			if n == "" {
+				continue
+			}
+			if !existingSyms[n] {
+				missingSyms = append(missingSyms, n)
+			}
 		}
 		if len(missingFiles) == 0 && len(missingSyms) == 0 {
 			continue
@@ -717,48 +799,110 @@ func (s *Store) GetStaleDecisions(limit int) ([]StaleDecision, error) {
 			MissingSymbols: missingSyms,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: GetStaleDecisions iter: %w", err)
+	return out, nil
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// existingFiles returns the set of paths that exist as rows in the
+// files table. Used by GetStaleDecisions to bulk-check related-file
+// references. An empty input returns an empty (non-nil) map.
+func (s *Store) existingFiles(paths []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(paths) == 0 {
+		return out, nil
+	}
+	const chunkSize = 500
+	for start := 0; start < len(paths); start += chunkSize {
+		end := start + chunkSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		chunk := paths[start:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, len(chunk))
+		for i, p := range chunk {
+			args[i] = p
+		}
+		rows, err := s.db.Query("SELECT path FROM files WHERE path IN ("+placeholders+")", args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: existingFiles: %w", err)
+		}
+		for rows.Next() {
+			var p string
+			if err := rows.Scan(&p); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store: existingFiles scan: %w", err)
+			}
+			out[p] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: existingFiles iter: %w", err)
+		}
+		rows.Close()
 	}
 	return out, nil
 }
 
-func (s *Store) missingFiles(paths []string) ([]string, error) {
-	var missing []string
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		var found int
-		if err := s.db.QueryRow(`SELECT 1 FROM files WHERE path = ? LIMIT 1`, p).Scan(&found); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				missing = append(missing, p)
-				continue
-			}
-			return nil, fmt.Errorf("store: missingFiles probe %q: %w", p, err)
-		}
+// existingSymbols returns the set of names that exist as either
+// symbols.name OR symbols.qualified_name. Lookups are unioned because
+// related_symbols refs can be either form. Uses chunked IN clauses;
+// matched lookups are added under BOTH name + qualified_name so the
+// caller's membership check works regardless of which form the
+// related-symbols ref used.
+func (s *Store) existingSymbols(names []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(names) == 0 {
+		return out, nil
 	}
-	return missing, nil
-}
-
-func (s *Store) missingSymbols(names []string) ([]string, error) {
-	var missing []string
-	for _, n := range names {
-		if n == "" {
-			continue
+	const chunkSize = 500
+	for start := 0; start < len(names); start += chunkSize {
+		end := start + chunkSize
+		if end > len(names) {
+			end = len(names)
 		}
-		var found int
-		err := s.db.QueryRow(`SELECT 1 FROM symbols
-			WHERE name = ? OR qualified_name = ? LIMIT 1`, n, n).Scan(&found)
+		chunk := names[start:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, 0, 2*len(chunk))
+		for _, n := range chunk {
+			args = append(args, n)
+		}
+		// Build a second arg list for the qualified_name half of the OR.
+		args2 := make([]any, len(chunk))
+		for i, n := range chunk {
+			args2[i] = n
+		}
+		args = append(args, args2...)
+		q := "SELECT name, qualified_name FROM symbols WHERE name IN (" + placeholders + ") OR qualified_name IN (" + placeholders + ")"
+		rows, err := s.db.Query(q, args...)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				missing = append(missing, n)
-				continue
-			}
-			return nil, fmt.Errorf("store: missingSymbols probe %q: %w", n, err)
+			return nil, fmt.Errorf("store: existingSymbols: %w", err)
 		}
+		for rows.Next() {
+			var n, qn string
+			if err := rows.Scan(&n, &qn); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store: existingSymbols scan: %w", err)
+			}
+			out[n] = true
+			out[qn] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: existingSymbols iter: %w", err)
+		}
+		rows.Close()
 	}
-	return missing, nil
+	return out, nil
 }
 
 // scanDecision factors out the common row scan used by GetDecisions and

@@ -16,7 +16,7 @@ type Implementation struct {
 // DefaultImplementation is the server identity used when a caller doesn't
 // supply one (e.g. tests).
 func DefaultImplementation() Implementation {
-	return Implementation{Name: "leonard-mcp", Version: "0.14.0"}
+	return Implementation{Name: "leonard-mcp", Version: "0.15.0"}
 }
 
 // NewServer constructs an MCP server with Leonard's v1 tools registered
