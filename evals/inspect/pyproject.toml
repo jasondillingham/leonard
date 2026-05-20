@@ -1,0 +1,11 @@
+[project]
+name = "leonard-inspect-eval"
+version = "0.1.0"
+description = "Anthropic Inspect eval measuring fabrication rates with/without Leonard."
+requires-python = ">=3.10"
+dependencies = [
+    "inspect-ai>=0.3.220",
+]
+
+[tool.uv]
+package = false
