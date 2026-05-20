@@ -30,8 +30,16 @@ func (realRuntime) Init(_ context.Context, projectRoot, dataDir string) error {
 	if cerr := s.Close(); cerr != nil {
 		return cerr
 	}
+	// Preserve a user-edited config.toml across re-init: only write the
+	// defaults when the file doesn't already exist. Bughunt-2 cli F1 —
+	// the prior code unconditionally overwrote, silently losing tunables.
 	cfgPath := filepath.Join(dataDir, config.Filename)
-	return config.Save(config.Default(), cfgPath)
+	if _, statErr := os.Stat(cfgPath); errors.Is(statErr, fs.ErrNotExist) {
+		return config.Save(config.Default(), cfgPath)
+	} else if statErr != nil {
+		return fmt.Errorf("stat %s: %w", cfgPath, statErr)
+	}
+	return nil
 }
 
 func (realRuntime) IndexAll(_ context.Context, projectRoot, dataDir string) (IndexResult, error) {
