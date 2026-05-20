@@ -4,7 +4,17 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status:** v0.1, self-dogfooded on this repo as of 2026-05-19. See [`DESIGN.md`](./DESIGN.md) for the architecture and [`bughunt-1-triage.md`](./bughunt-1-triage.md) for the deferred MEDIUM-severity known gaps.
+**Status:** v0.17.0, self-dogfooded on this repo. Four bug-hunt rounds + one focused security review have driven the project through 17 minor releases; the deferred-MEDIUM lists in [`bughunt-{1,2,3,4}-triage.md`](.) track what's left. See [`DESIGN.md`](./DESIGN.md) for the architecture.
+
+Security and correctness fixes since v0.1:
+- v0.7.1 — `idx_symbols_parent` (~137× prune speedup)
+- v0.8.0 — path-trust sweep: file_path values from hook payloads are now rejected when they resolve outside the project root (was a confused-deputy)
+- v0.9.0 — resource caps on hook payloads, decisions, claims, MultiEdit
+- v0.13.0 — cap completeness: real line reader replaces a busted `bufio.Scanner` that busy-spun on oversize lines; per-response and per-bullet truncation everywhere
+- v0.14.0 — path-trust completeness: pre-edit, prune, doctor all wired through; dangling-symlink rejection; NFC normalization at storeKey
+- v0.15.0 — store-perf: three missing indexes + N+1 fix in get_stale_decisions + WAL checkpointing
+- v0.16.0 — MCP-recorded claims can now be superseded by post-edit vet=ok runs
+- v0.17.0 — three multi-round carry-over MEDIUMs closed
 
 ## What it does
 
@@ -17,9 +27,9 @@ Leonard targets four recurring Claude Code failure modes:
 
 ## Components
 
-- **`leonard`** — CLI: `init`, `index`, `verify`, `mcp` (passthrough).
-- **`leonard-mcp`** — stdio MCP server. Tools: `verify_symbol`, `find_symbol`, `list_files`, `record_decision`, `get_decisions`, `supersede_decision`, `get_stale_decisions`, `record_claim`, `get_unverified_claims`, `recent_changes`.
-- **`leonard-hook`** — hook dispatcher with `pre-edit`, `post-edit`, `session-start`, `stop` subcommands.
+- **`leonard`** — CLI: `init`, `index`, `verify`, `doctor`, `decisions`, `claims`, `mcp`. CLI now walks up looking for `.leonard/` so invocations from subdirs work.
+- **`leonard-mcp`** — stdio MCP server. Tools: `verify_symbol`, `find_symbol`, `list_files`, `record_decision`, `get_decisions`, `supersede_decision`, `get_stale_decisions`, `record_claim`, `get_unverified_claims`, `recent_changes`. All read tools cap response size (≤1 MiB). All write tools cap input text and reject oversize payloads cleanly.
+- **`leonard-hook`** — hook dispatcher with `pre-edit`, `post-edit`, `session-start`, `stop` subcommands. Path-trust guard rejects file_path values outside the project root. Resource caps on payload (16 MiB), snippet (1 MiB), MultiEdit element count (100).
 
 All three share a single SQLite store at `.leonard/leonard.db` in the project root.
 
@@ -68,7 +78,11 @@ Enable Leonard in a new project: `leonard init .`, then drop the same JSON into 
 cmd/{leonard,leonard-mcp,leonard-hook}   # the three binaries
 internal/store                            # SQLite-backed data layer
 internal/index                            # file walker + incremental dispatch
-internal/parse                            # Go (stdlib), Python (gpython), TypeScript (hand-rolled) extractors
+internal/parse                            # Go (stdlib), Python (subprocess), Rust (syn subprocess), TypeScript (hand-rolled) extractors
+internal/parse/rust                       # Cargo crate for the syn-based extractor
+internal/telemetry                        # OTel instrumentation (build-tag-gated)
+examples/pydantic-ai                      # Python demo wiring leonard-mcp into a pydantic-ai agent
+evals/inspect                             # Anthropic Inspect eval framework for fabrication rate
 internal/mcp                              # MCP tool handlers + StoreAdapter
 internal/hooks                            # hook handler implementations
 internal/config                           # .leonard/config.toml loader
@@ -77,9 +91,11 @@ internal/config                           # .leonard/config.toml loader
 ## Telemetry (optional)
 
 v0.6 added build-tag-gated OpenTelemetry spans on the hot paths the
-bughunt-2 perf round flagged. Default builds have zero overhead — the
-no-op stubs compile in and the OTel SDK doesn't load. To get real
-spans, rebuild with the `otel` tag:
+bughunt-2 perf round flagged. **`leonard-hook` is the only binary
+currently instrumented** — `leonard-mcp` and `leonard` CLI compile
+identically under the tag (no spans emitted). Default builds have
+zero overhead — the no-op stubs compile in and the OTel SDK doesn't
+load. To get real spans, rebuild with the `otel` tag:
 
 ```bash
 go install -tags otel ./cmd/...
