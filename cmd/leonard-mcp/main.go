@@ -66,7 +66,16 @@ func run() error {
 		Version: version,
 	})
 
-	return translateExitErr(srv.Run(ctx, &mcp.StdioTransport{}))
+	// Filter stdin through a JSON-RPC envelope screen so that a stray
+	// non-JSON line from a misbehaving parent process doesn't crash the
+	// server. Use IOTransport directly rather than StdioTransport so we
+	// can substitute the reader. Writer side mirrors what StdioTransport
+	// does internally (no-op Close around os.Stdout). Bughunt-2 mcp F1.
+	transport := &mcp.IOTransport{
+		Reader: newJSONLineFilter(os.Stdin, os.Stderr),
+		Writer: nopWriteCloser{os.Stdout},
+	}
+	return translateExitErr(srv.Run(ctx, transport))
 }
 
 // translateExitErr maps the MCP SDK's run-loop result onto exit semantics.
