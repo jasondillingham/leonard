@@ -225,6 +225,11 @@ impl Language {
                 query_src: PROTO_QUERY,
                 parent_container_kinds: &["message", "service"],
             }),
+            "sql" => Some(Self {
+                grammar: tree_sitter_sequel::LANGUAGE.into(),
+                query_src: SQL_QUERY,
+                parent_container_kinds: &["create_table"],
+            }),
             _ => None,
         }
     }
@@ -681,6 +686,34 @@ const PROTO_QUERY: &str = r#"
 
 (rpc
   (rpc_name (identifier) @name)) @method
+"#;
+
+/// SQL_QUERY (tree-sitter-sequel) captures schema-defining
+/// statements: CREATE TABLE/VIEW/INDEX/FUNCTION, and column
+/// definitions inside CREATE TABLE bodies. ALTER TABLE isn't
+/// captured as a "symbol" itself — it modifies an existing one
+/// — but its add-column children could be (deferred to a
+/// refinement).
+///
+/// Schema-as-source-of-truth is the use case Leonard targets here:
+/// migrations live as .sql files in most modern projects, and
+/// Claude verifying "does column users.email exist" against the
+/// indexed migration tree is a real prevention vector.
+const SQL_QUERY: &str = r#"
+(create_table
+  (object_reference name: (identifier) @name)) @type
+
+(create_view
+  (object_reference name: (identifier) @name)) @type
+
+(create_index
+  column: (identifier) @name) @type
+
+(create_function
+  (object_reference name: (identifier) @name)) @function
+
+(column_definition
+  name: (identifier) @name) @const
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's

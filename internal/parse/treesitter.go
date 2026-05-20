@@ -241,3 +241,7 @@ func ExtractGraphQL(path string, src []byte) ([]store.Symbol, error) {
 func ExtractProto(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("proto", path, src)
 }
+
+func ExtractSQL(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("sql", path, src)
+}
