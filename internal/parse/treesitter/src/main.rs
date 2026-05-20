@@ -255,6 +255,16 @@ impl Language {
                 query_src: STARLARK_QUERY,
                 parent_container_kinds: &[],
             }),
+            "glsl" => Some(Self {
+                grammar: tree_sitter_glsl::LANGUAGE_GLSL.into(),
+                query_src: GLSL_QUERY,
+                parent_container_kinds: &[],
+            }),
+            "hlsl" => Some(Self {
+                grammar: tree_sitter_hlsl::LANGUAGE_HLSL.into(),
+                query_src: HLSL_QUERY,
+                parent_container_kinds: &[],
+            }),
             _ => None,
         }
     }
@@ -825,6 +835,29 @@ const STARLARK_QUERY: &str = r#"
       value: (string (string_content) @name)))
   (#eq? @_arg "name")) @type
 "#;
+
+/// SHADER_QUERY is shared between GLSL and HLSL — both grammars
+/// use C-family node names. Captures top-level functions, struct
+/// types, and the declaration form used by uniforms/varyings/
+/// inputs/outputs (the shader's "API surface"). Top-level
+/// declarations like `uniform mat4 uModelView` parse as
+/// `declaration` with a primitive/type_identifier `type:` and
+/// an `identifier` `declarator:`.
+const SHADER_QUERY: &str = r#"
+(function_definition
+  declarator: (function_declarator
+    declarator: (identifier) @name)) @function
+
+(struct_specifier
+  name: (type_identifier) @name) @type
+
+(declaration
+  type: (type_identifier)
+  declarator: (identifier) @name) @const
+"#;
+
+const GLSL_QUERY: &str = SHADER_QUERY;
+const HLSL_QUERY: &str = SHADER_QUERY;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's
 /// cross-language symbol kind vocabulary. Unknown capture names

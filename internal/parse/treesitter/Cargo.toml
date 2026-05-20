@@ -38,6 +38,8 @@ tree-sitter-erlang = "0.14"
 tree-sitter-r = "1.1"
 tree-sitter-just = "0.2"
 tree-sitter-starlark = "1.3"
+tree-sitter-glsl = "0.2"
+tree-sitter-hlsl = "0.2"
 # tree-sitter-smithy 0.0.1 pins tree-sitter v0.20 which is
 # incompatible with v0.25; ship WIT only and revisit when a
 # compatible Smithy grammar appears on crates.io.

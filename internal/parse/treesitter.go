@@ -265,3 +265,11 @@ func ExtractJust(path string, src []byte) ([]store.Symbol, error) {
 func ExtractStarlark(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("starlark", path, src)
 }
+
+func ExtractGLSL(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("glsl", path, src)
+}
+
+func ExtractHLSL(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("hlsl", path, src)
+}

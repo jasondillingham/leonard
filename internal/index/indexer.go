@@ -137,9 +137,24 @@ var langExtractors = map[string]struct {
 	// extension before lookup, so the case distinction R uses by
 	// convention vanishes here.
 	".r":   {lang: "r", extract: parse.ExtractR},
-	".bzl": {lang: "starlark", extract: parse.ExtractStarlark},
+	".bzl":   {lang: "starlark", extract: parse.ExtractStarlark},
 	".bazel": {lang: "starlark", extract: parse.ExtractStarlark},
-	".star": {lang: "starlark", extract: parse.ExtractStarlark},
+	".star":  {lang: "starlark", extract: parse.ExtractStarlark},
+	// GLSL extensions: .glsl (generic), .vert/.frag/.geom/.comp/
+	// .tesc/.tese (per stage — vertex/fragment/geometry/compute/
+	// tessellation control/evaluation). All route through the same
+	// grammar since the language is identical, only the entry-point
+	// semantics differ.
+	".glsl": {lang: "glsl", extract: parse.ExtractGLSL},
+	".vert": {lang: "glsl", extract: parse.ExtractGLSL},
+	".frag": {lang: "glsl", extract: parse.ExtractGLSL},
+	".geom": {lang: "glsl", extract: parse.ExtractGLSL},
+	".comp": {lang: "glsl", extract: parse.ExtractGLSL},
+	".tesc": {lang: "glsl", extract: parse.ExtractGLSL},
+	".tese": {lang: "glsl", extract: parse.ExtractGLSL},
+	".hlsl": {lang: "hlsl", extract: parse.ExtractHLSL},
+	".fx":   {lang: "hlsl", extract: parse.ExtractHLSL},
+	".fxh":  {lang: "hlsl", extract: parse.ExtractHLSL},
 }
 
 // langExtractorsByName handles files whose basename (rather than
