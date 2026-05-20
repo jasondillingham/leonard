@@ -65,6 +65,13 @@ struct Language {
     ///   module.Parent.method  instead of  module.method
     /// Disambiguates the Java/C# class-constructor-shares-name case.
     parent_container_kinds: &'static [&'static str],
+    /// Whether methods in this language are exported by default
+    /// (no modifier needed). Ruby/Lua/Bash/Python-style defaults
+    /// public; Java/C#/C++ default to package-private. Bughunt-5
+    /// treesitter F4 + languages F3: the v0.20 shared heuristic
+    /// returned false for every-method-without-modifier, which is
+    /// wrong for ~half the supported languages.
+    default_exported_methods: bool,
 }
 
 impl Language {
@@ -80,11 +87,13 @@ impl Language {
                     "enum_declaration",
                     "annotation_type_declaration",
                 ],
+                default_exported_methods: false,
             }),
             "ruby" => Some(Self {
                 grammar: tree_sitter_ruby::LANGUAGE.into(),
                 query_src: RUBY_QUERY,
                 parent_container_kinds: &["class", "module", "singleton_class"],
+                default_exported_methods: true,
             }),
             "csharp" => Some(Self {
                 grammar: tree_sitter_c_sharp::LANGUAGE.into(),
@@ -96,6 +105,7 @@ impl Language {
                     "record_declaration",
                     "enum_declaration",
                 ],
+                default_exported_methods: false,
             }),
             "swift" => Some(Self {
                 grammar: tree_sitter_swift::LANGUAGE.into(),
@@ -104,6 +114,7 @@ impl Language {
                     "class_declaration",
                     "protocol_declaration",
                 ],
+                default_exported_methods: true,
             }),
             "kotlin" => Some(Self {
                 grammar: tree_sitter_kotlin_ng::LANGUAGE.into(),
@@ -112,6 +123,7 @@ impl Language {
                     "class_declaration",
                     "object_declaration",
                 ],
+                default_exported_methods: true,
             }),
             "scala" => Some(Self {
                 grammar: tree_sitter_scala::LANGUAGE.into(),
@@ -121,11 +133,13 @@ impl Language {
                     "object_definition",
                     "trait_definition",
                 ],
+                default_exported_methods: true,
             }),
             "dart" => Some(Self {
                 grammar: tree_sitter_dart::language(),
                 query_src: DART_QUERY,
                 parent_container_kinds: &["class_definition"],
+                default_exported_methods: true,
             }),
             "c" => Some(Self {
                 grammar: tree_sitter_c::LANGUAGE.into(),
@@ -134,6 +148,7 @@ impl Language {
                     "struct_specifier",
                     "union_specifier",
                 ],
+                default_exported_methods: true,
             }),
             "cpp" => Some(Self {
                 grammar: tree_sitter_cpp::LANGUAGE.into(),
@@ -144,6 +159,7 @@ impl Language {
                     "union_specifier",
                     "namespace_definition",
                 ],
+                default_exported_methods: false,
             }),
             "php" => Some(Self {
                 grammar: tree_sitter_php::LANGUAGE_PHP.into(),
@@ -153,6 +169,7 @@ impl Language {
                     "interface_declaration",
                     "trait_declaration",
                 ],
+                default_exported_methods: true,
             }),
             "lua" => Some(Self {
                 grammar: tree_sitter_lua::LANGUAGE.into(),
@@ -163,21 +180,25 @@ impl Language {
                 // via the table identifier captured in the query
                 // itself, not via ancestor walk.
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "bash" => Some(Self {
                 grammar: tree_sitter_bash::LANGUAGE.into(),
                 query_src: BASH_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "zig" => Some(Self {
                 grammar: tree_sitter_zig::LANGUAGE.into(),
                 query_src: ZIG_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: false,
             }),
             "nix" => Some(Self {
                 grammar: tree_sitter_nix::LANGUAGE.into(),
                 query_src: NIX_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "elixir" => Some(Self {
                 grammar: tree_sitter_elixir::LANGUAGE.into(),
@@ -186,6 +207,7 @@ impl Language {
                 // walk-up goes through call nodes which are not
                 // useful for qname-folding here. Keep empty for v0.24.
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "solidity" => Some(Self {
                 grammar: tree_sitter_solidity::LANGUAGE.into(),
@@ -195,21 +217,25 @@ impl Language {
                     "interface_declaration",
                     "library_declaration",
                 ],
+                default_exported_methods: false,
             }),
             "make" => Some(Self {
                 grammar: tree_sitter_make::LANGUAGE.into(),
                 query_src: MAKE_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "cmake" => Some(Self {
                 grammar: tree_sitter_cmake::LANGUAGE.into(),
                 query_src: CMAKE_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "hcl" => Some(Self {
                 grammar: tree_sitter_hcl::LANGUAGE.into(),
                 query_src: HCL_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "graphql" => Some(Self {
                 grammar: tree_sitter_graphql::LANGUAGE.into(),
@@ -219,51 +245,61 @@ impl Language {
                     "interface_type_definition",
                     "input_object_type_definition",
                 ],
+                default_exported_methods: true,
             }),
             "proto" => Some(Self {
                 grammar: tree_sitter_proto::LANGUAGE.into(),
                 query_src: PROTO_QUERY,
                 parent_container_kinds: &["message", "service"],
+                default_exported_methods: true,
             }),
             "sql" => Some(Self {
                 grammar: tree_sitter_sequel::LANGUAGE.into(),
                 query_src: SQL_QUERY,
                 parent_container_kinds: &["create_table"],
+                default_exported_methods: true,
             }),
             "wit" => Some(Self {
                 grammar: tree_sitter_wit::language(),
                 query_src: WIT_QUERY,
                 parent_container_kinds: &["interface_item", "world_item"],
+                default_exported_methods: true,
             }),
             "erlang" => Some(Self {
                 grammar: tree_sitter_erlang::LANGUAGE.into(),
                 query_src: ERLANG_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: false,
             }),
             "r" => Some(Self {
                 grammar: tree_sitter_r::LANGUAGE.into(),
                 query_src: R_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "just" => Some(Self {
                 grammar: tree_sitter_just::LANGUAGE.into(),
                 query_src: JUST_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "starlark" => Some(Self {
                 grammar: tree_sitter_starlark::LANGUAGE.into(),
                 query_src: STARLARK_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "glsl" => Some(Self {
                 grammar: tree_sitter_glsl::LANGUAGE_GLSL.into(),
                 query_src: GLSL_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             "hlsl" => Some(Self {
                 grammar: tree_sitter_hlsl::LANGUAGE_HLSL.into(),
                 query_src: HLSL_QUERY,
                 parent_container_kinds: &[],
+                default_exported_methods: true,
             }),
             _ => None,
         }
@@ -677,7 +713,7 @@ const CMAKE_QUERY: &str = r#"
 const HCL_QUERY: &str = r#"
 (block
   (identifier) @_kind
-  (string_lit (template_literal) @name)
+  . (string_lit (template_literal) @name)
   (#any-of? @_kind "resource" "variable" "module" "output"
                     "data" "provider" "locals" "terraform")) @type
 "#;
@@ -907,11 +943,23 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut src = String::new();
-    if let Err(err) = io::stdin().read_to_string(&mut src) {
+    // Read as bytes first; validate UTF-8 separately so invalid
+    // UTF-8 surfaces as a per-file ParseError (exit 2) rather than
+    // an infra failure (exit 1). Bughunt-5 treesitter F1: source
+    // files with stray bytes (BOM-less Windows-1252 in comments,
+    // etc.) used to tank as if the helper was unreachable.
+    let mut src_bytes = Vec::new();
+    if let Err(err) = io::stdin().read_to_end(&mut src_bytes) {
         eprintln!("leonard-extract-treesitter: read stdin: {}", err);
         return ExitCode::from(1);
     }
+    let src = match std::str::from_utf8(&src_bytes) {
+        Ok(s) => s.to_string(),
+        Err(e) => {
+            emit_parse_error(&format!("source is not valid UTF-8 at byte {}", e.valid_up_to()));
+            return ExitCode::from(2);
+        }
+    };
 
     let mut parser = Parser::new();
     if parser.set_language(&lang.grammar).is_err() {
@@ -1075,7 +1123,7 @@ fn extract<'src>(
             .unwrap_or_else(|| kind_node.start_position().row + 1);
         let end_line = kind_node.end_position().row + 1;
         let signature = render_signature(kind, name, &kind_node, src);
-        let exported = is_exported(kind, &kind_node, src);
+        let exported = is_exported(kind, &kind_node, src, lang.default_exported_methods);
         out.push(Symbol {
             qualified_name,
             name,
@@ -1109,32 +1157,52 @@ fn render_signature(kind: &str, name: &str, _node: &tree_sitter::Node, _src: &st
 /// Leonard uses: visible-by-default languages (Ruby) mark
 /// everything exported; access-modifier languages export only
 /// when "public" or "open" appears.
-fn is_exported(_kind: &str, node: &tree_sitter::Node, src: &str) -> bool {
+fn is_exported(
+    kind: &str,
+    node: &tree_sitter::Node,
+    src: &str,
+    default_methods: bool,
+) -> bool {
+    let mut explicit_public = false;
+    let mut explicit_private = false;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let ck = child.kind();
         if ck == "modifiers" || ck == "modifier" || ck == "visibility_modifier" {
             if let Ok(text) = child.utf8_text(src.as_bytes()) {
-                if text.contains("public") || text.contains("open") {
-                    return true;
-                }
-                if text.contains("private")
-                    || text.contains("internal")
-                    || text.contains("protected")
-                    || text.contains("fileprivate")
-                {
-                    return false;
+                // Bughunt-5 treesitter F4 + languages F3: tokenize on
+                // word boundaries instead of substring matching. C#'s
+                // `protected internal` (more permissive than just
+                // `protected`) now resolves to exported via the
+                // `internal` token.
+                for word in text.split(|c: char| !c.is_alphabetic()) {
+                    match word {
+                        "public" | "open" | "export" | "pub" | "extern"
+                        | "external" | "internal" => explicit_public = true,
+                        "private" | "fileprivate" => explicit_private = true,
+                        _ => {}
+                    }
                 }
             }
         }
     }
-    // No modifier seen — language-default visibility. For Ruby,
-    // methods are public by default; for Java, package-private (not
-    // exported). The grammars don't expose a "this is Ruby" flag,
-    // so we approximate: classes/interfaces seen without modifiers
-    // default to exported (matches Ruby and Swift) but methods
-    // default to NOT exported (matches Java/C# package-private).
-    matches!(_kind, "type" | "interface")
+    if explicit_public {
+        return true;
+    }
+    if explicit_private {
+        return false;
+    }
+    // No explicit modifier — fall back to per-language defaults.
+    // Types/interfaces are visible by convention everywhere; methods
+    // vary (Ruby public-by-default vs Java package-private). The
+    // Language.default_exported_methods flag picks the right answer.
+    if matches!(kind, "type" | "interface") {
+        return true;
+    }
+    if matches!(kind, "method" | "function") {
+        return default_methods;
+    }
+    false
 }
 
 /// find_parent_name walks node's ancestors looking for the first
