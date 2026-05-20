@@ -230,6 +230,11 @@ impl Language {
                 query_src: SQL_QUERY,
                 parent_container_kinds: &["create_table"],
             }),
+            "wit" => Some(Self {
+                grammar: tree_sitter_wit::language(),
+                query_src: WIT_QUERY,
+                parent_container_kinds: &["interface_item", "world_item"],
+            }),
             _ => None,
         }
     }
@@ -714,6 +719,33 @@ const SQL_QUERY: &str = r#"
 
 (column_definition
   name: (identifier) @name) @const
+"#;
+
+/// WIT_QUERY (tree-sitter-wit) covers the WebAssembly Interface
+/// Types declarations: interface, world, plus typedef wrappers
+/// (record, enum, variant, flags, type-alias) and free func_items
+/// inside interface bodies.
+const WIT_QUERY: &str = r#"
+(interface_item
+  name: (identifier) @name) @interface
+
+(world_item
+  name: (identifier) @name) @type
+
+(func_item
+  name: (identifier) @name) @method
+
+(record_item
+  name: (identifier) @name) @type
+
+(enum_item
+  name: (identifier) @name) @type
+
+(variant_item
+  name: (identifier) @name) @type
+
+(flags_item
+  name: (identifier) @name) @type
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's

@@ -123,6 +123,7 @@ var langExtractors = map[string]struct {
 	".proto":   {lang: "proto", extract: parse.ExtractProto},
 	".sql":     {lang: "sql", extract: parse.ExtractSQL},
 	".ipynb":   {lang: "jupyter", extract: parse.ExtractJupyter},
+	".wit":     {lang: "wit", extract: parse.ExtractWIT},
 }
 
 // langExtractorsByName handles files whose basename (rather than

@@ -245,3 +245,7 @@ func ExtractProto(path string, src []byte) ([]store.Symbol, error) {
 func ExtractSQL(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("sql", path, src)
 }
+
+func ExtractWIT(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("wit", path, src)
+}
