@@ -45,6 +45,7 @@ var langExtractors = map[string]struct {
 }{
 	".go":  {lang: "go", extract: parse.ExtractGo},
 	".py":  {lang: "python", extract: parse.ExtractPython},
+	".rs":  {lang: "rust", extract: parse.ExtractRust},
 	".ts":  {lang: "typescript", extract: parse.ExtractTypeScript},
 	".tsx": {lang: "typescript", extract: parse.ExtractTypeScript},
 }

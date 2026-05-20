@@ -1,0 +1,24 @@
+[package]
+name = "leonard-extract-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rust AST walker invoked by internal/parse/rust.go via subprocess."
+
+[[bin]]
+name = "leonard-extract-rust"
+path = "src/main.rs"
+
+# syn is the canonical Rust parsing crate (used by every proc-macro in
+# the ecosystem). full = enable all syntax features (async, GATs,
+# const-generics, etc). visit = AST visitor traits.
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
