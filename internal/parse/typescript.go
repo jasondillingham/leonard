@@ -605,15 +605,35 @@ func (p *tsParser) parseClass(exported bool, startLine int) bool {
 	}
 	p.pos++
 	p.skipGenericParams()
-	// Skip extends/implements clauses until the body opens.
+	// Skip extends/implements clauses until the body opens. Track paren
+	// depth so a mixin-style `extends Mixin(BaseClass)` doesn't trip the
+	// "stray (" bail-out — the brace is the only token we actually care
+	// about, and `;` / `}` are only a real signal at depth 0.
+	parenDepth := 0
 	for p.pos < len(p.tokens) {
 		v := p.peek().val
-		if v == "{" {
-			break
+		if v == "(" {
+			parenDepth++
+			p.pos++
+			continue
 		}
-		if v == ";" || v == "}" || v == "(" {
-			p.pos = saved
-			return false
+		if v == ")" {
+			if parenDepth == 0 {
+				p.pos = saved
+				return false
+			}
+			parenDepth--
+			p.pos++
+			continue
+		}
+		if parenDepth == 0 {
+			if v == "{" {
+				break
+			}
+			if v == ";" || v == "}" {
+				p.pos = saved
+				return false
+			}
 		}
 		p.pos++
 	}

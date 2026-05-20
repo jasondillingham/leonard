@@ -852,3 +852,34 @@ func TestExtractTypeScript_DecoratedClassMembers(t *testing.T) {
 	})
 }
 
+
+// TestExtractTypeScript_MixinExtends covers TS M2: a class extending the
+// result of a mixin call (e.g. `extends Mixin(Base)`) used to be silently
+// dropped because parseClass's pre-body scan bailed on '('. After the fix,
+// the class and its members extract normally and subsequent top-level
+// declarations are no longer eaten by the abandoned cursor.
+func TestExtractTypeScript_MixinExtends(t *testing.T) {
+	t.Parallel()
+	src := `export class C extends Mixin(BaseClass) {
+    m() { return 1; }
+}
+export const after = 1;
+`
+	syms, err := ExtractTypeScript("mixin.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	byQName := map[string]string{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = s.Kind
+	}
+	if byQName["mixin.C"] != "type" {
+		t.Errorf("class C with mixin extends not extracted: %v", byQName)
+	}
+	if byQName["mixin.C.m"] != "method" {
+		t.Errorf("method C.m not extracted: %v", byQName)
+	}
+	if byQName["mixin.after"] != "const" {
+		t.Errorf("post-class const lost after mixin class: %v", byQName)
+	}
+}
