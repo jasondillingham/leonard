@@ -16,6 +16,7 @@ jobs:
         with:
           go-version: '1.25'
           check-latest: true
+          cache: true
       - name: go vet
         run: go vet ./...
       - name: go test
@@ -35,6 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            internal/parse/rust
+            internal/parse/treesitter
       - name: Build syn-based Rust extractor
         run: cargo build --release --manifest-path internal/parse/rust/Cargo.toml
       - name: Build tree-sitter dispatcher

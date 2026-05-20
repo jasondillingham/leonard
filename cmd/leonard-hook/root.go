@@ -18,7 +18,7 @@ type Backend interface {
 
 // Version mirrors cmd/leonard's Version and cmd/leonard-mcp's
 // `version` var. Bump them together on each minor release.
-const Version = "0.48.0"
+const Version = "0.49.0"
 
 func newRootCmd(b Backend) *cobra.Command {
 	root := &cobra.Command{

@@ -7,6 +7,41 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.49.0 — Makefile + CI caching + issue/PR templates (bughunt-6 Theme E)
+
+Final fix-round-6 polish.
+
+- **store-eval F1 + launch F12**: Makefile cleaned up. The v0.1
+  "bosun lane" workflow language and the dead `leonardreal`
+  build tag are gone. `make help` lists the real targets:
+  check / test / test-race / vet / build / build-otel /
+  build-rust / build-treesitter / install / tidy / clean.
+- **store-eval F4 + launch-readiness N6**: CI workflow caching.
+  `setup-go@v5` now has `cache: true` (~3-4× cache hits on
+  go.sum-stable runs). `Swatinem/rust-cache@v2` caches the two
+  Rust workspaces. ~90s saved per CI run on cache hits.
+- **launch-readiness N7**: issue + PR templates under `.github/`.
+  Bug-report + feature-request issue templates plus a PR
+  template that lists the test plan + compatibility-notes
+  prompts directly. Visible "this project takes contribution
+  seriously" signal for new visitors.
+- **README requirements**: dropped the "auto-fetched via
+  toolchain directive if 1.21+ is installed" claim. Indirect
+  dependencies have transitioned to Go 1.25 language features,
+  so older toolchains can't build (`go mod tidy` reverts any
+  attempt to lower the `go` directive). The README now states
+  Go 1.25+ as a hard requirement, which matches reality.
+
+Items NOT closed in v0.49 (carry forward to future round):
+- store-eval F2: go.mod toolchain directive that would let
+  Go ≤1.21 install Leonard. Can't be done — deps require 1.25.
+- launch F1: GitHub Actions billing/spending-limit is a
+  user-side action, not a code fix.
+- launch F13: stale local binaries at repo root. They're
+  gitignored; not visible from a fresh clone.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.48.0 — Carry-over promotions + supply-chain fixes (bughunt-6 Theme D, partial)
 
 Three of the seven items from Theme D. The bigger refactors (otel
