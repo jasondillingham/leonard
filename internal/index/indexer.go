@@ -136,7 +136,10 @@ var langExtractors = map[string]struct {
 	// .r covers both .r and .R — dispatchByExt lowercases the
 	// extension before lookup, so the case distinction R uses by
 	// convention vanishes here.
-	".r": {lang: "r", extract: parse.ExtractR},
+	".r":   {lang: "r", extract: parse.ExtractR},
+	".bzl": {lang: "starlark", extract: parse.ExtractStarlark},
+	".bazel": {lang: "starlark", extract: parse.ExtractStarlark},
+	".star": {lang: "starlark", extract: parse.ExtractStarlark},
 }
 
 // langExtractorsByName handles files whose basename (rather than
@@ -160,6 +163,15 @@ var langExtractorsByName = map[string]struct {
 	"swagger.yaml": {lang: "openapi", extract: parse.ExtractOpenAPI},
 	"swagger.yml":  {lang: "openapi", extract: parse.ExtractOpenAPI},
 	"swagger.json": {lang: "openapi", extract: parse.ExtractOpenAPI},
+	// Just recipe runner — `justfile` or `Justfile` at the repo root.
+	"justfile": {lang: "just", extract: parse.ExtractJust},
+	// Bazel build descriptions. The Starlark grammar covers .bzl,
+	// BUILD, BUILD.bazel, WORKSPACE, WORKSPACE.bazel — all the
+	// conventional names a Bazel-shaped repo emits.
+	"build":          {lang: "starlark", extract: parse.ExtractStarlark},
+	"build.bazel":    {lang: "starlark", extract: parse.ExtractStarlark},
+	"workspace":      {lang: "starlark", extract: parse.ExtractStarlark},
+	"workspace.bazel": {lang: "starlark", extract: parse.ExtractStarlark},
 }
 
 // dispatchByExt looks up an extractor for the given path. It tries

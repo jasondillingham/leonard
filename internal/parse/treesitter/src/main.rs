@@ -245,6 +245,16 @@ impl Language {
                 query_src: R_QUERY,
                 parent_container_kinds: &[],
             }),
+            "just" => Some(Self {
+                grammar: tree_sitter_just::LANGUAGE.into(),
+                query_src: JUST_QUERY,
+                parent_container_kinds: &[],
+            }),
+            "starlark" => Some(Self {
+                grammar: tree_sitter_starlark::LANGUAGE.into(),
+                query_src: STARLARK_QUERY,
+                parent_container_kinds: &[],
+            }),
             _ => None,
         }
     }
@@ -781,6 +791,39 @@ const R_QUERY: &str = r#"
 (binary_operator
   lhs: (identifier) @name
   rhs: (function_definition)) @function
+"#;
+
+/// JUST_QUERY (tree-sitter-just) captures justfile recipes
+/// (build/test commands) as functions and top-level variable
+/// assignments as consts.
+const JUST_QUERY: &str = r#"
+(recipe
+  (recipe_header name: (identifier) @name)) @function
+
+(assignment
+  left: (identifier) @name) @const
+"#;
+
+/// STARLARK_QUERY (Bazel BUILD/*.bzl). Two complementary captures:
+///
+///   1. function_definition — Python-style `def` macros, the
+///      reusable abstractions users write in .bzl files.
+///   2. call invocations whose first arg is a `name = "..."`
+///      keyword — these are Bazel rule calls (go_library,
+///      cc_binary, etc.) that declare a build target. The string
+///      value of the `name` arg becomes the symbol name; the
+///      rule function name (go_library, etc.) is the "kind"
+///      context surfaced via the #any-of? predicate.
+const STARLARK_QUERY: &str = r#"
+(function_definition
+  name: (identifier) @name) @function
+
+(call
+  arguments: (argument_list
+    (keyword_argument
+      name: (identifier) @_arg
+      value: (string (string_content) @name)))
+  (#eq? @_arg "name")) @type
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's

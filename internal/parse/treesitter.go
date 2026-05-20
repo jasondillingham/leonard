@@ -257,3 +257,11 @@ func ExtractErlang(path string, src []byte) ([]store.Symbol, error) {
 func ExtractR(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("r", path, src)
 }
+
+func ExtractJust(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("just", path, src)
+}
+
+func ExtractStarlark(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("starlark", path, src)
+}
