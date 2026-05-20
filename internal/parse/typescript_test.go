@@ -883,3 +883,27 @@ export const after = 1;
 		t.Errorf("post-class const lost after mixin class: %v", byQName)
 	}
 }
+
+// TestExtractTypeScript_UnterminatedStringLocalizes covers TS M3: an
+// unterminated string used to eat the rest of the file because
+// skipInitializer kept consuming through balanced {}/[]/() groups in the
+// downstream real code. A stray syntax error should localize — symbols
+// declared after the broken line must still extract.
+func TestExtractTypeScript_UnterminatedStringLocalizes(t *testing.T) {
+	t.Parallel()
+	src := "const broken = \"unterminated\nexport function realA() { return 1; }\nexport const realB = 2;\n"
+	syms, err := ExtractTypeScript("broken.ts", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTypeScript: %v", err)
+	}
+	byQName := map[string]string{}
+	for _, s := range syms {
+		byQName[s.QualifiedName] = s.Kind
+	}
+	if byQName["broken.realA"] != "function" {
+		t.Errorf("realA should extract after unterminated string: %v", byQName)
+	}
+	if byQName["broken.realB"] != "const" {
+		t.Errorf("realB should extract after unterminated string: %v", byQName)
+	}
+}

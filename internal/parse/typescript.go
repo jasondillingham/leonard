@@ -1291,12 +1291,25 @@ func (p *tsParser) skipTypeAnnotation(stopOnAssign bool) {
 // skipInitializer: consume the right-hand side of `name = ...`. Stops on a
 // top-level `;` or `,`. Angle brackets are not tracked as delimiters because
 // `<` and `>` in initializers are usually comparison operators, not generics.
+//
+// Also bails on a top-level `export` or `import` keyword (TS M3): an
+// unterminated string leaves the stripper at end-of-line so subsequent
+// real code gets pulled into this scan. Function bodies in that code
+// balance their own braces back to depth 0, so the only reliable signal
+// that we've fallen off the initializer is the start of a new top-level
+// statement — and `export`/`import` are unambiguously statement-only
+// in TypeScript (dynamic `import(...)` raises paren depth before the
+// keyword's role becomes ambiguous).
 func (p *tsParser) skipInitializer() {
 	depth := 0
 	for p.pos < len(p.tokens) {
-		v := p.peek().val
+		t := p.peek()
+		v := t.val
 		if depth == 0 {
 			if v == ";" || v == "," {
+				return
+			}
+			if t.kind == "kw" && (v == "export" || v == "import") {
 				return
 			}
 		}
