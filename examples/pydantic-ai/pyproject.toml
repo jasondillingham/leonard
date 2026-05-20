@@ -1,0 +1,12 @@
+[project]
+name = "leonard-pydantic-ai-demo"
+version = "0.1.0"
+description = "Pydantic AI agent that consults Leonard via MCP for symbol verification."
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-ai>=1.0",
+]
+
+[tool.uv]
+package = false
