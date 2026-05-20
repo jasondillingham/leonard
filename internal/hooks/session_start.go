@@ -151,18 +151,29 @@ func decodeSessionStartPayload(r io.Reader) (SessionStartPayload, error) {
 	return p, nil
 }
 
+// sessionStartBulletMax caps each decision bullet's reasoning prefix
+// at 240 runes (~2× the Stop hook's 120 — decisions are inherently
+// chunkier than claim summaries, but unbounded inject was a real
+// problem). Bughunt-4 mcp F3 measured 360 KiB of inject in the worst
+// case under v0.12.0; with this cap the worst case is ~10 decisions
+// × ~240 chars ≈ 2.4 KiB, well within reason for SessionStart context.
+const sessionStartBulletMax = 240
+
 // formatDecisions renders the bullet list. The output is plain Markdown with a
 // single leading heading so Claude Code surfaces it cleanly as injected
 // context. We don't filter superseded rows here — `store.GetDecisions` returns
 // newest-first, so a freshly-recorded supersede sits on top of the row it
 // replaces.
+//
+// Each bullet's reasoning prefix is capped at sessionStartBulletMax runes
+// to bound the total inject size (bughunt-4 mcp F3).
 func formatDecisions(decisions []store.Decision) string {
 	var b strings.Builder
 	b.WriteString("## Prior decisions (from Leonard)\n\n")
 	for _, d := range decisions {
-		topic := strings.TrimSpace(d.Topic)
-		choice := strings.TrimSpace(d.Choice)
-		reason := firstNonEmptyLine(d.Reasoning)
+		topic := truncatePrefix(strings.TrimSpace(d.Topic), 80)
+		choice := truncatePrefix(strings.TrimSpace(d.Choice), 200)
+		reason := truncatePrefix(firstNonEmptyLine(d.Reasoning), sessionStartBulletMax)
 		fmt.Fprintf(&b, "- **%s** → %s", topic, choice)
 		if reason != "" {
 			fmt.Fprintf(&b, " — %s", reason)

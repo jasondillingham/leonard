@@ -385,9 +385,30 @@ func ResolveSafe(root, claimed string) (string, bool) {
 	return "", false
 }
 
+// maxIndexedFileBytes caps the size of a single source file the
+// indexer is willing to read. Bughunt-4 caps F4 measured a 172 MB
+// fixture allocating ~480 MB RSS — pathological but easy to trigger
+// (a checked-in vendored bundle, a generated parser, a build
+// artifact that snuck past skip-dirs). 8 MiB is well above any
+// realistic source file while keeping worst-case allocator pressure
+// bounded.
+const maxIndexedFileBytes = 8 << 20
+
 // indexAbs is the per-file workhorse: hash, decide whether to re-parse,
 // extract, and persist. The path argument is always absolute.
 func (i *Indexer) indexAbs(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Size() > maxIndexedFileBytes {
+		rel := i.storeKey(path)
+		i.parseFailures = append(i.parseFailures, ParseFailure{
+			Path:    rel,
+			Message: fmt.Sprintf("file size %d bytes exceeds %d byte indexing cap", info.Size(), maxIndexedFileBytes),
+		})
+		return nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)

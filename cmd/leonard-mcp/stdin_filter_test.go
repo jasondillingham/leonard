@@ -134,3 +134,57 @@ func TestLooksLikeJSONRPC_PrescreenIsLoose(t *testing.T) {
 		}
 	}
 }
+
+// TestJSONLineFilter_OversizeLineResyncs covers bughunt-4 caps F1 /
+// mcp F1. The previous bufio.Scanner-based implementation deadlocked
+// on an oversize line: ErrTooLong is non-recoverable, so the Scan
+// loop busy-spun at 100% CPU writing 35 MB/s of stderr.
+//
+// The new lineReader returns errOversize once per bad line and
+// resyncs to the next newline so the session survives.
+func TestJSONLineFilter_OversizeLineResyncs(t *testing.T) {
+	t.Parallel()
+	// Stream layout:
+	//   - Valid handshake-shaped line
+	//   - 20 MiB of 'A' (no newline) — exceeds maxLineBytes (16 MiB)
+	//   - Newline to terminate the oversize line
+	//   - Another valid line
+	good1 := `{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"
+	huge := strings.Repeat("A", 20<<20) + "\n"
+	good2 := `{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"
+
+	var errOut bytes.Buffer
+	r := newJSONLineFilter(strings.NewReader(good1+huge+good2), &errOut)
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := good1 + good2
+	if string(got) != want {
+		t.Errorf("output:\n got:  %q\n want: %q", got, want)
+	}
+	if !strings.Contains(errOut.String(), "oversize line") {
+		t.Errorf("errOut should mention oversize line, got: %q", errOut.String())
+	}
+}
+
+// TestJSONLineFilter_OversizeAtEOF covers the edge case of a stream
+// that ends mid-oversize-line without a final newline. The reader
+// should still report the oversize-drop and then return EOF cleanly
+// on the next call — not busy-spin.
+func TestJSONLineFilter_OversizeAtEOF(t *testing.T) {
+	t.Parallel()
+	huge := strings.Repeat("A", 20<<20) // NO trailing newline
+	var errOut bytes.Buffer
+	r := newJSONLineFilter(strings.NewReader(huge), &errOut)
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty output (oversize line dropped, then EOF); got %d bytes", len(got))
+	}
+	if !strings.Contains(errOut.String(), "oversize") {
+		t.Errorf("errOut should mention oversize: %q", errOut.String())
+	}
+}

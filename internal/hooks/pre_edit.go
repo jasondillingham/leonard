@@ -157,6 +157,15 @@ func decodePreToolUsePayload(r io.Reader) (PreToolUsePayload, error) {
 }
 
 func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, error) {
+	// Bughunt-4 caps F5/F6: reject oversize snippets and over-count
+	// MultiEdit BEFORE invoking the fabrication guard. The previous
+	// capSnippets/truncate behavior silently dropped the offending
+	// snippets, which let a fabricated reference at e.g. MultiEdit
+	// position 150 sneak past the cap. Wrapping in ErrDecode maps
+	// to exit-code 2 so Claude sees a clear "edit rejected" signal.
+	if err := validateToolInputSizes(p.ToolName, p.ToolInput); err != nil {
+		return PreEditResponse{}, err
+	}
 	snippets, targeted := snippetsForTool(p.ToolName, p.ToolInput)
 	if !targeted {
 		return allowResponse(), nil
@@ -250,37 +259,53 @@ func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload
 func snippetsForTool(toolName string, in PreEditToolInput) ([]string, bool) {
 	switch toolName {
 	case "Edit":
-		return capSnippets([]string{in.NewString}), true
+		return []string{in.NewString}, true
 	case "Write":
-		return capSnippets([]string{in.Content}), true
+		return []string{in.Content}, true
 	case "MultiEdit":
-		edits := in.Edits
-		if len(edits) > MaxMultiEditElements {
-			edits = edits[:MaxMultiEditElements]
-		}
-		out := make([]string, 0, len(edits))
-		for _, e := range edits {
+		out := make([]string, 0, len(in.Edits))
+		for _, e := range in.Edits {
 			out = append(out, e.NewString)
 		}
-		return capSnippets(out), true
+		return out, true
 	case "NotebookEdit":
-		return capSnippets([]string{in.NewSource}), true
+		return []string{in.NewSource}, true
 	default:
 		return nil, false
 	}
 }
 
-// capSnippets enforces MaxSnippetBytes per element. Snippets over
-// the cap are zeroed so the downstream `strings.TrimSpace(snippet)
-// == ""` check skips them — equivalent to "don't even attempt parse"
-// without changing the iteration shape. Security-1 F2.
-func capSnippets(snippets []string) []string {
-	for i, s := range snippets {
-		if len(s) > MaxSnippetBytes {
-			snippets[i] = ""
+// validateToolInputSizes rejects payloads that exceed the per-snippet
+// or per-element caps. Bughunt-4 caps F5/F6: the previous policy of
+// silently zeroing oversize snippets / truncating over-count MultiEdits
+// let a fabricated reference at a discarded position pass through the
+// fabrication guard. Returning ErrDecode here maps to exit-code 2 so
+// Claude sees a clear "edit rejected" signal.
+func validateToolInputSizes(toolName string, in PreEditToolInput) error {
+	switch toolName {
+	case "Edit":
+		if len(in.NewString) > MaxSnippetBytes {
+			return fmt.Errorf("%w: Edit new_string exceeds %d bytes", ErrDecode, MaxSnippetBytes)
+		}
+	case "Write":
+		if len(in.Content) > MaxSnippetBytes {
+			return fmt.Errorf("%w: Write content exceeds %d bytes", ErrDecode, MaxSnippetBytes)
+		}
+	case "MultiEdit":
+		if len(in.Edits) > MaxMultiEditElements {
+			return fmt.Errorf("%w: MultiEdit edits count exceeds %d", ErrDecode, MaxMultiEditElements)
+		}
+		for i, e := range in.Edits {
+			if len(e.NewString) > MaxSnippetBytes {
+				return fmt.Errorf("%w: MultiEdit edits[%d].new_string exceeds %d bytes", ErrDecode, i, MaxSnippetBytes)
+			}
+		}
+	case "NotebookEdit":
+		if len(in.NewSource) > MaxSnippetBytes {
+			return fmt.Errorf("%w: NotebookEdit new_source exceeds %d bytes", ErrDecode, MaxSnippetBytes)
 		}
 	}
-	return snippets
+	return nil
 }
 
 // parseSnippet tries a few wrappers so partial-edit snippets still parse.

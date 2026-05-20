@@ -16,7 +16,7 @@ type Implementation struct {
 // DefaultImplementation is the server identity used when a caller doesn't
 // supply one (e.g. tests).
 func DefaultImplementation() Implementation {
-	return Implementation{Name: "leonard-mcp", Version: "0.12.0"}
+	return Implementation{Name: "leonard-mcp", Version: "0.13.0"}
 }
 
 // NewServer constructs an MCP server with Leonard's v1 tools registered
@@ -108,10 +108,28 @@ func findSymbol(ctx context.Context, store SymbolStore, in FindSymbolInput) (Fin
 	return FindSymbolOutput{Matches: filterAndConvert(syms, in.Kind, in.Language, in.Limit)}, nil
 }
 
+// listFilesDefaultLimit + listFilesMaxLimit cap the response size.
+// Bughunt-4 caps F7: ListFilesInput previously had no limit at all,
+// so on a 10k-file project list_files returned every row.
+const (
+	listFilesDefaultLimit = 200
+	listFilesMaxLimit     = 1000
+)
+
 func listFiles(ctx context.Context, store SymbolStore, in ListFilesInput) (ListFilesOutput, error) {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = listFilesDefaultLimit
+	}
+	if limit > listFilesMaxLimit {
+		limit = listFilesMaxLimit
+	}
 	files, err := store.ListFiles(ctx, in.Pattern, in.Language)
 	if err != nil {
 		return ListFilesOutput{}, err
+	}
+	if len(files) > limit {
+		files = files[:limit]
 	}
 	out := make([]FileEntry, 0, len(files))
 	for _, f := range files {

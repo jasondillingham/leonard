@@ -662,11 +662,12 @@ func TestHandlePreEdit_OversizePayloadRejected(t *testing.T) {
 	}
 }
 
-// TestHandlePreEdit_OversizeSnippetSkipped covers the per-snippet
-// cap. A 2 MiB new_string (over MaxSnippetBytes) should be silently
-// skipped by capSnippets — the fabrication check passes without
-// running parseSnippet on the oversize input.
-func TestHandlePreEdit_OversizeSnippetSkipped(t *testing.T) {
+// TestHandlePreEdit_OversizeSnippetRejected covers bughunt-4 caps F5.
+// v0.9 silently zeroed oversize snippets, which let fabricated
+// references at the truncated positions sneak past the guard. The
+// v0.13 fix rejects the whole hook with ErrDecode so Claude sees a
+// clear "edit rejected" signal via exit-code 2.
+func TestHandlePreEdit_OversizeSnippetRejected(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	target := writeTarget(t, dir, "main.go", "package main\n\nfunc main() {}\n")
@@ -680,24 +681,45 @@ func TestHandlePreEdit_OversizeSnippetSkipped(t *testing.T) {
 			NewString: huge,
 		},
 	})
-	resp := runPreEdit(t, newFakeSymStore(), payload)
-	if preEditDenied(resp) {
-		t.Errorf("oversize snippet should be skipped (not blocked), got deny: %+v", resp)
+	err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+		bytes.NewReader(payload), &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected oversize-snippet rejection")
+	}
+	if !errors.Is(err, ErrDecode) {
+		t.Errorf("error should wrap ErrDecode (exit-code 2): %v", err)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should mention the cap: %v", err)
 	}
 }
 
-// TestSnippetsForTool_MultiEditElementCap pins MaxMultiEditElements.
-func TestSnippetsForTool_MultiEditElementCap(t *testing.T) {
+// TestHandlePreEdit_MultiEditOverCountRejected covers bughunt-4 caps
+// F6. v0.9 truncated MultiEdit.Edits to MaxMultiEditElements, which
+// let a fabricated reference at position 150 pass through the
+// fabrication guard. v0.13 rejects the whole hook with ErrDecode
+// instead.
+func TestHandlePreEdit_MultiEditOverCountRejected(t *testing.T) {
 	t.Parallel()
-	edits := make([]PreEditMultiEdit, MaxMultiEditElements+50)
+	dir := t.TempDir()
+	target := writeTarget(t, dir, "main.go", "package main\n\nfunc main() {}\n")
+	edits := make([]PreEditMultiEdit, MaxMultiEditElements+5)
 	for i := range edits {
 		edits[i] = PreEditMultiEdit{NewString: "x"}
 	}
-	out, targeted := snippetsForTool("MultiEdit", PreEditToolInput{Edits: edits})
-	if !targeted {
-		t.Fatal("MultiEdit should be targeted")
+	payload := encodePreToolUsePayload(t, PreToolUsePayload{
+		ToolName: "MultiEdit",
+		ToolInput: PreEditToolInput{
+			FilePath: target,
+			Edits:    edits,
+		},
+	})
+	err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+		bytes.NewReader(payload), &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected over-count rejection")
 	}
-	if len(out) != MaxMultiEditElements {
-		t.Errorf("MultiEdit cap not applied: got %d snippets, want %d", len(out), MaxMultiEditElements)
+	if !errors.Is(err, ErrDecode) {
+		t.Errorf("error should wrap ErrDecode: %v", err)
 	}
 }

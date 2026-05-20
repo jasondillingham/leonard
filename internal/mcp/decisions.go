@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/jasondillingham/leonard/internal/store"
 )
 
 // Wire-format payloads for the decision MCP tools. Field names and JSON
@@ -90,15 +92,14 @@ const (
 	getDecisionsMaxLimit     = 200
 )
 
-// Resource caps for decision text. Security-1 F4/F8: unbounded
-// inputs let a single record_decision call grow the DB row to
-// megabytes and balloon get_decisions response payloads. Sized
-// generously above realistic real-world entries while preventing
-// the obvious abuse cases.
+// Cap values live in internal/store/limits.go so the CLI and MCP
+// layers share one source of truth — bughunt-4 caps F3 caught the
+// CLI bypassing these limits because they were package-private to
+// internal/mcp at the time.
 const (
-	maxDecisionTopicBytes     = 256
-	maxDecisionChoiceBytes    = 4 << 10  // 4 KiB
-	maxDecisionReasoningBytes = 32 << 10 // 32 KiB
+	maxDecisionTopicBytes     = store.MaxDecisionTopicBytes
+	maxDecisionChoiceBytes    = store.MaxDecisionChoiceBytes
+	maxDecisionReasoningBytes = store.MaxDecisionReasoningBytes
 )
 
 func recordDecision(ctx context.Context, ds DecisionStore, in RecordDecisionInput) (RecordDecisionOutput, error) {
@@ -121,6 +122,14 @@ func recordDecision(ctx context.Context, ds DecisionStore, in RecordDecisionInpu
 	return RecordDecisionOutput{DecisionID: id}, nil
 }
 
+// maxDecisionsResponseBytes caps the cumulative payload of a single
+// get_decisions response. Bughunt-4 mcp F2: with per-row caps of
+// 256B topic + 4 KiB choice + 32 KiB reasoning, 200 rows × ~37 KiB
+// = 7.4 MB response. Aggregate cap of 1 MiB clamps to roughly the
+// first ~25 large rows, which is still a useful page; clients
+// wanting more can re-page with `since` or `topic`.
+const maxDecisionsResponseBytes = 1 << 20
+
 func getDecisions(ctx context.Context, ds DecisionStore, in GetDecisionsInput) (GetDecisionsOutput, error) {
 	limit := in.Limit
 	if limit <= 0 {
@@ -134,10 +143,33 @@ func getDecisions(ctx context.Context, ds DecisionStore, in GetDecisionsInput) (
 		return GetDecisionsOutput{}, fmt.Errorf("get_decisions: %w", err)
 	}
 	out := make([]DecisionEntry, 0, len(recs))
+	bytesEmitted := 0
 	for _, r := range recs {
-		out = append(out, decisionRecordToEntry(r))
+		e := decisionRecordToEntry(r)
+		rowBytes := decisionEntrySize(e)
+		if len(out) > 0 && bytesEmitted+rowBytes > maxDecisionsResponseBytes {
+			break
+		}
+		out = append(out, e)
+		bytesEmitted += rowBytes
 	}
 	return GetDecisionsOutput{Decisions: out}, nil
+}
+
+// decisionEntrySize is the rough byte cost of one DecisionEntry in
+// the response. We don't marshal-then-measure (that would double the
+// allocation budget on a hot path); summing the variable-length
+// fields catches >95% of the real cost and is good enough for the
+// response-cap heuristic.
+func decisionEntrySize(e DecisionEntry) int {
+	n := len(e.Topic) + len(e.Choice) + len(e.Reasoning)
+	for _, f := range e.RelatedFiles {
+		n += len(f)
+	}
+	for _, s := range e.RelatedSymbols {
+		n += len(s)
+	}
+	return n
 }
 
 func decisionRecordToEntry(r DecisionRecord) DecisionEntry {
@@ -183,6 +215,15 @@ func getStaleDecisions(ctx context.Context, ds DecisionStore, in GetStaleDecisio
 func supersedeDecision(ctx context.Context, ds DecisionStore, in SupersedeDecisionInput) (SupersedeDecisionOutput, error) {
 	if in.DecisionID <= 0 {
 		return SupersedeDecisionOutput{}, errors.New("supersede_decision: decision_id is required")
+	}
+	// Bughunt-4 caps F2: supersede_decision used to bypass every
+	// text cap that recordDecision enforces, letting an attacker
+	// store unbounded text by superseding instead of recording.
+	if len(in.NewChoice) > maxDecisionChoiceBytes {
+		return SupersedeDecisionOutput{}, fmt.Errorf("supersede_decision: new_choice exceeds %d bytes", maxDecisionChoiceBytes)
+	}
+	if len(in.NewReasoning) > maxDecisionReasoningBytes {
+		return SupersedeDecisionOutput{}, fmt.Errorf("supersede_decision: new_reasoning exceeds %d bytes", maxDecisionReasoningBytes)
 	}
 	newID, err := ds.SupersedeDecision(ctx, in.DecisionID, in.NewChoice, in.NewReasoning)
 	if err != nil {

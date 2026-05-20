@@ -52,6 +52,7 @@ type FindSymbolOutput struct {
 type ListFilesInput struct {
 	Pattern  string `json:"pattern,omitempty" jsonschema:"optional glob matched against file path (SQLite GLOB: * matches any sequence incl. /, ? matches one char, [abc] character classes; no ** recursion, malformed patterns silently match zero rows)"`
 	Language string `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max files to return (default 200, capped at 1000). 0 = use default."`
 }
 
 // ListFilesOutput wraps the files array (see FindSymbolOutput note).

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -21,28 +20,44 @@ type jsonrpcEnvelope struct {
 	Jsonrpc string `json:"jsonrpc"`
 }
 
+// maxLineBytes caps a single newline-delimited line on stdin. Anything
+// longer is silently discarded (read-to-newline-then-drop) so a runaway
+// producer doesn't exhaust process memory. 16 MiB matches the v0.9.0
+// hook payload cap so the two surfaces have consistent limits.
+const maxLineBytes = 16 << 20
+
+// errOversize is returned by lineReader.ReadLine when a single line
+// exceeded maxLineBytes and had to be discarded. The caller skips the
+// drop, logs once, and reads the next line — same shape as dropping a
+// non-JSON-RPC noise line.
+var errOversize = errors.New("oversize line discarded")
+
 // newJSONLineFilter wraps src in an io.ReadCloser that emits only
 // newline-terminated lines whose payload is a JSON object carrying
 // `"jsonrpc":"2.0"`. Everything else (a stray `console.log` from a
 // parent process, a leading shebang, an empty heartbeat line, a
-// notification with no `jsonrpc` field) is dropped and logged to
-// errOut. The wrapped stream looks clean to the SDK so the transport
-// run loop never encounters a fatal decode error.
+// notification with no `jsonrpc` field, OR a line that exceeds
+// maxLineBytes) is dropped and logged to errOut. The wrapped stream
+// looks clean to the SDK so the transport run loop never encounters
+// a fatal decode error.
 //
-// Scanner buffer caps at 16 MiB — well above any realistic MCP
-// message size while small enough that a runaway producer can't
-// exhaust process memory.
+// Bughunt-4 caps F1 / mcp F1: the previous bufio.Scanner-based
+// implementation hit bufio.ErrTooLong on oversize lines, after which
+// the scanner was unrecoverable. The "log + continue" stub from
+// v0.9.0 wasn't actually recoverable — Scan() would keep returning
+// ErrTooLong on every call, busy-spinning at 100% CPU while spamming
+// stderr. The new implementation uses a custom line reader that can
+// truly resync past an oversize line (by reading-and-discarding until
+// the next newline).
 func newJSONLineFilter(src io.Reader, errOut io.Writer) io.ReadCloser {
-	s := bufio.NewScanner(src)
-	s.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	return &filteringReader{src: s, errOut: errOut}
+	return &filteringReader{src: newLineReader(src, maxLineBytes), errOut: errOut}
 }
 
-// filteringReader implements io.ReadCloser over a bufio.Scanner of
-// the upstream stdin. The internal `buf` carries the next line plus
+// filteringReader implements io.ReadCloser over a lineReader of the
+// upstream stdin. The internal `buf` carries the next line plus
 // trailing newline; Read drains it before pulling a new line.
 type filteringReader struct {
-	src    *bufio.Scanner
+	src    *lineReader
 	buf    []byte
 	errOut io.Writer
 }
@@ -51,30 +66,18 @@ type filteringReader struct {
 // until either an acceptable JSON-RPC envelope arrives or the input
 // closes. Unaccepted lines are reported to errOut for debuggability —
 // a silently-dropped line would make stdio cleanliness issues invisible
-// to the operator.
-//
-// Security-1 F12: a line that exceeds the Scanner's 16 MiB buffer
-// used to surface as `bufio.ErrTooLong` from Scan(), which closed
-// the transport entirely. We now log + skip those too so a single
-// oversize line doesn't end the session — same shape as dropping
-// non-JSON-RPC noise.
+// to the operator. Oversize lines are dropped the same way; the
+// session survives.
 func (r *filteringReader) Read(p []byte) (int, error) {
 	for len(r.buf) == 0 {
-		if !r.src.Scan() {
-			if err := r.src.Err(); err != nil {
-				if errors.Is(err, bufio.ErrTooLong) {
-					fmt.Fprintf(r.errOut, "leonard-mcp: dropped oversize line on stdin (exceeds Scanner buffer cap); continuing\n")
-					// Scanner is poisoned after ErrTooLong — re-arm
-					// the underlying reader by handing back a fresh
-					// Scanner on the same upstream.
-					r.src = newOversizeTolerantScanner(r.src)
-					continue
-				}
-				return 0, err
+		line, err := r.src.ReadLine()
+		if err != nil {
+			if errors.Is(err, errOversize) {
+				fmt.Fprintln(r.errOut, "leonard-mcp: dropped oversize line on stdin (> 16 MiB); continuing")
+				continue
 			}
-			return 0, io.EOF
+			return 0, err
 		}
-		line := r.src.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
@@ -90,22 +93,96 @@ func (r *filteringReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// newOversizeTolerantScanner is a no-op stub used to acknowledge
-// the design intent. bufio.Scanner is *not* re-armable after
-// ErrTooLong because the underlying reader is mid-token at an
-// unknown offset; there's no way to resync to the next newline
-// without reading bytes ourselves. For now the function just
-// returns the same Scanner — the loop above will see ErrTooLong
-// on the next Scan() too and return it, ending the session, but
-// at least we logged a clear message instead of dying silently.
-// A real fix would replace bufio.Scanner with a custom line-reader
-// that can advance past an oversize line. Tracked as part of the
-// fix-3 follow-up list rather than blocking v0.9.0.
-func newOversizeTolerantScanner(s *bufio.Scanner) *bufio.Scanner {
-	return s
+func (r *filteringReader) Close() error { return nil }
+
+// lineReader reads newline-delimited records with a hard cap. It
+// replaces bufio.Scanner specifically because Scanner's ErrTooLong
+// state is non-recoverable — Scan() keeps returning the same error
+// on every subsequent call. This reader, when a line exceeds cap,
+// returns errOversize once and then keeps draining bytes until the
+// next newline so the next ReadLine sees the start of a fresh line.
+type lineReader struct {
+	src      io.Reader
+	cap      int
+	buf      []byte
+	skipping bool
+	eof      bool
 }
 
-func (r *filteringReader) Close() error { return nil }
+const readChunk = 8 << 10
+
+func newLineReader(src io.Reader, cap int) *lineReader {
+	return &lineReader{src: src, cap: cap, buf: make([]byte, 0, readChunk)}
+}
+
+// ReadLine returns the next line (without the trailing newline), or
+// one of: (nil, errOversize) on a discarded oversize line, (nil,
+// io.EOF) after the last byte of input. A trailing partial line
+// without a newline at EOF is returned as a normal line.
+func (r *lineReader) ReadLine() ([]byte, error) {
+	for {
+		if r.skipping {
+			// In skip-mode: discard everything in buf, keep reading
+			// until we find a newline, then return errOversize so the
+			// caller knows a line was dropped and resync is complete.
+			if i := bytes.IndexByte(r.buf, '\n'); i >= 0 {
+				r.buf = append(r.buf[:0], r.buf[i+1:]...)
+				r.skipping = false
+				return nil, errOversize
+			}
+			r.buf = r.buf[:0]
+			if r.eof {
+				// Stream ended mid-skip; oversize line is the last
+				// thing we'll ever see. Report it and then EOF on
+				// next call.
+				r.skipping = false
+				return nil, errOversize
+			}
+			if err := r.fill(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if i := bytes.IndexByte(r.buf, '\n'); i >= 0 {
+			line := append([]byte(nil), r.buf[:i]...)
+			r.buf = append(r.buf[:0], r.buf[i+1:]...)
+			return line, nil
+		}
+		if len(r.buf) > r.cap {
+			// Hit the cap without finding a newline; enter skip-mode.
+			r.buf = r.buf[:0]
+			r.skipping = true
+			continue
+		}
+		if r.eof {
+			if len(r.buf) > 0 {
+				line := append([]byte(nil), r.buf...)
+				r.buf = r.buf[:0]
+				return line, nil
+			}
+			return nil, io.EOF
+		}
+		if err := r.fill(); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (r *lineReader) fill() error {
+	chunk := make([]byte, readChunk)
+	n, err := r.src.Read(chunk)
+	if n > 0 {
+		r.buf = append(r.buf, chunk[:n]...)
+	}
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			r.eof = true
+			return nil
+		}
+		return err
+	}
+	return nil
+}
 
 // looksLikeJSONRPC returns true when line decodes as a JSON object
 // with a `"jsonrpc":"2.0"` field. We don't validate further — the SDK

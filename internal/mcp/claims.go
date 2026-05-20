@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/jasondillingham/leonard/internal/store"
 )
 
 // Wire-format payloads for the claim MCP tools. Field names and JSON tags
@@ -33,7 +35,13 @@ type RecordClaimOutput struct {
 type GetUnverifiedClaimsInput struct {
 	SessionID         string `json:"session_id,omitempty" jsonschema:"optional session filter; empty returns unverified claims across all sessions"`
 	IncludeSuperseded bool   `json:"include_superseded,omitempty" jsonschema:"when true, also return prior failure claims that a later vet=ok run on the same file already resolved (default: false — superseded rows hidden so stop-time output stays focused)"`
+	Limit             int    `json:"limit,omitempty" jsonschema:"max rows to return (default 50, capped at 200). 0 = use default."`
 }
+
+const (
+	getUnverifiedDefaultLimit = 50
+	getUnverifiedMaxLimit     = 200
+)
 
 // ClaimEntry is the wire-format claim returned by get_unverified_claims.
 // Evidence is intentionally omitted from this read shape because it can be
@@ -60,13 +68,11 @@ type GetUnverifiedClaimsOutput struct {
 	Claims []ClaimEntry `json:"claims"`
 }
 
-// Resource caps for claim text. Security-1 F4: post-edit hook's
-// evidence field can run hundreds of KiB on a verbose vet failure;
-// 256 KiB is a generous ceiling that still bounds row growth.
-// claim summary is one-line; cap at 4 KiB.
+// Cap values live in internal/store/limits.go so the CLI and MCP
+// layers share one source of truth (bughunt-4 caps F3).
 const (
-	maxClaimSummaryBytes  = 4 << 10
-	maxClaimEvidenceBytes = 256 << 10
+	maxClaimSummaryBytes  = store.MaxClaimSummaryBytes
+	maxClaimEvidenceBytes = store.MaxClaimEvidenceBytes
 )
 
 func recordClaim(ctx context.Context, cs ClaimStore, in RecordClaimInput) (RecordClaimOutput, error) {
@@ -86,14 +92,30 @@ func recordClaim(ctx context.Context, cs ClaimStore, in RecordClaimInput) (Recor
 	return RecordClaimOutput{ClaimID: id}, nil
 }
 
+// maxClaimsResponseBytes mirrors maxDecisionsResponseBytes — caps
+// aggregate response size at 1 MiB so a runaway claims table can't
+// produce a multi-megabyte tool result. Bughunt-4 mcp F2.
+const maxClaimsResponseBytes = 1 << 20
+
 func getUnverifiedClaims(ctx context.Context, cs ClaimStore, in GetUnverifiedClaimsInput) (GetUnverifiedClaimsOutput, error) {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = getUnverifiedDefaultLimit
+	}
+	if limit > getUnverifiedMaxLimit {
+		limit = getUnverifiedMaxLimit
+	}
 	recs, err := cs.GetUnverifiedClaims(ctx, in.SessionID, in.IncludeSuperseded)
 	if err != nil {
 		return GetUnverifiedClaimsOutput{}, fmt.Errorf("get_unverified_claims: %w", err)
 	}
+	if len(recs) > limit {
+		recs = recs[:limit]
+	}
 	out := make([]ClaimEntry, 0, len(recs))
+	bytesEmitted := 0
 	for _, r := range recs {
-		out = append(out, ClaimEntry{
+		e := ClaimEntry{
 			ID:              r.ID,
 			SessionID:       r.SessionID,
 			Claim:           r.Claim,
@@ -103,7 +125,13 @@ func getUnverifiedClaims(ctx context.Context, cs ClaimStore, in GetUnverifiedCla
 			VetOK:           r.VetOK,
 			VetErrorSummary: r.VetErrorSummary,
 			RecordedAt:      r.RecordedAt,
-		})
+		}
+		rowBytes := len(e.SessionID) + len(e.Claim) + len(e.FilePath) + len(e.Tool) + len(e.VetErrorSummary)
+		if len(out) > 0 && bytesEmitted+rowBytes > maxClaimsResponseBytes {
+			break
+		}
+		out = append(out, e)
+		bytesEmitted += rowBytes
 	}
 	return GetUnverifiedClaimsOutput{Claims: out}, nil
 }

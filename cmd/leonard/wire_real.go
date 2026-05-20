@@ -91,6 +91,21 @@ func (realRuntime) VerifySymbol(_ context.Context, dataDir, name, kind string) (
 }
 
 func (realRuntime) RecordDecision(_ context.Context, dataDir, topic, choice, reasoning string) (int64, error) {
+	// Bughunt-4 caps F3: the MCP-layer cap was the only enforcement
+	// point; `leonard decisions add` used to bypass it entirely.
+	// Validate here too, matching the MCP-side limits.
+	if topic == "" {
+		return 0, fmt.Errorf("decisions add: topic is required")
+	}
+	if len(topic) > store.MaxDecisionTopicBytes {
+		return 0, fmt.Errorf("decisions add: topic exceeds %d bytes", store.MaxDecisionTopicBytes)
+	}
+	if len(choice) > store.MaxDecisionChoiceBytes {
+		return 0, fmt.Errorf("decisions add: choice exceeds %d bytes", store.MaxDecisionChoiceBytes)
+	}
+	if len(reasoning) > store.MaxDecisionReasoningBytes {
+		return 0, fmt.Errorf("decisions add: reasoning exceeds %d bytes", store.MaxDecisionReasoningBytes)
+	}
 	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
 	if err != nil {
 		return 0, err
