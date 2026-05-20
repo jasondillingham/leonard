@@ -215,6 +215,34 @@ func TestPreEditCmd_DecodeFailureExitsBlocking(t *testing.T) {
 	}
 }
 
+// F9 reproducer: empty stdin to pre-edit must also exit 2 (block). The F2
+// garbage-stdin test covers malformed JSON; F9 calls out that the empty-bytes
+// path can fire independently during agent stress (Claude Code restarts,
+// truncated pipes) and must not silently fail open.
+func TestPreEditCmd_EmptyStdinExitsBlocking(t *testing.T) {
+	setupProjectRoot(t)
+	open := func(string) (hooks.SymbolStore, func() error, error) {
+		return &fakePreEditStore{has: map[string]bool{}}, func() error { return nil }, nil
+	}
+	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
+	cmd := &cobra.Command{Use: "leonard-hook"}
+	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
+	cmd.SetIn(strings.NewReader(""))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetContext(context.Background())
+	cmd.SetArgs([]string{"pre-edit"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected decode error on empty stdin")
+	}
+	if got := exitCodeFor(err); got != 2 {
+		t.Errorf("empty-stdin exit code = %d, want 2 (block)", got)
+	}
+}
+
 func TestPreEditCmd_OpenerErrorBubblesUp(t *testing.T) {
 	setupProjectRoot(t)
 	open := func(string) (hooks.SymbolStore, func() error, error) {
