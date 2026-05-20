@@ -151,10 +151,25 @@ func ExtractTreeSitter(lang, path string, src []byte) ([]store.Symbol, error) {
 	return out, nil
 }
 
-// ExtractJava is a thin per-language wrapper that lets the indexer
-// register .java -> ExtractJava in langExtractors without exposing
-// the language name string at the registration site. v0.20+ language
-// additions follow the same one-liner pattern.
+// Per-language wrappers below let the indexer register
+// .ext -> ExtractXxx in langExtractors without exposing the language
+// name string at the registration site. Each one is a thin alias for
+// ExtractTreeSitter — adding a new tree-sitter language is one
+// alias here + one Cargo dep + one Language::lookup arm + one .scm
+// query in the Rust crate + one extension in langExtractors.
+
 func ExtractJava(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("java", path, src)
+}
+
+func ExtractRuby(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("ruby", path, src)
+}
+
+func ExtractCSharp(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("csharp", path, src)
+}
+
+func ExtractSwift(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("swift", path, src)
 }

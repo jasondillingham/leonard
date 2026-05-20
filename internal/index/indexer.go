@@ -82,12 +82,15 @@ var langExtractors = map[string]struct {
 	lang    string
 	extract extractor
 }{
-	".go":   {lang: "go", extract: parse.ExtractGo},
-	".py":   {lang: "python", extract: parse.ExtractPython},
-	".rs":   {lang: "rust", extract: parse.ExtractRust},
-	".ts":   {lang: "typescript", extract: parse.ExtractTypeScript},
-	".tsx":  {lang: "typescript", extract: parse.ExtractTypeScript},
-	".java": {lang: "java", extract: parse.ExtractJava},
+	".go":    {lang: "go", extract: parse.ExtractGo},
+	".py":    {lang: "python", extract: parse.ExtractPython},
+	".rs":    {lang: "rust", extract: parse.ExtractRust},
+	".ts":    {lang: "typescript", extract: parse.ExtractTypeScript},
+	".tsx":   {lang: "typescript", extract: parse.ExtractTypeScript},
+	".java":  {lang: "java", extract: parse.ExtractJava},
+	".rb":    {lang: "ruby", extract: parse.ExtractRuby},
+	".cs":    {lang: "csharp", extract: parse.ExtractCSharp},
+	".swift": {lang: "swift", extract: parse.ExtractSwift},
 }
 
 // ParseFailure is a per-file record of an extractor returning a non-nil

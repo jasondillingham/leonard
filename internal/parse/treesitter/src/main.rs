@@ -48,14 +48,23 @@ struct ParseError<'a> {
 }
 
 /// Language carries everything needed to extract symbols for a given
-/// language: the tree-sitter grammar, the query .scm text, and the
-/// module-name derivation rule. Look it up by name from the CLI arg.
+/// language: the tree-sitter grammar, the query .scm text, the
+/// per-language list of node kinds that count as "parent containers"
+/// for method-name folding, and the module-name derivation rule.
+/// Look it up by name from the CLI arg.
 struct Language {
     grammar: tree_sitter::Language,
     /// .scm query that captures the symbol-bearing nodes. Each
     /// capture name in the query maps 1:1 to a Leonard symbol kind
     /// via `capture_kind`.
     query_src: &'static str,
+    /// Node kinds that are valid parents for methods (used for qname
+    /// folding). When a method-shaped capture is emitted, the
+    /// extractor walks the node's ancestors looking for any of these
+    /// kinds and prepends the parent's name in the qname:
+    ///   module.Parent.method  instead of  module.method
+    /// Disambiguates the Java/C# class-constructor-shares-name case.
+    parent_container_kinds: &'static [&'static str],
 }
 
 impl Language {
@@ -64,6 +73,37 @@ impl Language {
             "java" => Some(Self {
                 grammar: tree_sitter_java::LANGUAGE.into(),
                 query_src: JAVA_QUERY,
+                parent_container_kinds: &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "record_declaration",
+                    "enum_declaration",
+                    "annotation_type_declaration",
+                ],
+            }),
+            "ruby" => Some(Self {
+                grammar: tree_sitter_ruby::LANGUAGE.into(),
+                query_src: RUBY_QUERY,
+                parent_container_kinds: &["class", "module", "singleton_class"],
+            }),
+            "csharp" => Some(Self {
+                grammar: tree_sitter_c_sharp::LANGUAGE.into(),
+                query_src: CSHARP_QUERY,
+                parent_container_kinds: &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "struct_declaration",
+                    "record_declaration",
+                    "enum_declaration",
+                ],
+            }),
+            "swift" => Some(Self {
+                grammar: tree_sitter_swift::LANGUAGE.into(),
+                query_src: SWIFT_QUERY,
+                parent_container_kinds: &[
+                    "class_declaration",
+                    "protocol_declaration",
+                ],
             }),
             _ => None,
         }
@@ -99,6 +139,79 @@ const JAVA_QUERY: &str = r#"
   name: (identifier) @name) @method
 "#;
 
+/// RUBY_QUERY captures Ruby's top-level decls. Ruby has `class`,
+/// `module`, `method` (instance) and `singleton_method` (class
+/// methods like `def self.foo`).
+const RUBY_QUERY: &str = r#"
+(class
+  name: (constant) @name) @type
+
+(module
+  name: (constant) @name) @type
+
+(method
+  name: (identifier) @name) @method
+
+(singleton_method
+  name: (identifier) @name) @method
+"#;
+
+/// CSHARP_QUERY captures C# decls. Differs from Java mostly in
+/// having structs as a distinct kind and delegate_declaration for
+/// function-pointer types. Properties and fields exposed under
+/// const + interface for cross-language consistency.
+const CSHARP_QUERY: &str = r#"
+(class_declaration
+  name: (identifier) @name) @type
+
+(interface_declaration
+  name: (identifier) @name) @interface
+
+(struct_declaration
+  name: (identifier) @name) @type
+
+(record_declaration
+  name: (identifier) @name) @type
+
+(enum_declaration
+  name: (identifier) @name) @type
+
+(delegate_declaration
+  name: (identifier) @name) @type
+
+(method_declaration
+  name: (identifier) @name) @method
+
+(constructor_declaration
+  name: (identifier) @name) @method
+"#;
+
+/// SWIFT_QUERY captures Swift's top-level decls. Tree-sitter-swift
+/// quirks worth knowing:
+///   - `class_declaration` is the node for class, struct, AND enum
+///     (the body type — class_body vs enum_class_body — is the
+///     discriminator). v0.20 maps all three to kind=type; future
+///     refinement could split.
+///   - `init_declaration` has no `name:` field; we synthesize "init"
+///     in the extractor when an `@method` capture has no `@name`.
+///   - Protocols use `protocol_function_declaration` (no body) for
+///     their method declarations, separate from `function_declaration`.
+const SWIFT_QUERY: &str = r#"
+(class_declaration
+  name: (type_identifier) @name) @type
+
+(protocol_declaration
+  name: (type_identifier) @name) @interface
+
+(function_declaration
+  name: (simple_identifier) @name) @function
+
+(protocol_function_declaration
+  name: (simple_identifier) @name) @method
+
+(init_declaration) @method.init
+"#;
+
 /// capture_kind maps a tree-sitter query capture name to Leonard's
 /// cross-language symbol kind vocabulary. Unknown capture names
 /// fall through to "function" — keep queries in sync with this
@@ -107,10 +220,21 @@ fn capture_kind(capture: &str) -> &'static str {
     match capture {
         "type" => "type",
         "interface" => "interface",
-        "method" => "method",
+        "method" | "method.init" => "method",
         "function" => "function",
         "const" => "const",
         _ => "function",
+    }
+}
+
+/// synthesized_name returns the implicit name for capture types
+/// that don't carry an @name child (Swift's init_declaration is the
+/// only one in v0.20). Returns None when the capture should be
+/// skipped due to a missing name.
+fn synthesized_name(capture: &str) -> Option<&'static str> {
+    match capture {
+        "method.init" => Some("init"),
+        _ => None,
     }
 }
 
@@ -246,16 +370,46 @@ fn extract<'src>(
                 kind_capture = capture_names[cap.index as usize];
             }
         }
-        let (name_node, kind_node) = match (name_node, kind_node) {
-            (Some(n), Some(k)) => (n, k),
-            _ => continue,
+        let kind_node = match kind_node {
+            Some(k) => k,
+            None => continue,
         };
-        let name = name_node
-            .utf8_text(src.as_bytes())
-            .map_err(|e| format!("utf8 text: {}", e))?;
+        // Allow captures that have no @name child by synthesizing a
+        // name from the capture's role — Swift's init_declaration is
+        // the v0.20 example. synthesized_name returns &'static str
+        // which coerces to the src-borrowed lifetime fine.
+        let name: &str = if let Some(n) = name_node {
+            n.utf8_text(src.as_bytes())
+                .map_err(|e| format!("utf8 text: {}", e))?
+        } else if let Some(syn) = synthesized_name(kind_capture) {
+            syn
+        } else {
+            continue;
+        };
         let kind = capture_kind(kind_capture);
-        let qualified_name = format!("{}.{}", module, name);
-        let start_line = name_node.start_position().row + 1;
+        // For method-shaped captures, fold the enclosing container's
+        // name into the qname so `Greeter` (class) and `Greeter()`
+        // (constructor) don't share `Greeter.Greeter`. v0.19 left
+        // this collision in; v0.20 fixes it.
+        let qualified_name = if matches!(kind, "method" | "function")
+            && !lang.parent_container_kinds.is_empty()
+        {
+            if let Some(parent) =
+                find_parent_name(&kind_node, lang.parent_container_kinds, src)
+            {
+                format!("{}.{}.{}", module, parent, name)
+            } else {
+                format!("{}.{}", module, name)
+            }
+        } else {
+            format!("{}.{}", module, name)
+        };
+        // start_line anchors on the @name child when present (matches
+        // Python/TS — skips leading attrs/doc comments); falls back
+        // to the enclosing node's start when synthesized (Swift init).
+        let start_line = name_node
+            .map(|n| n.start_position().row + 1)
+            .unwrap_or_else(|| kind_node.start_position().row + 1);
         let end_line = kind_node.end_position().row + 1;
         let signature = render_signature(kind, name, &kind_node, src);
         let exported = is_exported(kind, &kind_node, src);
@@ -285,22 +439,65 @@ fn render_signature(kind: &str, name: &str, _node: &tree_sitter::Node, _src: &st
     }
 }
 
-/// is_exported applies the per-language visibility heuristic. Java's
-/// `public` modifier sits in the node's `modifiers` child; absence
-/// means package-private (treated here as not exported, matching how
-/// Leonard's other extractors classify private things).
+/// is_exported applies a cross-language visibility heuristic. Many
+/// tree-sitter grammars expose a `modifiers` child carrying the
+/// access modifier text — Java `public`, C# `public`/`internal`,
+/// Swift modifiers under `modifiers`. The cross-language convention
+/// Leonard uses: visible-by-default languages (Ruby) mark
+/// everything exported; access-modifier languages export only
+/// when "public" or "open" appears.
 fn is_exported(_kind: &str, node: &tree_sitter::Node, src: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "modifiers" {
+        let ck = child.kind();
+        if ck == "modifiers" || ck == "modifier" || ck == "visibility_modifier" {
             if let Ok(text) = child.utf8_text(src.as_bytes()) {
-                if text.contains("public") {
+                if text.contains("public") || text.contains("open") {
                     return true;
+                }
+                if text.contains("private")
+                    || text.contains("internal")
+                    || text.contains("protected")
+                    || text.contains("fileprivate")
+                {
+                    return false;
                 }
             }
         }
     }
-    false
+    // No modifier seen — language-default visibility. For Ruby,
+    // methods are public by default; for Java, package-private (not
+    // exported). The grammars don't expose a "this is Ruby" flag,
+    // so we approximate: classes/interfaces seen without modifiers
+    // default to exported (matches Ruby and Swift) but methods
+    // default to NOT exported (matches Java/C# package-private).
+    matches!(_kind, "type" | "interface")
+}
+
+/// find_parent_name walks node's ancestors looking for the first
+/// node whose kind is in container_kinds, then returns the text of
+/// that node's `name:` child. Used to fold a method's enclosing
+/// class name into the method's qualified_name.
+fn find_parent_name(
+    node: &tree_sitter::Node,
+    container_kinds: &[&str],
+    src: &str,
+) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        if container_kinds.iter().any(|k| *k == p.kind()) {
+            // Try the conventional `name:` field first; some
+            // grammars use different field names (Ruby's `name`
+            // points at a constant node).
+            if let Some(name_node) = p.child_by_field_name("name") {
+                if let Ok(text) = name_node.utf8_text(src.as_bytes()) {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        cur = p.parent();
+    }
+    None
 }
 
 /// module_name derives the Leonard "module" prefix for qualified
