@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	leonardmcp "github.com/jasondillingham/leonard/internal/mcp"
@@ -290,6 +291,55 @@ func TestListFilesPattern(t *testing.T) {
 	out := decodeResult[leonardmcp.ListFilesOutput](t, res).Files
 	if len(out) != 1 || out[0].Path != "testdata/sample/helper.py" {
 		t.Fatalf("expected only helper.py, got %+v", out)
+	}
+}
+
+// TestListFilesPatternSchemaIsHonest pins the documented wildcard semantics
+// to the actual implementation. The store uses SQLite GLOB (path GLOB ?), which
+// behaves very differently from Go's path.Match: * crosses /, [abc] character
+// classes are supported, malformed patterns silently match zero rows. A schema
+// that claims path.Match semantics misleads MCP clients into building globs
+// that match a broader (and different) set of files than they expect.
+func TestListFilesPatternSchemaIsHonest(t *testing.T) {
+	session := newSession(t, loadFixture(t))
+
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var listFiles *mcp.Tool
+	for _, tool := range tools.Tools {
+		if tool.Name == "list_files" {
+			listFiles = tool
+			break
+		}
+	}
+	if listFiles == nil {
+		t.Fatal("list_files tool not advertised")
+	}
+
+	raw, err := json.Marshal(listFiles.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal InputSchema: %v", err)
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("unmarshal InputSchema: %v\nraw=%s", err, raw)
+	}
+	pattern, ok := schema.Properties["pattern"]
+	if !ok {
+		t.Fatalf("pattern property missing from list_files schema; raw=%s", raw)
+	}
+	desc := pattern.Description
+	if strings.Contains(desc, "path.Match") {
+		t.Errorf("pattern description still claims path.Match semantics — store uses SQLite GLOB:\n  %q", desc)
+	}
+	if !strings.Contains(strings.ToLower(desc), "glob") {
+		t.Errorf("pattern description should mention GLOB/glob semantics, got: %q", desc)
 	}
 }
 

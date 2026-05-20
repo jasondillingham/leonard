@@ -49,7 +49,7 @@ type FindSymbolOutput struct {
 
 // ListFilesInput is the argument shape for list_files.
 type ListFilesInput struct {
-	Pattern  string `json:"pattern,omitempty" jsonschema:"optional glob matched against file path (path.Match syntax)"`
+	Pattern  string `json:"pattern,omitempty" jsonschema:"optional glob matched against file path (SQLite GLOB: * matches any sequence incl. /, ? matches one char, [abc] character classes; no ** recursion, malformed patterns silently match zero rows)"`
 	Language string `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
 }
 
