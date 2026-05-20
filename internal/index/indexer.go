@@ -191,26 +191,30 @@ func (i *Indexer) IndexAll() error {
 	return i.pruneStaleFiles()
 }
 
-// pruneStaleFiles iterates every known file row and removes:
+// pruneStaleFiles collects every file row that should be removed and
+// hands the whole batch to Store.DeleteFiles for a single-transaction
+// sweep. Two conditions trigger removal:
 //
-//  1. Rows whose path no longer resolves on disk (the original
-//     bughunt-2 ground-truth-drift fix).
-//  2. Rows whose path lives under a directory the indexer would now
+//  1. Rows whose path lives under a directory the indexer would now
 //     skip — caught when v0.6.1's expanded defaultSkipDirs added
 //     `.venv`, `target`, `__pycache__` etc. and a re-index found
 //     thousands of prior rows from those dirs lingering in the store.
+//  2. Rows whose path no longer resolves on disk (the original
+//     bughunt-2 ground-truth-drift fix).
 //
-// Symbols cascade via FK on either deletion path.
+// v0.7 split the iteration from the deletes: the prior per-row
+// DeleteFile loop averaged ~1.3s per row on a polluted index because
+// each statement is its own transaction and triggers a FK cascade.
+// Batching turns the same work into milliseconds.
 func (i *Indexer) pruneStaleFiles() error {
 	files, err := i.Store.ListFiles("", "")
 	if err != nil {
 		return fmt.Errorf("prune: list files: %w", err)
 	}
+	var toDelete []string
 	for _, f := range files {
 		if pathHasSkippedComponent(f.Path) {
-			if err := i.Store.DeleteFile(f.Path); err != nil {
-				return err
-			}
+			toDelete = append(toDelete, f.Path)
 			continue
 		}
 		abs := filepath.Join(i.Root, filepath.FromSlash(f.Path))
@@ -221,9 +225,13 @@ func (i *Indexer) pruneStaleFiles() error {
 		if !errors.Is(statErr, fs.ErrNotExist) {
 			return fmt.Errorf("prune: stat %s: %w", f.Path, statErr)
 		}
-		if err := i.Store.DeleteFile(f.Path); err != nil {
-			return err
-		}
+		toDelete = append(toDelete, f.Path)
+	}
+	if len(toDelete) == 0 {
+		return nil
+	}
+	if _, err := i.Store.DeleteFiles(toDelete); err != nil {
+		return err
 	}
 	return nil
 }
