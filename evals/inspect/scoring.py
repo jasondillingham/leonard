@@ -34,8 +34,20 @@ from inspect_ai.scorer import Score, Target, accuracy, mean, scorer, stderr
 from inspect_ai.solver import TaskState
 
 
-GO_BLOCK_RE = re.compile(r"```go\s*\n(.+?)\n```", re.DOTALL)
+GO_BLOCK_RE = re.compile(r"```\s*(?:go|golang)\s*\n(.+?)\n?```", re.DOTALL | re.IGNORECASE)
 FABRICATION_PREFIX = "blocked references to symbols not in the index:"
+
+# Module-level: run a one-time self-check at first scoring call so a
+# silently-broken wiring surfaces as an error rather than a stream of
+# misleading 1.0 scores. Pinned strings the hook is expected to emit
+# match bughunt-3 eval F4's robustness concern.
+_self_check_done = False
+_self_check_lock_msg = (
+    "scoring.py self-check failed: leonard-hook's deny response does not "
+    "match the expected shape. The hook's wording may have drifted from "
+    "the scorer's parser. Verify pre_edit.go's blockResponse format "
+    "matches FABRICATION_PREFIX above."
+)
 
 
 def extract_go_code(text: str) -> str | None:
@@ -51,6 +63,30 @@ def extract_go_code(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _run_self_check(project_root: str) -> None:
+    """Verify the hook's deny-response wording matches our parser.
+
+    Sends a snippet referencing an obvious fabricated symbol; expects
+    the hook to deny with the FABRICATION_PREFIX prefix in its reason
+    string. If the hook approves or the reason doesn't contain the
+    prefix, the scorer would silently zero out every detection — so
+    raise loudly at scorer construction time instead of letting an
+    entire eval run finish with bogus 1.0 scores.
+    """
+    global _self_check_done
+    if _self_check_done:
+        return
+    probe = (
+        "package other\n"
+        "import \"github.com/jasondillingham/leonard/internal/store\"\n"
+        "var _ = store.ObviouslyFakeFnEvalSelfCheck\n"
+    )
+    fabs, raw = _detect_fabrications_raw(probe, project_root)
+    if not any("ObviouslyFakeFnEvalSelfCheck" in f for f in fabs):
+        raise RuntimeError(f"{_self_check_lock_msg}\nraw response: {raw[:500]}")
+    _self_check_done = True
+
+
 def detect_fabrications(code: str, project_root: str) -> tuple[list[str], str]:
     """Run leonard-hook pre-edit against code; return (fabricated, raw_response).
 
@@ -58,7 +94,17 @@ def detect_fabrications(code: str, project_root: str) -> tuple[list[str], str]:
     Write payload pointing at a scratch path inside project_root so the
     hook's sibling-package scan picks up the real module's packages.
     Empty list means the hook said "allow" — no fabrications found.
+
+    First call also runs a self-check that the hook's deny wording
+    still matches the parser; subsequent calls skip the check.
     """
+    _run_self_check(project_root)
+    return _detect_fabrications_raw(code, project_root)
+
+
+def _detect_fabrications_raw(code: str, project_root: str) -> tuple[list[str], str]:
+    """detect_fabrications minus the self-check, so the self-check can
+    use it without recursing."""
     hook = shutil.which("leonard-hook")
     if hook is None:
         raise RuntimeError(
@@ -76,12 +122,21 @@ def detect_fabrications(code: str, project_root: str) -> tuple[list[str], str]:
             },
         }
     )
+    # bughunt-3 eval F1: the hook resolves the project root by
+    # walking up from its own CWD looking for a .leonard/ directory.
+    # When the scorer is launched from outside the repo (e.g. via
+    # `inspect eval` from a Python venv dir), the hook's lookup
+    # falls back to a permissive store and every snippet scores
+    # 1.0 — silent. Force cwd=project_root so the hook always
+    # resolves to the real .leonard/leonard.db Leonard's index lives
+    # in.
     proc = subprocess.run(
         [hook, "pre-edit"],
         input=payload,
         capture_output=True,
         text=True,
         timeout=30,
+        cwd=project_root,
     )
     # exit 2 from blockOnDecode is a decode failure of *our* payload —
     # treat as scorer error, not a "no fabrications".

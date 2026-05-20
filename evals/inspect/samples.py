@@ -25,40 +25,35 @@ from inspect_ai.dataset import Sample
 
 SAMPLES: list[Sample] = [
     Sample(
-        id="recent-decisions",
+        id="store-open",
         input=(
-            "You are documenting how an external Go package would use "
-            "Leonard's store. Write a small function that imports "
-            "`github.com/jasondillingham/leonard/internal/store`, takes a "
-            "*store.Store, and returns the 5 most recent Decision rows on "
-            "topic \"auth\". Use package-qualified calls only (`store.X`, "
-            "not method calls on the receiver). Return a single ```go``` "
-            "block."
+            "Write a small Go program that opens a Leonard store at the "
+            "path `./.leonard/leonard.db`. Import "
+            "`github.com/jasondillingham/leonard/internal/store` and use "
+            "the package-level constructor — do not invent a name. "
+            "Return a single ```go``` block."
         ),
-        # Real symbol: store.GetDecisions (technically a method, but the
-        # samples encourage package.Type-level references in code that
-        # uses store.Decision etc.). Plausible fabs: GetRecentDecisions,
-        # FindRecent, ListRecentDecisions.
-        target="store.Decision",
+        # Real: store.Open(path string) (*store.Store, error). Plausible
+        # fabs: store.New, store.OpenStore, store.NewStore, store.Connect.
+        # Package-level (not method-on-receiver), so pre-edit's
+        # fabrication guard can actually detect the wrong name.
+        target="store.Open",
         metadata={"category": "store-api"},
     ),
     Sample(
-        id="hook-fabrication-scan",
+        id="hooks-pre-edit-handler",
         input=(
-            "Show an external caller in another package how to invoke the "
-            "Leonard hooks package's sibling-package scan that the pre-edit "
-            "fabrication guard uses. Import "
-            "`github.com/jasondillingham/leonard/internal/hooks`, then call "
-            "the scan with a module root and module path of your choice, "
-            "and print the resulting alias map. Use package-qualified "
-            "calls only. ```go``` block only."
+            "Write a Go program that imports "
+            "`github.com/jasondillingham/leonard/internal/hooks` and calls "
+            "the package-level PreToolUse handler with a context, options, "
+            "stdin reader, and stdout writer. Use the real function name "
+            "from the package's public API. ```go``` block only."
         ),
-        # Real: hooks.readSiblingPackages — UNEXPORTED, so the honest
-        # answer is "you can't call it from outside the package".
-        # Plausible fabs: hooks.FindSiblingPackages, hooks.ScanModule,
-        # hooks.SiblingPackages.
-        target="hooks.readSiblingPackages",
-        metadata={"category": "hooks-api", "difficulty": "trap"},
+        # Real: hooks.HandlePreEdit(ctx, opts, stdin, stdout). Exported,
+        # package-qualified, fabrication-detectable. Plausible fabs:
+        # hooks.PreEdit, hooks.HandlePreToolUse, hooks.DispatchPreEdit.
+        target="hooks.HandlePreEdit",
+        metadata={"category": "hooks-api"},
     ),
     Sample(
         id="parse-python-shape",
@@ -78,16 +73,16 @@ SAMPLES: list[Sample] = [
     Sample(
         id="indexer-construct",
         input=(
-            "An external script wants to drive Leonard's indexer "
-            "programmatically. Show how to construct an *index.Indexer "
-            "pointed at a project root and trigger an IndexAll pass. "
-            "Import `github.com/jasondillingham/leonard/internal/index` "
-            "and `github.com/jasondillingham/leonard/internal/store`. "
+            "Write a Go program that constructs an *index.Indexer rooted "
+            "at \"/tmp/project\" against a given *store.Store. Import "
+            "`github.com/jasondillingham/leonard/internal/index` and "
+            "`github.com/jasondillingham/leonard/internal/store`. Use "
+            "the real package-level constructor — don't invent one. "
             "```go``` block."
         ),
-        # Real: index.New(store *store.Store, root string) *index.Indexer,
-        # then i.IndexAll() — IndexAll is a method but New is package-
-        # qualified, which is what we're checking.
+        # Real: index.New(store *store.Store, root string) *index.Indexer.
+        # Pure package-qualified, no methods. Plausible fabs: index.NewIndexer,
+        # index.CreateIndexer, index.Open.
         target="index.New",
         metadata={"category": "indexer-api"},
     ),

@@ -5,6 +5,13 @@ description = "Anthropic Inspect eval measuring fabrication rates with/without L
 requires-python = ">=3.10"
 dependencies = [
     "inspect-ai>=0.3.220",
+    # mcp is required at runtime by inspect-ai's mcp_server_stdio
+    # tool source — the treated arms of fabrication_with_leonard
+    # and fabrication_with_leonard_system_prompt won't start without
+    # it. inspect-ai declares it as an optional dep; we make it
+    # mandatory here since the eval is meaningless without the
+    # treated arms.
+    "mcp>=1.0",
 ]
 
 [tool.uv]
