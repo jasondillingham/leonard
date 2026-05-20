@@ -193,3 +193,15 @@ func ExtractC(path string, src []byte) ([]store.Symbol, error) {
 func ExtractCpp(path string, src []byte) ([]store.Symbol, error) {
 	return ExtractTreeSitter("cpp", path, src)
 }
+
+func ExtractPHP(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("php", path, src)
+}
+
+func ExtractLua(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("lua", path, src)
+}
+
+func ExtractBash(path string, src []byte) ([]store.Symbol, error) {
+	return ExtractTreeSitter("bash", path, src)
+}

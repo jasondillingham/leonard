@@ -145,6 +145,30 @@ impl Language {
                     "namespace_definition",
                 ],
             }),
+            "php" => Some(Self {
+                grammar: tree_sitter_php::LANGUAGE_PHP.into(),
+                query_src: PHP_QUERY,
+                parent_container_kinds: &[
+                    "class_declaration",
+                    "interface_declaration",
+                    "trait_declaration",
+                ],
+            }),
+            "lua" => Some(Self {
+                grammar: tree_sitter_lua::LANGUAGE.into(),
+                query_src: LUA_QUERY,
+                // Lua has no class concept — table-as-namespace is
+                // the convention but the grammar doesn't tag it.
+                // Methods declared via M.foo() / M:foo() get folded
+                // via the table identifier captured in the query
+                // itself, not via ancestor walk.
+                parent_container_kinds: &[],
+            }),
+            "bash" => Some(Self {
+                grammar: tree_sitter_bash::LANGUAGE.into(),
+                query_src: BASH_QUERY,
+                parent_container_kinds: &[],
+            }),
             _ => None,
         }
     }
@@ -366,6 +390,62 @@ const CPP_QUERY: &str = r#"
 (field_declaration
   declarator: (function_declarator
     declarator: (field_identifier) @name)) @method
+"#;
+
+/// PHP_QUERY (tree-sitter-php). PHP uses `(name)` as the canonical
+/// identifier node kind. Coverage: namespace, class, interface,
+/// trait, method (inside class/trait/interface), free function.
+const PHP_QUERY: &str = r#"
+(namespace_definition
+  name: (namespace_name) @name) @type
+
+(class_declaration
+  name: (name) @name) @type
+
+(interface_declaration
+  name: (name) @name) @interface
+
+(trait_declaration
+  name: (name) @name) @type
+
+(enum_declaration
+  name: (name) @name) @type
+
+(method_declaration
+  name: (name) @name) @method
+
+(function_definition
+  name: (name) @name) @function
+"#;
+
+/// LUA_QUERY captures three function-declaration shapes Lua uses:
+/// plain (`function foo()`), dot-indexed (`function M.foo()`), and
+/// method-indexed (`function M:foo()`). The dot/method forms are
+/// the Lua idiom for class-like patterns — capture them as methods
+/// since they're conceptually instance/static methods on the table.
+///
+/// Lua has no real class node kind, so parent-folding is a no-op
+/// here; the .scm captures the table portion of the name only as a
+/// disambiguator.
+const LUA_QUERY: &str = r#"
+(function_declaration
+  name: (identifier) @name) @function
+
+(function_declaration
+  name: (dot_index_expression
+    field: (identifier) @name)) @method
+
+(function_declaration
+  name: (method_index_expression
+    method: (identifier) @name)) @method
+"#;
+
+/// BASH_QUERY captures shell function definitions. Bash's symbol
+/// surface is minimal — functions are about all there is. Top-level
+/// `readonly` / `declare` variables could be added in a refinement.
+const BASH_QUERY: &str = r#"
+(function_definition
+  name: (word) @name) @function
 "#;
 
 /// capture_kind maps a tree-sitter query capture name to Leonard's
