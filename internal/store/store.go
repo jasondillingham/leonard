@@ -499,13 +499,23 @@ func (s *Store) ReplaceSymbols(filePath string, syms []Symbol) error {
 	return nil
 }
 
-// FindSymbolsByName returns every symbol whose name column matches exactly,
-// ordered by file path then start line.
+// MaxSymbolQueryRows is the store-layer cap on rows returned by
+// FindSymbolsByName / FindSymbolsByQuery. Security review #3 F3
+// (HIGH): pre-v0.50 FindSymbolsByName had NO LIMIT, so a name with
+// 500k matches materialized every row in Go memory (302 MB RSS in
+// the audit) before the MCP-layer 500-cap truncated. Capping at the
+// SQL boundary closes the heap-pressure path; the MCP-layer cap is
+// still 500 for the wire response.
+const MaxSymbolQueryRows = 1000
+
+// FindSymbolsByName returns up to MaxSymbolQueryRows symbols whose
+// name column matches exactly, ordered by file path then start line.
 func (s *Store) FindSymbolsByName(name string) ([]Symbol, error) {
 	rows, err := s.db.Query(`SELECT id, file_path, name, qualified_name, kind,
 		signature, start_line, end_line, exported, parent_id
 		FROM symbols WHERE name = ?
-		ORDER BY file_path, start_line, id`, name)
+		ORDER BY file_path, start_line, id
+		LIMIT ?`, name, MaxSymbolQueryRows)
 	if err != nil {
 		return nil, fmt.Errorf("store: FindSymbolsByName: %w", err)
 	}
@@ -513,11 +523,17 @@ func (s *Store) FindSymbolsByName(name string) ([]Symbol, error) {
 	return scanSymbols(rows)
 }
 
-// FindSymbolsByQuery does a case-sensitive substring search across name and
-// qualified_name, capped at limit (defaults to 50 when limit <= 0).
+// FindSymbolsByQuery does a case-sensitive substring search across
+// name and qualified_name, capped at limit. limit <= 0 defaults to
+// 50; limit > MaxSymbolQueryRows clamps down (security review #3 F3:
+// the user-supplied limit was previously passed verbatim, so a
+// `find_symbol(limit=10000000)` call could materialize every match).
 func (s *Store) FindSymbolsByQuery(q string, limit int) ([]Symbol, error) {
 	if limit <= 0 {
 		limit = 50
+	}
+	if limit > MaxSymbolQueryRows {
+		limit = MaxSymbolQueryRows
 	}
 	pattern := "%" + escapeLike(q) + "%"
 	rows, err := s.db.Query(`SELECT id, file_path, name, qualified_name, kind,

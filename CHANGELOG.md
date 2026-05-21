@@ -7,6 +7,23 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.50.1 — store SQL LIMIT + helper RSS cap (sec-3 F3 + F4)
+
+Two HIGH findings from security review #3.
+
+- **sec-3 F3**: store.FindSymbolsByName had NO SQL LIMIT — a name
+  matching 500k symbols materialized every row in Go memory (302 MB
+  RSS in the audit) before the MCP-layer 500-cap truncated. Added
+  `MaxSymbolQueryRows = 1000` and LIMIT clauses on both
+  FindSymbolsByName and FindSymbolsByQuery. The MCP-layer 500-cap
+  is still the wire boundary; this stops the heap-pressure path.
+- **sec-3 F4**: helper RSS at 3.9 MiB pathological input measured
+  1.69 GiB peak — ~5× worse than bughunt-5's 400 MB claim. Lowered
+  `maxIndexedFileBytes` from 4 MiB to 2 MiB. Worst-case helper RSS
+  drops to ~1 GiB which is recoverable on dev machines.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.50.0 — .leonard/ guard hardening (2 CRIT + 2 HIGH)
 
 Round 7 + Security review #3 found four bypasses of the v0.46.0

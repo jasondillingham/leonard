@@ -559,15 +559,17 @@ func ResolveSafe(root, claimed string) (string, bool) {
 // artifact that snuck past skip-dirs). 8 MiB is well above any
 // realistic source file while keeping worst-case allocator pressure
 // bounded.
-// v0.44 (bughunt-5 perf F1) lowered from 8 MiB to 4 MiB. The
-// tree-sitter helper amplifies source size ~100x in RSS during
-// parse — a 7.8 MiB Ruby file hit 839 MB RSS in the helper
-// subprocess. 4 MiB caps the worst-case helper RSS at ~400 MB.
-// Files between 4 and 8 MiB (rare: huge generated parsers,
-// vendored bundles, minified JS) are surfaced as ParseFailures
-// with a clear "exceeds X-byte indexing cap" message rather
-// than being silently OOM-prone.
-const maxIndexedFileBytes = 4 << 20
+// v0.44 lowered from 8 MiB to 4 MiB; v0.50.1 lowers to 2 MiB after
+// security review #3 F4 measured 1.69 GiB peak RSS on a 3.9 MiB
+// pathological input — ~5× worse than bughunt-5's "~400 MB
+// worst-case" claim. The tree-sitter helper's amplification factor
+// for deeply-nested or pathological grammars is much higher than
+// observed on well-formed source. At 2 MiB the worst-case ceiling
+// drops to ~1 GiB, which is recoverable on developer machines
+// (most have ≥16 GiB RAM). Files between 2 and 8 MiB (rare:
+// generated parsers, vendored bundles, minified JS) surface as
+// ParseFailures with the cap message.
+const maxIndexedFileBytes = 2 << 20
 
 // indexAbs is the per-file workhorse: hash, decide whether to re-parse,
 // extract, and persist. The path argument is always absolute.
