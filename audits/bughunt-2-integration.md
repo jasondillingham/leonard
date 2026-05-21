@@ -53,7 +53,7 @@ Headline gap: roughly **half of the documented configuration surface (and the do
 
   5. `LEONARD_PYTHON=<override>`:
      ```bash
-     grep -rn 'LEONARD_PYTHON\|os.Getenv' /Users/jasondillingham/Documents/Homelab/leonard/internal/parse/
+     grep -rn 'LEONARD_PYTHON\|os.Getenv' <repo>/internal/parse/
      # Only hits: the error-message string in python.go and the doc comment.
      # Zero os.Getenv calls.
      ```

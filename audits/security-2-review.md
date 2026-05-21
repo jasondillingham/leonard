@@ -161,7 +161,7 @@ in the parser lane.
 - **Severity:** medium
 - **Reproducer:**
   ```bash
-  cd /Users/jasondillingham/Documents/Homelab/leonard
+  cd <repo>
   cat internal/parse/rust/.gitignore         # → target/, Cargo.lock
   cat internal/parse/treesitter/.gitignore   # → target/, Cargo.lock
   git ls-files internal/parse/rust/Cargo.lock internal/parse/treesitter/Cargo.lock
@@ -464,7 +464,7 @@ in the parser lane.
     public, it's already on GitHub. Decision is on the maintainer; not
     a defect.
   - `audits/` directory contains 28 occurrences of
-    `/Users/jasondillingham/` (e.g.,
+    `$HOME/` (e.g.,
     `audits/bughunt-3-eval-framework.md:27`,
     `audits/bughunt-2-pre-edit.md:35`). These are reproducer commands
     from past audits. Not credentials — but they hard-code the
@@ -476,7 +476,7 @@ in the parser lane.
   maintainer's macOS username. No actual credentials, no PII beyond
   the commit author. Worth noting for the launch-readiness pass.
 - **Suggested fix shape:** None required. If hardening: rewrite audit
-  reproducers to use `$HOME/...` instead of literal `/Users/jasondillingham/...`.
+  reproducers to use `$HOME/...` instead of literal `$HOME/...`.
 
 ---
 

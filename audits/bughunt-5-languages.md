@@ -16,7 +16,7 @@ Headline results:
 All fixtures and reproducer commands below assume `/tmp/bughunt5/run.sh` is the wrapper script in `/tmp/bughunt5/run.sh`:
 ```bash
 #!/bin/bash
-BIN=/Users/jasondillingham/Documents/Homelab/leonard/internal/parse/treesitter/target/release/leonard-extract-treesitter
+BIN=<repo>/internal/parse/treesitter/target/release/leonard-extract-treesitter
 "$BIN" --lang "$1" "$2"
 ```
 

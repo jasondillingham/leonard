@@ -211,11 +211,13 @@ configuring `[post_edit.verify].command`, run:
 leonard config trust    # interactive — shows the command, asks for "yes"
 ```
 
-This stores the SHA-256 fingerprint at `.leonard/trusted-verifier.sha256`
-(gitignored). The post-edit hook recomputes the fingerprint on every
-edit and refuses to run `sh -c` until it matches. If you edit the
-command later, re-run `leonard config trust` to authorize the new
-shape.
+This stores the SHA-256 fingerprint at
+`$XDG_CONFIG_HOME/leonard/trust/<sha256-of-project-root>.sha256`
+(per-user, outside the project tree — so a malicious `.leonard/`
+write can't poison the fingerprint). The post-edit hook
+recomputes the fingerprint on every edit and refuses to run
+`sh -c` until it matches. If you edit the command later, re-run
+`leonard config trust` to authorize the new shape.
 
 Why: a cloned-from-elsewhere project shouldn't be able to execute
 shell commands the moment you make your first edit. The trust step

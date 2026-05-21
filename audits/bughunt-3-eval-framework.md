@@ -24,13 +24,13 @@ $0.50–$2 cost estimate in the README is pessimistic by 2–5×.
   export PATH=$HOME/go/bin:$PATH  # or wherever leonard-hook is installed
   cd /tmp
   python3 -c "
-  import sys; sys.path.insert(0, '/Users/jasondillingham/Documents/Homelab/leonard/evals/inspect')
+  import sys; sys.path.insert(0, '<repo>/evals/inspect')
   from scoring import detect_fabrications
   code = '''package main
   import \"github.com/jasondillingham/leonard/internal/store\"
   func main(){ _ = store.NoSuchSymbolFabFab }
   '''
-  fabs, raw = detect_fabrications(code, '/Users/jasondillingham/Documents/Homelab/leonard')
+  fabs, raw = detect_fabrications(code, '<repo>')
   print('fabricated:', fabs); print('raw:', raw[:200])
   "
   ```
@@ -67,7 +67,7 @@ $0.50–$2 cost estimate in the README is pessimistic by 2–5×.
 - **Severity:** high
 - **Reproducer:**
   ```bash
-  cd /Users/jasondillingham/Documents/Homelab/leonard/evals/inspect
+  cd <repo>/evals/inspect
   uv sync
   uv run inspect eval tasks.py@fabrication_with_leonard --model mockllm/model
   ```
@@ -162,7 +162,7 @@ $0.50–$2 cost estimate in the README is pessimistic by 2–5×.
   ```bash
   cat > /tmp/p.json <<'EOF'
   {"session_id":"x","hook_event_name":"PreToolUse","tool_name":"Write",
-   "tool_input":{"file_path":"/Users/jasondillingham/Documents/Homelab/leonard/_eval_scratch.go",
+   "tool_input":{"file_path":"<repo>/_eval_scratch.go",
    "content":"package main\nimport \"github.com/jasondillingham/leonard/internal/store\"\nfunc main(){ _ = store.GetDecisions }"}}
   EOF
   leonard-hook pre-edit < /tmp/p.json
@@ -206,7 +206,7 @@ $0.50–$2 cost estimate in the README is pessimistic by 2–5×.
   ```bash
   cat > /tmp/p.json <<'EOF'
   {"session_id":"x","hook_event_name":"PreToolUse","tool_name":"Write",
-   "tool_input":{"file_path":"/Users/jasondillingham/Documents/Homelab/leonard/_eval_scratch.go",
+   "tool_input":{"file_path":"<repo>/_eval_scratch.go",
    "content":"package main\nimport \"github.com/jasondillingham/leonard/internal/hooks\"\nfunc main(){ _ = hooks.readSiblingPackages }"}}
   EOF
   leonard-hook pre-edit < /tmp/p.json

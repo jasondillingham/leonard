@@ -646,7 +646,7 @@ since v0.45.1. The MCP transport is stdio-only. SQL is parameterized.
 ### F20 — INFORMATIONAL: Personal email + paths still in committed history
 
 - **Severity:** informational (carry-over from security-2 F12)
-- **Observed:** 30 `/Users/jasondillingham/` occurrences across
+- **Observed:** 30 `$HOME/` occurrences across
   `audits/*.md` (all reproducer commands). Maintainer's personal
   Gmail in every commit `Author:`. Same situation as security-2.
 

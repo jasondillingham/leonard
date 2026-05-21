@@ -32,10 +32,10 @@ Auxiliary findings on post-edit (F5 missing-file path doesn't reach the model + 
   package buildbar
   func BuildFn() {}
   EOF
-  (cd "$P" && /Users/jasondillingham/go/bin/leonard init && /Users/jasondillingham/go/bin/leonard index)
+  (cd "$P" && $HOME/go/bin/leonard init && $HOME/go/bin/leonard index)
   # Sibling-scan picks up distfoo and buildbar — but the indexer didn't index them
   payload='{"session_id":"s","tool_name":"Edit","tool_input":{"file_path":"'"$P/main.go"'","new_string":"distfoo.NonExistent()"},"cwd":"'"$P"'"}'
-  echo "$payload" | (cd "$P" && /Users/jasondillingham/go/bin/leonard-hook pre-edit)
+  echo "$payload" | (cd "$P" && $HOME/go/bin/leonard-hook pre-edit)
   # → deny on distfoo.NonExistent (sibling-scan resolved the alias)
   ```
 - **Observed:** `internal/hooks/pre_edit.go:362` skips only `vendor`, `testdata`, `node_modules`, and dotted directories. The indexer at `internal/index/indexer.go:25-33` skips `{vendor, node_modules, dist, build, .git}` — a different set. Result:
@@ -77,9 +77,9 @@ Auxiliary findings on post-edit (F5 missing-file path doesn't reach the model + 
   func BFn() {}
   EOF
   mkdir -p "$P/.leonard"
-  (cd "$P" && /Users/jasondillingham/go/bin/leonard init && /Users/jasondillingham/go/bin/leonard index)
+  (cd "$P" && $HOME/go/bin/leonard init && $HOME/go/bin/leonard index)
   payload='{"session_id":"s","tool_name":"Edit","tool_input":{"file_path":"'"$P/svc-a/main.go"'","new_string":"blib.NoSuch()"},"cwd":"'"$P/svc-a"'"}'
-  echo "$payload" | (cd "$P/svc-a" && /Users/jasondillingham/go/bin/leonard-hook pre-edit)
+  echo "$payload" | (cd "$P/svc-a" && $HOME/go/bin/leonard-hook pre-edit)
   # → deny on blib.NoSuch — even though svc-a can't import svc-b/lib (separate module)
   ```
 - **Observed:** `readSiblingPackages` (pre_edit.go:351) walks the entire `moduleRoot` tree without checking for nested `go.mod` files. With a workspace root that has its own `go.mod`, the sibling scan happily attributes every `.go` file under it to `<outer-module>/<rel-path>`, including files that belong to inner submodules. In the reproducer, `svc-b/lib/b.go` (real path `example.com/svc-b/lib`) is registered as `example.com/workspace/svc-b/lib`. The `isTrackedImport` check passes (prefix matches outer module), so `blib.NoSuch()` triggers a fabrication block even though `svc-a` literally cannot import `svc-b`'s code in Go's module system.
@@ -110,12 +110,12 @@ Auxiliary findings on post-edit (F5 missing-file path doesn't reach the model + 
   func F() {}
   EOF
   done; done
-  (cd "$P" && /Users/jasondillingham/go/bin/leonard init)
+  (cd "$P" && $HOME/go/bin/leonard init)
   # snippet that touches stdlib only — should not need the sibling scan at all
   payload='{"session_id":"s","tool_name":"Edit","tool_input":{"file_path":"'"$P/main.go"'","new_string":"_ = 1"},"cwd":"'"$P"'"}'
   for i in 1 2 3; do
     start=$(date +%s%N)
-    echo "$payload" | (cd "$P" && /Users/jasondillingham/go/bin/leonard-hook pre-edit >/dev/null)
+    echo "$payload" | (cd "$P" && $HOME/go/bin/leonard-hook pre-edit >/dev/null)
     end=$(date +%s%N)
     echo "$(( (end - start) / 1000000 ))ms"
   done
@@ -140,7 +140,7 @@ Auxiliary findings on post-edit (F5 missing-file path doesn't reach the model + 
 - **Severity:** medium
 - **Reproducer:** Search the codebase:
   ```bash
-  grep -rn 'BlockOnFabricatedSymbol' /Users/jasondillingham/Documents/Homelab/leonard/
+  grep -rn 'BlockOnFabricatedSymbol' <repo>/
   # Only matches: the struct field definition and the Default() initializer
   ```
 - **Observed:** `internal/config/config.go:45` defines `BlockOnFabricatedSymbol bool` and `Default()` sets it to `true`. `leonard init` writes the field to `.leonard/config.toml`. But nothing reads it — neither `cmd/leonard-hook/pre_edit.go` nor `internal/hooks/pre_edit.go` consults `config.LoadOrDefault` at all. A user who sets `block_on_fabricated_symbol = false` in config.toml expecting to disable the guard sees no change in behavior.
@@ -153,7 +153,7 @@ Auxiliary findings on post-edit (F5 missing-file path doesn't reach the model + 
 - **Severity:** low
 - **Reproducer:** Search the codebase:
   ```bash
-  grep -rn 'VetTimeout\|EvidenceCap\|vet_timeout\|evidence_cap' /Users/jasondillingham/Documents/Homelab/leonard/internal/config/ /Users/jasondillingham/Documents/Homelab/leonard/cmd/
+  grep -rn 'VetTimeout\|EvidenceCap\|vet_timeout\|evidence_cap' <repo>/internal/config/ <repo>/cmd/
   # Only matches: hooks.PostEditOptions fields and the default constants
   ```
 - **Observed:** `PostEditOptions.VetTimeout` (default 30s, post_edit.go:143) and `PostEditOptions.EvidenceCap` (default 16 KiB, post_edit.go:146) are wire-only — never read from `config.toml`. The pelletier round-trip in `Default()` doesn't have keys for them either, so a user with a slow `go vet` (CGo, lots of packages, network-mounted GOPATH) has no way to extend the deadline short of editing source and rebuilding the binary.
@@ -238,7 +238,7 @@ Auxiliary findings on post-edit (F5 missing-file path doesn't reach the model + 
 - **Severity:** low
 - **Reproducer:** Record a decision with a 10 KB single-line reasoning:
   ```bash
-  /Users/jasondillingham/go/bin/leonard decisions record --topic "x" --choice "y" --reasoning "$(yes A | head -c 10000)"
+  $HOME/go/bin/leonard decisions record --topic "x" --choice "y" --reasoning "$(yes A | head -c 10000)"
   ```
   Then trigger SessionStart. The injected `additionalContext` includes the full 10 KB string inline.
 - **Observed:** `formatDecisions` (session_start.go:159-173) inlines `firstNonEmptyLine(d.Reasoning)` with no length cap. With `DefaultDecisionsLimit = 10`, ten 10 KB reasons = 100 KB of injected system context.
@@ -271,7 +271,7 @@ Auxiliary findings on post-edit (F5 missing-file path doesn't reach the model + 
 
 Behaviors I verified are correct:
 
-- **F8 fix itself:** sibling-scan correctly blocks `lib.NonExistent()` when `lib` is an in-module sibling but not imported in the target file. Real `lib.RealOne()` correctly passes. Confirmed via repro at the cobra layer (`/Users/jasondillingham/go/bin/leonard-hook pre-edit`) on a synthesized project.
+- **F8 fix itself:** sibling-scan correctly blocks `lib.NonExistent()` when `lib` is an in-module sibling but not imported in the target file. Real `lib.RealOne()` correctly passes. Confirmed via repro at the cobra layer (`$HOME/go/bin/leonard-hook pre-edit`) on a synthesized project.
 - **F8 + explicit-import precedence:** when the target file or snippet imports `lib` aliased to an external package, the sibling-scan's `lib` mapping is NOT clobbered — the explicit import wins. Verified in scenario K (`/tmp/leo-bh2/scenarios2.sh`).
 - **F8 + main packages:** `package main` is correctly skipped in `readSiblingPackages` so a snippet like `main.NoSuch()` allows through. With `cmd/foo` + `cmd/bar` both being `package main`, neither registers (correct).
 - **F8 + symlinks:** `filepath.Walk` doesn't follow symlinks by default, so circular dir-level symlinks, in-tree dir->dir loops, and out-of-tree symlinks all behave (no walk loop, no walk escape). Empirically confirmed at /tmp/leo-bh2/scenarios3.sh.

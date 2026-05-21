@@ -18,14 +18,14 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
 ### F1 — DeleteFiles bottleneck is unindexed `symbols.parent_id`, not WAL fsync
 
 - **Severity:** high
-- **Reproducer:** Run the existing `BenchmarkDeleteFiles_1k`, then re-run after adding an index on `parent_id`. Scratch program at `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/parent_probe.go` reproduces both with and without the index, with and without populated parent links. Results on Apple M1 Pro:
+- **Reproducer:** Run the existing `BenchmarkDeleteFiles_1k`, then re-run after adding an index on `parent_id`. Scratch program at `<repo>/.bughunt3-scratch/parent_probe.go` reproduces both with and without the index, with and without populated parent links. Results on Apple M1 Pro:
   ```
   no idx_symbols_parent, no parent links     7.13 s
   WITH idx_symbols_parent, no parent links   37.87 ms
   no idx_symbols_parent, WITH parent links   6.03 s
   WITH idx_symbols_parent, WITH parent links 41.93 ms
   ```
-  Additional WAL-bypass test (`/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/chunkbench.go`) shows journal_mode=delete, memory, off all run within 1-2% of WAL on the same workload — WAL is NOT the bottleneck.
+  Additional WAL-bypass test (`<repo>/.bughunt3-scratch/chunkbench.go`) shows journal_mode=delete, memory, off all run within 1-2% of WAL on the same workload — WAL is NOT the bottleneck.
 - **Observed:** The `BenchmarkDeleteFiles_1k` comment in `internal/store/delete_files_test.go:108` reads "pure SQLite FK-cascade + WAL fsync cost." The benchmark consistently lands at ~5.8 s/op. With `journal_mode=off` it lands at ~5.9 s/op. Variance is noise. The cost is the FK CASCADE on `symbols.parent_id` — without `idx_symbols_parent`, every parent-row deletion triggers a full scan of `symbols` looking for children to cascade into. For 10k symbol rows × 1k file deletes that's quadratic.
 - **Expected:** The v0.7.0 commit message frames batching as a `~225×` win over per-row delete. Adding the missing index on top is a further ~150× win on this same workload. A polluted-index sweep that takes 5.8 s today should take well under 100 ms.
 - **Suggested fix shape:**
@@ -37,7 +37,7 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
 ### F2 — Case-sensitive skip-dir match misses ALL-CAPS / Title-Case on macOS
 
 - **Severity:** medium
-- **Reproducer:** `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/main.go` scenario C. Creates `VENDOR/x.go`, `Target/x.rs`, `vendor/y.go` in a temp project. Output:
+- **Reproducer:** `<repo>/.bughunt3-scratch/main.go` scenario C. Creates `VENDOR/x.go`, `Target/x.rs`, `vendor/y.go` in a temp project. Output:
   ```
   indexed: Target/x.rs
   indexed: VENDOR/x.go
@@ -52,7 +52,7 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
 ### F3 — Walker silently drops user-named `build/` (or `dist/`, `target/`, etc.) source dirs
 
 - **Severity:** medium
-- **Reproducer:** `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/main.go` scenario B. Project layout:
+- **Reproducer:** `<repo>/.bughunt3-scratch/main.go` scenario B. Project layout:
   ```
   cmd/build/main.go   // user-chosen name for a `build` CLI command
   cmd/run/main.go
@@ -66,7 +66,7 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
 ### F4 — File relocated into a skip-dir disappears from the index, no warning
 
 - **Severity:** medium
-- **Reproducer:** `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/main.go` scenario E. Index `src/foo.go`, then `mv src/foo.go archive/build/foo.go`, then re-index. Output:
+- **Reproducer:** `<repo>/.bughunt3-scratch/main.go` scenario E. Index `src/foo.go`, then `mv src/foo.go archive/build/foo.go`, then re-index. Output:
   ```
   initial files: [src/foo.go]
   after move:    [] (file is still on disk at archive/build/foo.go)
@@ -82,7 +82,7 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
 ### F5 — `DeleteFiles` chunk size 500 is 65× too conservative
 
 - **Severity:** low
-- **Reproducer:** `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/maxvars.go` empirically probes the SQLite variable cap on modernc.org/sqlite v1.50.1:
+- **Reproducer:** `<repo>/.bughunt3-scratch/maxvars.go` empirically probes the SQLite variable cap on modernc.org/sqlite v1.50.1:
   ```
   n=500    OK
   n=999    OK
@@ -90,7 +90,7 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
   n=32766  OK
   n=32767  ERROR SQL logic error: too many SQL variables (1)
   ```
-  `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/chunkbench.go` confirms no perf difference between chunk size 500 and 32000 on the same 1k-row workload (5.9 s vs 6.2 s, within noise).
+  `<repo>/.bughunt3-scratch/chunkbench.go` confirms no perf difference between chunk size 500 and 32000 on the same 1k-row workload (5.9 s vs 6.2 s, within noise).
 - **Observed:** `internal/store/store.go:518` comment says "well under SQLite's default 999-parameter cap." That comment was true for SQLite ≤3.32; since 3.32 (Aug 2020) the default rose to 32766. Modernc.org/sqlite v1.50.1 ships SQLite 3.45.x. So the actual cap is 32766. The "well under 999" framing leaves ~65× of headroom on the table for no reason.
 - **Expected:** Since the bench shows no benefit at higher chunk sizes for this workload, this is mostly a comment-rot issue rather than a perf issue. But for the polluted-index case (12k+ rows), chunk size 32000 would do it in one chunk instead of 24, which slightly reduces query-plan overhead.
 - **Suggested fix shape:** Bump `chunkSize` constant to 1000 or 2000 (still safe headroom over old-SQLite-default of 999 for the rare case someone builds against ancient SQLite); update the comment to reflect the actual 32766 cap. Don't go all the way to 32000 because (a) no measurable benefit and (b) larger placeholder strings cost CPU to build.
@@ -155,11 +155,11 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
 
 ## Things that worked
 
-- **`pathHasSkippedComponent` is correct against substring false-positives.** Verified against 30+ adversarial paths (`/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/skip_dirs_probe.go`): `target-lang`, `venvironment`, `my-vendor`, `node_modules_old`, `.git-extras` etc. all correctly return false. The split-on-`/` approach is the right shape.
+- **`pathHasSkippedComponent` is correct against substring false-positives.** Verified against 30+ adversarial paths (`<repo>/.bughunt3-scratch/skip_dirs_probe.go`): `target-lang`, `venvironment`, `my-vendor`, `node_modules_old`, `.git-extras` etc. all correctly return false. The split-on-`/` approach is the right shape.
 
 - **Forward-slash invariant holds end-to-end.** `storeKey` (`internal/index/indexer.go:356-362`) always converts via `filepath.ToSlash` before persisting. `pruneStaleFiles` (`indexer.go:220`) always converts back via `filepath.FromSlash` before `os.Stat`. The matcher's `strings.Split(rel, "/")` is therefore safe — no Windows backslash leak via the indexer.
 
-- **Walker does not follow symlinks.** Verified scenarios F and G in `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/main.go`. A `vendor` symlink pointing OUT of the project is just skipped by name. A non-skip-named symlink (`src`) pointing OUT is also not followed — `filepath.WalkDir` returns the entry as a non-directory, and the walker's directory branch never fires. So symlink loops are not a concern.
+- **Walker does not follow symlinks.** Verified scenarios F and G in `<repo>/.bughunt3-scratch/main.go`. A `vendor` symlink pointing OUT of the project is just skipped by name. A non-skip-named symlink (`src`) pointing OUT is also not followed — `filepath.WalkDir` returns the entry as a non-directory, and the walker's directory branch never fires. So symlink loops are not a concern.
 
 - **`DeleteFiles` chunk boundary math is correct at 501.** Scenario H in the integration probe: 501 paths produces two chunks (500 + 1), the placeholder-trim in the second chunk works (single `?` remaining trims correctly to a single `?`), all 501 rows are deleted.
 
@@ -185,7 +185,7 @@ Stress-tested v0.6.1's `defaultSkipDirs` + `pathHasSkippedComponent` matcher and
 
 - **Should `loadIgnore` also read `.dockerignore`?** Some projects use `.dockerignore` as their canonical "stuff that's not source" list — Leonard could opt to read it as a third source alongside `.gitignore` and `.leonardignore`. Out of scope here but worth a separate decision.
 
-- **Scratch artifacts** under `/Users/jasondillingham/Documents/Homelab/leonard/.bughunt3-scratch/` (not in `.gitignore` patterns — leaving for the fix round to inspect, then they should be deleted or `.gitignore`d). Files:
+- **Scratch artifacts** under `<repo>/.bughunt3-scratch/` (cleaned up after the fix round; no longer present in the repo). The lane produced:
   - `main.go` — integration probe (scenarios A-I)
   - `maxvars.go` — SQLite max-variable cap probe
   - `chunkbench.go` — journal_mode × chunk_size matrix
