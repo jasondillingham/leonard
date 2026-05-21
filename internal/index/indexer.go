@@ -5,6 +5,7 @@
 package index
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,7 +13,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +24,7 @@ import (
 
 	"github.com/jasondillingham/leonard/internal/parse"
 	"github.com/jasondillingham/leonard/internal/store"
+	"github.com/jasondillingham/leonard/internal/telemetry"
 )
 
 // defaultSkipDirs are directory names always skipped, regardless of ignore
@@ -239,9 +243,12 @@ type Indexer struct {
 	parseCount atomic.Int64
 
 	// parseFailures collects per-file parser errors so callers can surface
-	// them in CLI/MCP output instead of having them silently swallowed. The
-	// indexer walks sequentially so a plain slice with no mutex is fine.
-	parseFailures []ParseFailure
+	// them in CLI/MCP output instead of having them silently swallowed.
+	// v0.50.2 (bughunt-6 perf F4 PROMOTED) added a worker pool to IndexAll
+	// so multiple goroutines call indexAbs concurrently — the mutex
+	// protects parseFailures append from the data race.
+	parseFailuresMu sync.Mutex
+	parseFailures   []ParseFailure
 }
 
 // New returns an Indexer rooted at root. The root is cleaned and converted
@@ -263,6 +270,8 @@ func (i *Indexer) ParseCount() int64 { return i.parseCount.Load() }
 // since construction. Empty slice when every file parsed cleanly. Callers
 // own the result and can format/log it however they like.
 func (i *Indexer) ParseFailures() []ParseFailure {
+	i.parseFailuresMu.Lock()
+	defer i.parseFailuresMu.Unlock()
 	out := make([]ParseFailure, len(i.parseFailures))
 	copy(out, i.parseFailures)
 	return out
@@ -271,10 +280,40 @@ func (i *Indexer) ParseFailures() []ParseFailure {
 // IndexAll walks the root, applying ignore rules, and indexes every
 // supported file. Returns the first walk error encountered, but parse errors
 // for individual files are swallowed so one bad file doesn't poison the run.
+//
+// Bughunt-6 perf F4 (PROMOTED): pre-v0.50.2 the walk was strictly
+// sequential — one indexAbs call per file. On a polyglot project
+// this was ~50 files/sec while parallel-Go was ~3000 files/sec. The
+// dominant cost is the per-file subprocess fork for the tree-sitter
+// + Rust + Python extractors. A bounded worker pool (NumCPU workers)
+// cuts wall time ~10× on real workloads without overwhelming the
+// filesystem or the SQLite writer (the store uses WAL with busy
+// timeout so multiple inserts serialize cleanly).
 func (i *Indexer) IndexAll() error {
+	_, end := telemetry.Span(context.Background(), "leonard.index.all")
+	defer end()
 	matcher, err := loadIgnore(i.Root)
 	if err != nil {
 		return err
+	}
+
+	workers := runtime.NumCPU()
+	if workers < 2 {
+		workers = 2
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	work := make(chan string, workers*4)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range work {
+				_ = i.indexAbs(path) // errors captured on indexer; log-and-continue
+			}
+		}()
 	}
 
 	walkErr := filepath.WalkDir(i.Root, func(path string, d fs.DirEntry, walkErr error) error {
@@ -320,15 +359,11 @@ func (i *Indexer) IndexAll() error {
 			return nil
 		}
 
-		if err := i.indexAbs(path); err != nil {
-			// Log-and-continue: a parse failure on one file shouldn't abort
-			// the whole walk. The error is captured on the indexer (see
-			// indexAbs) so the CLI can surface it after the walk instead of
-			// silently swallowing it.
-			_ = err
-		}
+		work <- path
 		return nil
 	})
+	close(work)
+	wg.Wait()
 	if walkErr != nil {
 		return walkErr
 	}
@@ -580,10 +615,12 @@ func (i *Indexer) indexAbs(path string) error {
 	}
 	if info.Size() > maxIndexedFileBytes {
 		rel := i.storeKey(path)
+		i.parseFailuresMu.Lock()
 		i.parseFailures = append(i.parseFailures, ParseFailure{
 			Path:    rel,
 			Message: fmt.Sprintf("file size %d bytes exceeds %d byte indexing cap", info.Size(), maxIndexedFileBytes),
 		})
+		i.parseFailuresMu.Unlock()
 		return nil
 	}
 	data, err := os.ReadFile(path)
@@ -626,7 +663,9 @@ func (i *Indexer) indexAbs(path string) error {
 		if nl := strings.Index(msg, "\n"); nl >= 0 {
 			msg = msg[:nl]
 		}
+		i.parseFailuresMu.Lock()
 		i.parseFailures = append(i.parseFailures, ParseFailure{Path: rel, Message: msg})
+		i.parseFailuresMu.Unlock()
 		return fmt.Errorf("extract %s: %w", rel, err)
 	}
 

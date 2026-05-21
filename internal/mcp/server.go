@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/jasondillingham/leonard/internal/telemetry"
 )
 
 // Implementation reports the leonard-mcp server identity advertised over
@@ -16,7 +18,7 @@ type Implementation struct {
 // DefaultImplementation is the server identity used when a caller doesn't
 // supply one (e.g. tests).
 func DefaultImplementation() Implementation {
-	return Implementation{Name: "leonard-mcp", Version: "0.50.1"}
+	return Implementation{Name: "leonard-mcp", Version: "0.50.2"}
 }
 
 // NewServer constructs an MCP server with Leonard's v1 tools registered
@@ -92,6 +94,8 @@ func register(srv *mcp.Server, store SymbolStore) {
 // verifySymbol is the thin shim: name lookup + optional kind/language
 // filter + record-to-wire translation.
 func verifySymbol(ctx context.Context, store SymbolStore, in VerifySymbolInput) (VerifySymbolOutput, error) {
+	ctx, end := telemetry.Span(ctx, "leonard.mcp.verify_symbol")
+	defer end()
 	syms, err := store.FindSymbolsByName(ctx, in.Name)
 	if err != nil {
 		return VerifySymbolOutput{}, err
@@ -101,6 +105,8 @@ func verifySymbol(ctx context.Context, store SymbolStore, in VerifySymbolInput) 
 }
 
 func findSymbol(ctx context.Context, store SymbolStore, in FindSymbolInput) (FindSymbolOutput, error) {
+	ctx, end := telemetry.Span(ctx, "leonard.mcp.find_symbol")
+	defer end()
 	syms, err := store.FindSymbolsByQuery(ctx, in.Query, in.Limit)
 	if err != nil {
 		return FindSymbolOutput{}, err
@@ -117,6 +123,8 @@ const (
 )
 
 func listFiles(ctx context.Context, store SymbolStore, in ListFilesInput) (ListFilesOutput, error) {
+	ctx, end := telemetry.Span(ctx, "leonard.mcp.list_files")
+	defer end()
 	limit := in.Limit
 	if limit <= 0 {
 		limit = listFilesDefaultLimit

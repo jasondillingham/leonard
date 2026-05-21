@@ -151,6 +151,15 @@ func buildDSN(path string) string {
 	q.Add("_pragma", "journal_mode(wal)")
 	q.Add("_pragma", "foreign_keys(on)")
 	q.Add("_pragma", "busy_timeout(5000)")
+	// Bughunt-6 perf F6 (PROMOTED to HIGH at bughunt-7): the v0.15
+	// per-DeleteFiles checkpoint only fired after big bulk deletes,
+	// so long-running processes (leonard-mcp, the post-edit hook
+	// driver) accumulated unbounded WAL. The audit measured 4.15 MiB
+	// of WAL after 700 sequential post-edit hooks on a single file.
+	// `wal_autocheckpoint = 1000` triggers an automatic PASSIVE
+	// checkpoint after every 1000 frames written — bounded growth
+	// without hurting hot-path latency.
+	q.Add("_pragma", "wal_autocheckpoint(1000)")
 	return "file:" + path + "?" + q.Encode()
 }
 

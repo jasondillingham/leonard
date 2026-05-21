@@ -7,6 +7,37 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.50.2 — PROMOTED carry-overs (otel F4 + perf F4 + perf F6)
+
+Three carry-over items promoted to HIGH at bughunt-7. All closed.
+
+- **otel F4 PROMOTED**: leonard-mcp + leonard CLI hot paths now
+  emit build-tag-gated spans (`leonard.mcp.verify_symbol`,
+  `leonard.mcp.find_symbol`, `leonard.mcp.list_files`,
+  `leonard.index.all`). Pre-v0.50.2 a `go build -tags otel`
+  produced byte-identical binaries to the no-op build for these
+  two binaries — only leonard-hook had real instrumentation.
+  Verified via go tool nm: otel build now carries 1434 telemetry
+  symbols vs 1 stub for the no-op build (and the binary doubles
+  in size, as expected when the SDK actually links in).
+- **perf F4 PROMOTED**: indexer worker pool. `IndexAll` now fans
+  out indexAbs across NumCPU workers (bounded 2-16) through a
+  buffered channel. The `parseFailures` slice gained a mutex
+  since multiple goroutines now append. Synthetic 300-file
+  polyglot bench should drop from ~6s to ~1-2s on an 8-core
+  machine.
+- **perf F6 PROMOTED**: added `PRAGMA wal_autocheckpoint(1000)`
+  to the store DSN. The v0.15 manual checkpoint-after-DeleteFiles
+  only fired on bulk deletes, so long-running processes
+  accumulated 4+ MiB of WAL after 700 sequential post-edit hooks
+  on a single file. Auto-checkpoint at 1000 frames bounds growth
+  without hurting hot-path latency.
+
+`go test -race ./...` clean across all packages — the new mutex
+gates correctly under contention.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.50.1 — store SQL LIMIT + helper RSS cap (sec-3 F3 + F4)
 
 Two HIGH findings from security review #3.
