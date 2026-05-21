@@ -8,7 +8,7 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status: v0.49.0 — stable.** Self-dogfooded across 46 minor releases with **six bug-hunt rounds and two focused security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
+**Status: v0.50.0 — stable.** Self-dogfooded across 46 minor releases with **six bug-hunt rounds and two focused security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ```
 29 tree-sitter languages   +   4 production-dogfooded parsers   +   3 SFC preprocessors
@@ -162,7 +162,7 @@ Leonard is wired into its own development through `.claude/settings.local.json` 
     "leonard": { "command": "/path/to/go/bin/leonard-mcp" }
   },
   "hooks": {
-    "PreToolUse":  [{ "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook pre-edit"  }]}],
+    "PreToolUse":  [{ "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook pre-edit"  }]}],
     "PostToolUse": [{ "matcher": "Edit|Write|MultiEdit",              "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook post-edit" }]}],
     "SessionStart":[{ "matcher": "",            "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook session-start" }]}],
     "Stop":        [{ "matcher": "",            "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook stop" }]}]

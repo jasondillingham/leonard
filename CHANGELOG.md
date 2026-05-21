@@ -7,6 +7,55 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.50.0 — .leonard/ guard hardening (2 CRIT + 2 HIGH)
+
+Round 7 + Security review #3 found four bypasses of the v0.46.0
+RCE guard. All four closed here.
+
+CRITICAL:
+- **sec-3 F1 — symlink bypass**: a Claude session could `ln -s
+  .leonard/config.toml safe.txt` (via Bash, which wasn't hooked),
+  then `Write safe.txt` — OS resolves the link and writes the
+  attacker TOML to .leonard/. Verified end-to-end. Fix: new
+  `isUnderLeonardDirResolved` calls `filepath.EvalSymlinks`
+  before the segment check. For paths that don't exist yet (Write
+  creating a new file), walks up to the deepest existing
+  ancestor, EvalSymlinks that, then re-attaches the trailing
+  segments. The lexical and resolved checks run together.
+- **sec-3 F2 — case-insensitive bypass**: `seg == ".leonard"` was
+  byte comparison. On APFS / NTFS / Samba (i.e. every default
+  Mac and most Windows dev setups), `.LEONARD/config.toml`
+  cleared the guard and landed in the real `.leonard/` dir.
+  Fix: `strings.EqualFold(seg, ".leonard")`.
+
+HIGH:
+- **bughunt-7 F2 — Bash bypass**: the hook matcher in the
+  dogfood wiring covered Edit/Write/MultiEdit/NotebookEdit but
+  not Bash. `echo pwned > .leonard/config.toml` slipped through
+  with one tool call. Fix: PreEditToolInput now decodes the
+  `command` field; new `bashTouchesLeonardDir` scans the command
+  string for `.leonard/`, `.leonard\`, or `.leonard` as a path
+  token (with shell-boundary detection so `leonardish/` doesn't
+  false-positive). README dogfood matcher updated to include
+  Bash.
+- **bughunt-7 F3 — backslash separator on Unix builds**:
+  `path\.leonard\config.toml` was one opaque segment to
+  `strings.Split(... "/")`. Real on WSL deployments. Fix:
+  `strings.ReplaceAll(path, "\\", "/")` before splitting.
+
+Regression tests:
+- TestHandlePreEdit_RejectsCaseInsensitiveLeonardDir (4 cases)
+- TestHandlePreEdit_RejectsBackslashLeonardDir (4 cases)
+- TestHandlePreEdit_RejectsBashWritesToLeonardDir (5 commands)
+- TestHandlePreEdit_AllowsBashCommandsThatDontTouchLeonard (6
+  innocent commands)
+- TestHandlePreEdit_RejectsSymlinkToLeonardDir (real symlink)
+
+SECURITY.md threat-model table updated; the post-edit verifier
+trust boundary now lists v0.46 + v0.50.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.49.0 — Makefile + CI caching + issue/PR templates (bughunt-6 Theme E)
 
 Final fix-round-6 polish.

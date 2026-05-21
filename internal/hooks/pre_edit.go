@@ -63,6 +63,11 @@ type PreEditToolInput struct {
 	Content      string             `json:"content"`
 	NewSource    string             `json:"new_source"`
 	Edits        []PreEditMultiEdit `json:"edits"`
+	// Command is set by Claude Code's Bash tool. The .leonard/ guard
+	// (bughunt-7 F2) inspects this string for write redirections that
+	// would land under .leonard/ since Bash can otherwise bypass the
+	// file_path-based guard entirely.
+	Command string `json:"command"`
 }
 
 // PreEditMultiEdit mirrors one entry of the MultiEdit `edits` array.
@@ -180,7 +185,20 @@ func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload
 	// boundary line.
 	candidatePaths := candidateEditPaths(p.ToolInput)
 	for _, cp := range candidatePaths {
-		if isUnderLeonardDir(cp) {
+		// Two-layer check (security review #3 F1 + F2). The lexical
+		// check catches `.leonard/config.toml` shapes including
+		// `.LEONARD/` and `proj\.leonard\config.toml` (case-
+		// insensitive + backslash-aware). The resolved check
+		// catches symlink bypasses: a `safe.txt` symlink pointing
+		// at `.leonard/config.toml` looks safe lexically, but the
+		// OS would write to the linked target.
+		if isUnderLeonardDir(cp) || isUnderLeonardDirResolved(cp) {
+			return blockLeonardSelfEdit(cp), nil
+		}
+		// Bash command strings get the substring check too — they
+		// don't parse as filesystem paths but `.leonard/` write
+		// redirections still appear textually.
+		if p.ToolName == "Bash" && bashTouchesLeonardDir(cp) {
 			return blockLeonardSelfEdit(cp), nil
 		}
 	}
@@ -586,9 +604,15 @@ func blockLeonardSelfEdit(filePath string) PreEditResponse {
 
 // candidateEditPaths returns every filesystem path a single ToolInput
 // might touch — covers Edit/Write's `file_path`, NotebookEdit's
-// `notebook_path`, and MultiEdit's per-element paths. Used by the
-// `.leonard/` guard so any tool-shape that could land an edit under
-// that directory is caught.
+// `notebook_path`, MultiEdit, and the Bash tool's `command` string.
+// Used by the `.leonard/` guard so any tool-shape that could land an
+// edit under that directory is caught.
+//
+// Bughunt-7 F2 (HIGH): pre-v0.50 Bash payloads bypassed the guard
+// entirely — `echo pwned > .leonard/config.toml` went through the
+// Bash tool which the hook matcher didn't cover. v0.50 extracts the
+// command string and lexically scans it for `.leonard` substrings
+// so the deny path fires.
 func candidateEditPaths(in PreEditToolInput) []string {
 	var out []string
 	if p := strings.TrimSpace(in.FilePath); p != "" {
@@ -600,25 +624,159 @@ func candidateEditPaths(in PreEditToolInput) []string {
 	// MultiEdit's per-element shape is {old_string, new_string}; the
 	// destination file_path lives on the outer ToolInput and is
 	// captured above.
+	if c := strings.TrimSpace(in.Command); c != "" {
+		out = append(out, c)
+	}
 	return out
 }
 
+// bashTouchesLeonardDir reports whether a Bash command string
+// textually references `.leonard/` (or `.LEONARD/`, `.Leonard\`,
+// etc.) anywhere — case-insensitive segment match against either
+// path separator. This is a heuristic on top of the file_path-based
+// guards: the Bash tool can write to .leonard/ via shell redirection
+// (`echo x > .leonard/config.toml`), heredocs, piped commands, etc.,
+// and we never see a structured "this is the destination path"
+// field. So we lexically scan the command for the segment.
+//
+// False positives are acceptable here (a comment like `# safe ./not-
+// leonard/foo` wouldn't match, but `# see .leonard/config.toml` would
+// — that's fine, blocking a harmless Bash that just mentions the
+// path is better than letting through an actual write). A hard miss
+// (something that ACTUALLY writes to .leonard/ but doesn't textually
+// contain ".leonard") would require a real bash parser; reserve
+// that for a future hardening round if attacks emerge.
+//
+// Bughunt-7 F2 (HIGH).
+func bashTouchesLeonardDir(command string) bool {
+	if command == "" {
+		return false
+	}
+	lower := strings.ToLower(command)
+	// Match `.leonard/` or `.leonard\` as a path segment. We require
+	// the trailing separator so `foo.leonard` (no separator) or
+	// `.leonard.bak` (segment doesn't end here) don't false-match.
+	for _, sep := range []string{"/", "\\"} {
+		if strings.Contains(lower, ".leonard"+sep) {
+			return true
+		}
+	}
+	// Also catch `.leonard` as the LAST path token (no trailing
+	// separator), e.g. `rm -rf .leonard` (deleting the directory).
+	// Use a small state machine: find `.leonard`, check the
+	// preceding char is a separator or boundary and the following
+	// char is a separator or end-of-token.
+	idx := 0
+	for {
+		hit := strings.Index(lower[idx:], ".leonard")
+		if hit < 0 {
+			return false
+		}
+		abs := idx + hit
+		preOK := abs == 0 || isBashTokenBoundary(lower[abs-1])
+		end := abs + len(".leonard")
+		postOK := end == len(lower) || isBashTokenBoundary(lower[end])
+		if preOK && postOK {
+			return true
+		}
+		idx = abs + 1
+	}
+}
+
+// isBashTokenBoundary reports whether `b` is a character that
+// terminates a path token in a Bash command — whitespace, shell
+// redirection/pipe operators, quotes. Used by bashTouchesLeonardDir.
+func isBashTokenBoundary(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '"', '\'', '`', ';', '&', '|',
+		'<', '>', '(', ')', '{', '}':
+		return true
+	}
+	return false
+}
+
 // isUnderLeonardDir reports whether `path` contains a `.leonard`
-// directory segment anywhere in its cleaned form. Matches:
+// directory segment anywhere in its form. Matches:
 //   - `.leonard/config.toml`
 //   - `./.leonard/leonard.db`
 //   - `/Users/foo/proj/.leonard/anything`
+//   - `.LEONARD/config.toml` on case-insensitive filesystems (APFS, NTFS, Samba)
+//   - `proj\.leonard\config.toml` on Windows-style separators (WSL)
 //
 // Does NOT match `.leonard.bak/`, `leonardish/`, or any name that
-// isn't an exact `.leonard` segment. Path comparison is textual on
-// the cleaned form, so `..` and `./` are normalized away first.
+// isn't an exact `.leonard` segment.
+//
+// Security review #3 F1 + F2 (CRITICAL): the v0.46 implementation
+// was case-sensitive byte comparison + OS-separator-only split,
+// which let `.LEONARD/` and `path\.leonard\config.toml` bypass.
+// v0.50 normalizes:
+//   - Backslash-to-forward-slash before splitting (catches WSL paths
+//     on Unix builds and vice versa)
+//   - case-insensitive segment compare via strings.EqualFold
+//
+// Symlink bypass (sec-3 F1): isUnderLeonardDirResolved is a
+// follow-up that EvalSymlinks-resolves the path before the lexical
+// check. We use the lexical form here for fast-path rejection AND
+// the resolved form for the canonical check.
 func isUnderLeonardDir(path string) bool {
-	clean := filepath.Clean(path)
-	// filepath.Separator is OS-specific; iterate via Split rather than
-	// strings.Contains so we don't false-match `.leonard` as a substring
-	// of another path segment.
-	for _, seg := range strings.Split(clean, string(filepath.Separator)) {
-		if seg == ".leonard" {
+	if path == "" {
+		return false
+	}
+	// Normalize Windows backslashes so a single segment split works
+	// regardless of the platform the binary was built for.
+	cleaned := filepath.Clean(strings.ReplaceAll(path, "\\", "/"))
+	for _, seg := range strings.Split(cleaned, "/") {
+		if strings.EqualFold(seg, ".leonard") {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnderLeonardDirResolved is the symlink-aware extension of
+// isUnderLeonardDir. Security review #3 F1: a Claude session could
+// create a symlink `safe.txt -> .leonard/config.toml` via the Bash
+// tool (not hooked), then Write `safe.txt`. The OS resolves the
+// link on write — pre-v0.50 the lexical guard saw `safe.txt`, let
+// it through, and the attacker's TOML landed in .leonard/.
+//
+// This resolves the path via filepath.EvalSymlinks before doing
+// the segment check. Returns:
+//   - true if the resolved path is under .leonard/ (block)
+//   - false if it's safe OR EvalSymlinks fails (file doesn't exist
+//     yet is normal for Write tool; fall back to the lexical
+//     isUnderLeonardDir check which the caller has already run)
+//
+// The lexical check + this resolved check together close the
+// symlink and case-insensitive bypass classes.
+func isUnderLeonardDirResolved(path string) bool {
+	if path == "" {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// File doesn't exist yet (Write tool creating a new file).
+		// The parent directory might still be a symlink we should
+		// resolve. Walk up to the deepest existing ancestor and
+		// EvalSymlinks that, then re-attach the remaining segments.
+		cur := path
+		var trailing []string
+		for {
+			parent := filepath.Dir(cur)
+			if parent == cur {
+				return false // exhausted; defer to caller's lexical check
+			}
+			trailing = append([]string{filepath.Base(cur)}, trailing...)
+			cur = parent
+			if r, err := filepath.EvalSymlinks(cur); err == nil {
+				resolved = filepath.Join(append([]string{r}, trailing...)...)
+				break
+			}
+		}
+	}
+	cleaned := filepath.Clean(strings.ReplaceAll(resolved, "\\", "/"))
+	for _, seg := range strings.Split(cleaned, "/") {
+		if strings.EqualFold(seg, ".leonard") {
 			return true
 		}
 	}

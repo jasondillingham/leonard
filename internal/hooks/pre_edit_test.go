@@ -803,3 +803,185 @@ func TestHandlePreEdit_AllowsLeonardLookalikePaths(t *testing.T) {
 		})
 	}
 }
+
+// TestHandlePreEdit_RejectsCaseInsensitiveLeonardDir pins security
+// review #3 F2 (CRITICAL): on case-insensitive filesystems (APFS,
+// NTFS, Samba) `.LEONARD/config.toml` lands in the same on-disk
+// directory as `.leonard/`. The v0.46 byte-comparison segment match
+// missed this; v0.50 uses strings.EqualFold.
+func TestHandlePreEdit_RejectsCaseInsensitiveLeonardDir(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		".LEONARD/config.toml",
+		".Leonard/config.toml",
+		".LeOnArD/scratch.md",
+		"proj/.LEONARD/leonard.db",
+	}
+	for _, fp := range cases {
+		fp := fp
+		t.Run(fp, func(t *testing.T) {
+			payload := encodePreToolUsePayload(t, PreToolUsePayload{
+				ToolName:  "Write",
+				ToolInput: PreEditToolInput{FilePath: fp, Content: "x"},
+			})
+			var out bytes.Buffer
+			if err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+				bytes.NewReader(payload), &out); err != nil {
+				t.Fatalf("HandlePreEdit: %v", err)
+			}
+			var resp PreEditResponse
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.HookSpecificOutput == nil || resp.HookSpecificOutput.PermissionDecision != "deny" {
+				t.Errorf("case variant %q should be denied; got resp=%+v", fp, resp)
+			}
+		})
+	}
+}
+
+// TestHandlePreEdit_RejectsBackslashLeonardDir pins bughunt-7 F3
+// (HIGH): on WSL deployments a path can arrive with backslashes
+// (e.g. `proj\.leonard\config.toml`). The v0.46 OS-separator split
+// missed this on Unix builds; v0.50 normalizes \\ → / before the
+// segment check.
+func TestHandlePreEdit_RejectsBackslashLeonardDir(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		`proj\.leonard\config.toml`,
+		`.leonard\config.toml`,
+		`C:\Users\foo\.leonard\leonard.db`,
+		`mixed/.leonard\config.toml`,
+	}
+	for _, fp := range cases {
+		fp := fp
+		t.Run(fp, func(t *testing.T) {
+			payload := encodePreToolUsePayload(t, PreToolUsePayload{
+				ToolName:  "Write",
+				ToolInput: PreEditToolInput{FilePath: fp, Content: "x"},
+			})
+			var out bytes.Buffer
+			if err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+				bytes.NewReader(payload), &out); err != nil {
+				t.Fatalf("HandlePreEdit: %v", err)
+			}
+			var resp PreEditResponse
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.HookSpecificOutput == nil || resp.HookSpecificOutput.PermissionDecision != "deny" {
+				t.Errorf("backslash path %q should be denied; got resp=%+v", fp, resp)
+			}
+		})
+	}
+}
+
+// TestHandlePreEdit_RejectsBashWritesToLeonardDir pins bughunt-7 F2
+// (HIGH): the pre-v0.50 hook didn't intercept the Bash tool at all,
+// so `echo pwned > .leonard/config.toml` slipped through. v0.50
+// extracts the command string and scans it for `.leonard/`
+// references.
+func TestHandlePreEdit_RejectsBashWritesToLeonardDir(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"echo pwned > .leonard/config.toml",
+		"cat /etc/passwd >> ./.leonard/config.toml",
+		"rm -rf .leonard",
+		"cp evil.toml .LEONARD/config.toml",
+		`tee proj\.leonard\config.toml < evil.toml`,
+	}
+	for _, cmd := range cases {
+		cmd := cmd
+		t.Run(cmd, func(t *testing.T) {
+			payload := encodePreToolUsePayload(t, PreToolUsePayload{
+				ToolName:  "Bash",
+				ToolInput: PreEditToolInput{Command: cmd},
+			})
+			var out bytes.Buffer
+			if err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+				bytes.NewReader(payload), &out); err != nil {
+				t.Fatalf("HandlePreEdit: %v", err)
+			}
+			var resp PreEditResponse
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.HookSpecificOutput == nil || resp.HookSpecificOutput.PermissionDecision != "deny" {
+				t.Errorf("bash command %q should be denied; got resp=%+v", cmd, resp)
+			}
+		})
+	}
+}
+
+// TestHandlePreEdit_AllowsBashCommandsThatDontTouchLeonard confirms
+// the Bash guard doesn't false-positive on innocent commands.
+func TestHandlePreEdit_AllowsBashCommandsThatDontTouchLeonard(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"ls -la",
+		"echo foo > /tmp/bar.txt",
+		"cat README.md",
+		"rm leonardish/old.txt",
+		"echo .leonard.bak/backup.toml",
+		"grep leonard src/*.go",
+	}
+	for _, cmd := range cases {
+		cmd := cmd
+		t.Run(cmd, func(t *testing.T) {
+			payload := encodePreToolUsePayload(t, PreToolUsePayload{
+				ToolName:  "Bash",
+				ToolInput: PreEditToolInput{Command: cmd},
+			})
+			var out bytes.Buffer
+			if err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+				bytes.NewReader(payload), &out); err != nil {
+				t.Fatalf("HandlePreEdit: %v", err)
+			}
+			var resp PreEditResponse
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.HookSpecificOutput != nil && resp.HookSpecificOutput.PermissionDecision == "deny" {
+				t.Errorf("innocent bash command %q wrongly blocked: %s", cmd, resp.HookSpecificOutput.PermissionDecisionReason)
+			}
+		})
+	}
+}
+
+// TestHandlePreEdit_RejectsSymlinkToLeonardDir pins security review
+// #3 F1 (CRITICAL): a symlink whose target resolves under .leonard/
+// must be rejected. Pre-v0.50 the guard was purely lexical; v0.50
+// adds an EvalSymlinks-based check.
+func TestHandlePreEdit_RejectsSymlinkToLeonardDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	leonardDir := filepath.Join(root, ".leonard")
+	if err := os.MkdirAll(leonardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(leonardDir, "config.toml")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "safe.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported in this test environment: %v", err)
+	}
+
+	payload := encodePreToolUsePayload(t, PreToolUsePayload{
+		ToolName:  "Write",
+		ToolInput: PreEditToolInput{FilePath: link, Content: "evil"},
+	})
+	var out bytes.Buffer
+	if err := HandlePreEdit(context.Background(), PreEditOptions{Store: newFakeSymStore()},
+		bytes.NewReader(payload), &out); err != nil {
+		t.Fatalf("HandlePreEdit: %v", err)
+	}
+	var resp PreEditResponse
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.HookSpecificOutput == nil || resp.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("symlink-to-.leonard should be denied; got %+v", resp)
+	}
+}
