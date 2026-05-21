@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"sync"
 
 	"github.com/jasondillingham/leonard/internal/hooks"
 	"github.com/jasondillingham/leonard/internal/index"
@@ -9,36 +10,62 @@ import (
 )
 
 // realBackend opens the project's SQLite store and returns an Indexer +
-// ClaimRecorder adapter pair pointing at it.
-type realBackend struct{}
-
-func newDefaultBackend() Backend { return realBackend{} }
-
-func (realBackend) Indexer(projectRoot string) hooks.Indexer {
-	s := mustOpenStore(projectRoot)
-	return index.New(s, projectRoot)
+// ClaimRecorder adapter pair pointing at it. A single store is shared
+// across the Indexer() and Claims() calls within a hook invocation so
+// the Close() at end-of-process can be deterministic — bughunt-9 F3
+// (HIGH): the v0.51 Store.Close-time WAL checkpoint was dead code
+// because each hook subcommand opened the store via mustOpenStore but
+// nothing closed it. Without Close the wal_checkpoint(PASSIVE) in
+// Close() never fires and WAL grows unbounded across many sequential
+// hook processes.
+type realBackend struct {
+	mu sync.Mutex
+	s  *store.Store
 }
 
-func (realBackend) Claims(projectRoot string) hooks.ClaimRecorder {
-	s := mustOpenStore(projectRoot)
-	return storeClaimsAdapter{s: s}
+func newDefaultBackend() Backend { return &realBackend{} }
+
+func (b *realBackend) Indexer(projectRoot string) hooks.Indexer {
+	return index.New(b.store(projectRoot), projectRoot)
 }
 
-func (realBackend) Close() error { return nil }
+func (b *realBackend) Claims(projectRoot string) hooks.ClaimRecorder {
+	return storeClaimsAdapter{s: b.store(projectRoot)}
+}
 
-// mustOpenStore is reached only after the cobra layer has verified that
-// .leonard/leonard.db exists on disk; the missing-DB case is handled at the
-// callsite by emitting a no-op {"continue":true} response. A panic here
-// therefore means store.Open failed for an *unrelated* reason (corruption,
-// permission denied, fs error) — surfacing it loudly is the right call
-// because a hook silently malforming claim rows is worse than a noisy
-// failure.
-func mustOpenStore(projectRoot string) *store.Store {
-	s, err := store.Open(filepath.Join(projectRoot, ".leonard", "leonard.db"))
-	if err != nil {
-		panic(err)
+// Close releases the shared store, which triggers
+// wal_checkpoint(PASSIVE) in store.Close(). The cobra root command
+// defers this after every subcommand so each hook process leaves the
+// WAL bounded. bughunt-9 F3.
+func (b *realBackend) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.s == nil {
+		return nil
 	}
-	return s
+	err := b.s.Close()
+	b.s = nil
+	return err
+}
+
+// store lazily opens the project's store once per realBackend
+// lifetime. Indexer() and Claims() share the same connection so
+// Close() actually closes a single resource.
+func (b *realBackend) store(projectRoot string) *store.Store {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.s == nil {
+		s, err := store.Open(filepath.Join(projectRoot, ".leonard", "leonard.db"))
+		if err != nil {
+			// mustOpenStore-equivalent: reached only after the cobra
+			// layer verified the DB exists. Other failures are
+			// unrecoverable for the hook's purpose; panic loudly so
+			// the operator notices.
+			panic(err)
+		}
+		b.s = s
+	}
+	return b.s
 }
 
 type storeClaimsAdapter struct{ s *store.Store }

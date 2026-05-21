@@ -140,14 +140,15 @@ func Open(path string) (*Store, error) {
 // Close closes the underlying database handle. Safe to call multiple times;
 // subsequent calls return whatever the driver reports.
 func (s *Store) Close() error {
-	// Bughunt-8 F6 (HIGH): wal_autocheckpoint(1000) fires per-
-	// connection. Each new hook-process opens a fresh connection,
-	// so the frame counter resets and the WAL grows unbounded
-	// across sessions of short-lived processes (700 sequential
-	// post-edit hooks → 4 MiB WAL on a single 400 KB DB). Forcing
-	// a PASSIVE checkpoint at Close keeps WAL bounded regardless
-	// of process lifetime.
-	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
+	// Bughunt-8 F6 (HIGH) + bughunt-9 F3: wal_autocheckpoint(1000)
+	// fires per-connection. Each hook-process opens a fresh
+	// connection, so the frame counter resets and the WAL grows
+	// unbounded across short-lived processes. Forcing a TRUNCATE
+	// checkpoint at Close (not PASSIVE — TRUNCATE actually shrinks
+	// the WAL file to zero bytes after checkpoint) keeps WAL
+	// bounded regardless of process lifetime. v0.51 used PASSIVE
+	// which left the WAL file at its high-water-mark size.
+	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	return s.db.Close()
 }
 

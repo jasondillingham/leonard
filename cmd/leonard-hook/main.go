@@ -61,8 +61,20 @@ func main() {
 // that should propagate to the OS. Pulled out so main() can flush
 // telemetry on the way out — `os.Exit` would skip a deferred
 // shutdown.
+//
+// Bughunt-9 F3 (HIGH): close the backend before returning so the
+// store's wal_checkpoint(PASSIVE) actually fires. Without this each
+// short-lived hook process leaks an unchecked-pointed WAL handle and
+// the WAL file grows unbounded across many invocations (15 MB after
+// 700 hooks pre-v0.52).
 func runRoot(ctx context.Context) int {
-	root := newRootCmd(newDefaultBackend())
+	backend := newDefaultBackend()
+	defer func() {
+		if err := backend.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "leonard-hook: backend close:", err)
+		}
+	}()
+	root := newRootCmd(backend)
 	root.SetContext(ctx)
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "leonard-hook:", err)

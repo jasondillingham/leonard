@@ -7,6 +7,59 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.52.0 — trust file relocation + hook Close lifecycle (2 CRIT + 1 HIGH)
+
+Iteration 3 of the fix-loop found that v0.51's trust-gate was
+sound in concept but lived at the wrong path. The fingerprint
+file at `.leonard/trusted-verifier.sha256` could be poisoned by
+the same bash-obfuscation class that bypassed the v0.50 lexical
+scanner. Move it OUT of the project tree to break this circle.
+
+CRITICAL — bughunt-9 F1: an attacker who can write
+`.leonard/config.toml` (via Bash variable indirection, command
+substitution, etc.) can also write
+`.leonard/trusted-verifier.sha256` with a fingerprint matching
+their malicious command. End-to-end RCE re-reproduced.
+
+Fix: trust file now lives at
+`$XDG_CONFIG_HOME/leonard/trust/<sha256-of-project-root>.sha256`
+(default `~/.config/leonard/trust/<hash>.sha256`). The .leonard/
+bash-scanner gaps no longer matter — the attacker can't write to
+the user's config dir from a Claude session-scoped tool.
+
+CRITICAL — bughunt-9 F2: v0.51 `ReadTrustedFingerprint` used
+`os.ReadFile` (follows symlinks). An attacker who plants a
+symlink at the trust path could redirect reads to an arbitrary
+attacker-controlled file.
+
+Fix: `os.Lstat` first, refuse `fs.ModeSymlink` entries. Same
+guard on the write path so we don't overwrite a planted symlink.
+
+HIGH — bughunt-9 F3: `Store.Close()` had the right
+`PRAGMA wal_checkpoint(PASSIVE)` since v0.51, but
+`cmd/leonard-hook` never called it. The store was opened lazily
+by `Indexer()`/`Claims()` and leaked at process exit. Measured
+15 MB WAL after 700 hooks (worse than the v0.50.2 baseline the
+fix was supposed to beat).
+
+Fix: `realBackend` now caches a single store across
+Indexer/Claims and exposes `Close()`. Wired into `runRoot` via
+defer. Switched checkpoint from PASSIVE to TRUNCATE so the WAL
+file actually shrinks to zero bytes after checkpoint.
+
+Regression tests:
+- TestTrustFileLivesOutsideProjectTree
+- TestReadTrustedFingerprint_RefusesSymlink
+- TestWriteTrustedFingerprint_RefusesOverwriteSymlink
+- TestVerifyCommandTrusted_RoundTrip
+
+Migration: v0.51 trust files at `.leonard/trusted-verifier.sha256`
+are no longer used. They're harmless (post-edit hook ignores
+them) but can be deleted. Operators must re-run
+`leonard config trust` to write the new-location file.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.51.0 — trust-gate for [post_edit.verify].command (5 CRIT + 3 HIGH)
 
 Iteration 2 of the fix-loop established that enumerating Bash

@@ -8,10 +8,13 @@
 .leonard/leonard.db-journal
 .leonard/leonard.db-wal
 .leonard/leonard.db-shm
-# v0.51 trust-gate fingerprint for [post_edit.verify].command.
-# Per-machine, not per-checkout; teams that want shared opt-in
-# document a `make trust` step instead.
-.leonard/trusted-verifier.sha256
+# v0.52 (formerly v0.51): the [post_edit.verify].command trust
+# fingerprint now lives OUTSIDE the project tree at
+# $XDG_CONFIG_HOME/leonard/trust/<project-hash>.sha256, so no
+# in-project gitignore is needed. The v0.51-era
+# `.leonard/trusted-verifier.sha256` is no longer used; if you
+# upgraded from v0.51, the old file is harmless but can be
+# deleted.
 # Orphan SQLite shadow files from concurrent leonard runs (Finder/
 # tooling sometimes duplicates the DB and SQLite spawns parallel
 # WAL/SHM per copy).

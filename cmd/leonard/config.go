@@ -44,14 +44,17 @@ shows it to the operator, and (on confirmation) writes its SHA-256
 fingerprint to .leonard/trusted-verifier.sha256. The post-edit hook
 will refuse to run the verifier until the fingerprint matches.
 
-Trust is per-machine — the fingerprint file is gitignored. A team
-that wants shared opt-in can document a make target instead.`,
+v0.52: trust is per-project, attached to the canonical absolute
+path of the project root. The fingerprint file lives OUTSIDE the
+project tree — at $XDG_CONFIG_HOME/leonard/trust/<hash>.sha256 —
+so .leonard/ write attacks can't poison it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dataDir, err := dataDirForCwd()
 			if err != nil {
 				return err
 			}
+			projectRoot := filepath.Dir(dataDir) // dataDir is <root>/.leonard
 			cfgPath := filepath.Join(dataDir, config.Filename)
 			cfg, err := config.Load(cfgPath)
 			if err != nil {
@@ -61,6 +64,10 @@ that wants shared opt-in can document a make target instead.`,
 			if command == "" {
 				return fmt.Errorf("config trust: [post_edit.verify].command is empty in %s; nothing to authorize", cfgPath)
 			}
+			trustPath, err := config.TrustFilePath(projectRoot)
+			if err != nil {
+				return fmt.Errorf("config trust: %w", err)
+			}
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintln(out, "leonard: about to trust the following [post_edit.verify].command:")
@@ -68,7 +75,7 @@ that wants shared opt-in can document a make target instead.`,
 			fmt.Fprintln(out, "    "+command)
 			fmt.Fprintln(out)
 			fmt.Fprintln(out, "On every Edit/Write the post-edit hook will run this through `sh -c`.")
-			fmt.Fprintln(out, "The fingerprint will be stored at "+filepath.Join(dataDir, config.TrustFilename)+" (gitignored).")
+			fmt.Fprintln(out, "Fingerprint will be stored at "+trustPath)
 			fmt.Fprintln(out)
 
 			if !yes {
@@ -83,7 +90,7 @@ that wants shared opt-in can document a make target instead.`,
 			}
 
 			fp := config.FingerprintCommand(command)
-			if err := config.WriteTrustedFingerprint(dataDir, fp); err != nil {
+			if err := config.WriteTrustedFingerprint(projectRoot, fp); err != nil {
 				return fmt.Errorf("config trust: write trust file: %w", err)
 			}
 			fmt.Fprintf(out, "leonard: verifier command authorized (fingerprint %s…).\n", fp[:12])

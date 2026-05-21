@@ -62,12 +62,12 @@ func newPostEditCmd(b Backend) *cobra.Command {
 			} else if verify := cfg.PostEdit.Verify; strings.TrimSpace(verify.Command) != "" {
 				// Security-4 / bughunt-8 (iteration 2): the verifier
 				// command requires explicit operator trust before
-				// it can execute via `sh -c`. Lexical command-string
-				// scanning (Bash obfuscation enumeration) was the
-				// wrong layer — operators authorize the command
-				// itself, by SHA-256 fingerprint, via
-				// `leonard config trust`.
-				trusted, trustErr := config.VerifyCommandTrusted(dataDir, verify.Command)
+				// it can execute via `sh -c`. v0.52: trust file
+				// lives OUTSIDE the project tree at
+				// $XDG_CONFIG_HOME/leonard/trust/<project-hash>.sha256
+				// so .leonard/ write attacks can't poison it
+				// (bughunt-9 CRIT).
+				trusted, trustErr := config.VerifyCommandTrusted(root, verify.Command)
 				if trustErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "leonard: trust check failed, falling back to defaults: %v\n", trustErr)
 				} else if !trusted {
