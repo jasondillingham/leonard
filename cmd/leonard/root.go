@@ -10,7 +10,7 @@ import (
 // the auto-generated `--version` flag once Command.Version is set.
 // Kept in sync with cmd/leonard-mcp/main.go's `version` var; each
 // minor release bumps both via the same commit (see CHANGELOG.md).
-const Version = "0.50.2"
+const Version = "0.51.0"
 
 // Runtime is the minimum collaborator surface the cobra subcommands need.
 // Concrete implementations live in wire_real.go (uses internal/store +
@@ -168,6 +168,7 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newVerifyCmd(rt))
 	root.AddCommand(newDecisionsCmd(rt))
 	root.AddCommand(newClaimsCmd(rt))
+	root.AddCommand(newConfigCmd())
 	root.AddCommand(newDoctorCmd(rt))
 	root.AddCommand(newMCPCmd())
 	return root

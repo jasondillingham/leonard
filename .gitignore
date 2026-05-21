@@ -8,6 +8,10 @@
 .leonard/leonard.db-journal
 .leonard/leonard.db-wal
 .leonard/leonard.db-shm
+# v0.51 trust-gate fingerprint for [post_edit.verify].command.
+# Per-machine, not per-checkout; teams that want shared opt-in
+# document a `make trust` step instead.
+.leonard/trusted-verifier.sha256
 # Orphan SQLite shadow files from concurrent leonard runs (Finder/
 # tooling sometimes duplicates the DB and SQLite spawns parallel
 # WAL/SHM per copy).

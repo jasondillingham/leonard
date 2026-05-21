@@ -24,6 +24,19 @@ func newInitCmd(rt Runtime) *cobra.Command {
 				return err
 			}
 			dataDir := filepath.Join(root, dataDirName)
+			// Security-4 F15 (HIGH PROMOTED): refuse to operate on
+			// a `.leonard` that's a pre-existing symlink. A
+			// malicious project could ship `.leonard` as a symlink
+			// to an attacker-controlled directory containing a
+			// poisoned `config.toml` + (separately) a trust file
+			// fingerprinting the attacker's command. `leonard init`
+			// would silently no-op the existing dir, the next
+			// post-edit would fire the attacker's verifier. By
+			// refusing the symlink form, we force the operator to
+			// inspect.
+			if info, err := os.Lstat(dataDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("init %s: %s is a symlink; refusing to initialize. Delete or replace it with a real directory first", root, dataDir)
+			}
 			if err := rt.Init(cmd.Context(), root, dataDir); err != nil {
 				return fmt.Errorf("init %s: %w", root, err)
 			}

@@ -759,21 +759,38 @@ func isUnderLeonardDirResolved(path string) bool {
 		// The parent directory might still be a symlink we should
 		// resolve. Walk up to the deepest existing ancestor and
 		// EvalSymlinks that, then re-attach the remaining segments.
+		//
+		// Security-4 F2 (HIGH): bound the walk depth + use a fixed-
+		// size buffer reversed at the end. Pre-v0.51 the inner
+		// prepend was O(n) per segment → O(n²) for an attacker-
+		// controlled deeply-nested path. MaxHookPayloadBytes is
+		// 16 MiB, which could carry ~4M segments → 73s CPU. The
+		// cap below limits the walk to 4096 ancestor levels which
+		// is generous (deepest mainstream FS limits are ~4096 for
+		// the full path); past that, we fall back to the lexical
+		// check the caller already ran.
+		const maxAncestors = 4096
 		cur := path
-		var trailing []string
-		for {
+		trailing := make([]string, 0, maxAncestors)
+		for depth := 0; depth < maxAncestors; depth++ {
 			parent := filepath.Dir(cur)
 			if parent == cur {
 				return false // exhausted; defer to caller's lexical check
 			}
-			trailing = append([]string{filepath.Base(cur)}, trailing...)
+			trailing = append(trailing, filepath.Base(cur))
 			cur = parent
 			if r, err := filepath.EvalSymlinks(cur); err == nil {
+				// Reverse trailing (we accumulated leaf-first).
+				for i, j := 0, len(trailing)-1; i < j; i, j = i+1, j-1 {
+					trailing[i], trailing[j] = trailing[j], trailing[i]
+				}
 				resolved = filepath.Join(append([]string{r}, trailing...)...)
-				break
+				goto done
 			}
 		}
+		return false
 	}
+done:
 	cleaned := filepath.Clean(strings.ReplaceAll(resolved, "\\", "/"))
 	for _, seg := range strings.Split(cleaned, "/") {
 		if strings.EqualFold(seg, ".leonard") {

@@ -140,6 +140,14 @@ func Open(path string) (*Store, error) {
 // Close closes the underlying database handle. Safe to call multiple times;
 // subsequent calls return whatever the driver reports.
 func (s *Store) Close() error {
+	// Bughunt-8 F6 (HIGH): wal_autocheckpoint(1000) fires per-
+	// connection. Each new hook-process opens a fresh connection,
+	// so the frame counter resets and the WAL grows unbounded
+	// across sessions of short-lived processes (700 sequential
+	// post-edit hooks → 4 MiB WAL on a single 400 KB DB). Forcing
+	// a PASSIVE checkpoint at Close keeps WAL bounded regardless
+	// of process lifetime.
+	_, _ = s.db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`)
 	return s.db.Close()
 }
 
@@ -577,7 +585,15 @@ func (s *Store) ListFiles(pattern, lang string) ([]File, error) {
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	q += " ORDER BY path"
+	// Sec-4 F3: bound the row count at the SQL boundary. On a
+	// monorepo with 1M+ files the unbounded SELECT returned every
+	// row before the MCP-layer cap clamped, consuming hundreds of
+	// MB of Go heap. The MCP-layer cap is 1000; pushing it here
+	// stops the heap-pressure path. MaxSymbolQueryRows is reused
+	// since file counts and symbol counts have the same blast
+	// radius in real consumers.
+	q += " ORDER BY path LIMIT ?"
+	args = append(args, MaxSymbolQueryRows)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: ListFiles: %w", err)

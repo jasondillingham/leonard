@@ -8,7 +8,7 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status: v0.50.2 — stable.** Self-dogfooded across 46 minor releases with **six bug-hunt rounds and two focused security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
+**Status: v0.51.0 — stable.** Self-dogfooded across 46 minor releases with **six bug-hunt rounds and two focused security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ```
 29 tree-sitter languages   +   4 production-dogfooded parsers   +   3 SFC preprocessors
@@ -201,6 +201,29 @@ timeout = "120s"
 ```
 
 A missing or malformed `[post_edit.verify]` falls back silently to the Go default — projects that haven't opted in keep their current behavior byte-for-byte.
+
+### Authorizing the command (`leonard config trust`)
+
+Since v0.51 the verifier command **does not auto-execute**. After
+configuring `[post_edit.verify].command`, run:
+
+```bash
+leonard config trust    # interactive — shows the command, asks for "yes"
+```
+
+This stores the SHA-256 fingerprint at `.leonard/trusted-verifier.sha256`
+(gitignored). The post-edit hook recomputes the fingerprint on every
+edit and refuses to run `sh -c` until it matches. If you edit the
+command later, re-run `leonard config trust` to authorize the new
+shape.
+
+Why: a cloned-from-elsewhere project shouldn't be able to execute
+shell commands the moment you make your first edit. The trust step
+is the user's "I've read this command, I accept what it does"
+signal. Closes the entire Bash-obfuscation bypass class (the
+audit trail in [`audits/security-4-review.md`](./audits/security-4-review.md)
+enumerates 5 obfuscation forms that defeated the v0.50
+command-string scanner).
 
 ## Project layout
 

@@ -7,6 +7,50 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.51.0 — trust-gate for [post_edit.verify].command (5 CRIT + 3 HIGH)
+
+Iteration 2 of the fix-loop established that enumerating Bash
+obfuscation forms (backslash escapes, command substitution,
+parameter expansion, glob, base64-decode, etc.) is futile — the
+attack surface is unbounded. v0.51 moves the trust boundary to
+the right place: the operator authorizes a command by SHA-256
+fingerprint, and the post-edit hook refuses to run sh -c without
+a fingerprint match.
+
+CRITICAL closed (5) — bash-command lexical-scanner bypasses:
+- backslash escapes (`.L\E\O\N\A\R\D/`)
+- empty quotes (`.l''eonard/`)
+- command substitution (`$(echo .l)$(echo eonard)/`)
+- parameter expansion (`.leon${u:-ard}/`)
+- ANSI-C escapes (`$'\x2eleonard'/`)
+All defeated by the v0.50 textual scan; all closed by the
+v0.51 trust gate (the command isn't authorized so it never
+reaches sh -c, regardless of obfuscation).
+
+HIGH closed:
+- sec-4 F1 (bash-obfuscation → RCE): same class as the 5 CRIT.
+- sec-4 F2: O(n²) walk-up in isUnderLeonardDirResolved bounded
+  at 4096 ancestors.
+- sec-4 F15 PROMOTED: `leonard init` refuses when `.leonard` is
+  a pre-existing symlink. Closes the symlink-farm RCE class.
+- bughunt-8 F6: WAL grew monotonically because
+  wal_autocheckpoint is per-connection and each hook process
+  opens a fresh one. Added explicit `wal_checkpoint(PASSIVE)`
+  in Store.Close().
+- sec-4 F3: store.ListFiles now LIMIT MaxSymbolQueryRows.
+
+Trust gate UX:
+- `leonard config trust` reads the command from `.leonard/config.toml`,
+  shows it, asks "type yes to confirm". Stores
+  `.leonard/trusted-verifier.sha256` (gitignored).
+- `--yes` flag skips the prompt for scripted setup.
+- Re-run after editing the command to re-authorize.
+- Post-edit hook surfaces a clear stderr message when the
+  configured command isn't trusted, then falls back to the
+  default go-vet path.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## v0.50.2 — PROMOTED carry-overs (otel F4 + perf F4 + perf F6)
 
 Three carry-over items promoted to HIGH at bughunt-7. All closed.

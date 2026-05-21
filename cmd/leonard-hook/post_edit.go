@@ -55,19 +55,30 @@ func newPostEditCmd(b Backend) *cobra.Command {
 			// the v0.1 behavior (RunGoVet auto-detection) — the operator
 			// hint goes to stderr but the hook still runs so we don't
 			// regress the default code path on a typo'd config.
-			cfg, cfgErr := config.LoadOrDefault(filepath.Join(root, dataDirName, config.Filename))
+			dataDir := filepath.Join(root, dataDirName)
+			cfg, cfgErr := config.LoadOrDefault(filepath.Join(dataDir, config.Filename))
 			if cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "leonard: config load failed, falling back to defaults: %v\n", cfgErr)
 			} else if verify := cfg.PostEdit.Verify; strings.TrimSpace(verify.Command) != "" {
-				// Bughunt-5 verifier F11: trim whitespace before
-				// treating the command as set. `command = " "`
-				// previously passed the != "" gate and ran
-				// `sh -c " "`, which always succeeds and produced
-				// a silent permissive verifier.
-				opts.Vet = hooks.MakeShellRunner(verify.Command, verify.WorkingDir)
-				opts.VetVerb = hooks.VerifyVerb(verify.Command)
-				opts.AlwaysVet = true
-				opts.VetTimeout = parseVerifyTimeout(verify.Timeout, cmd.ErrOrStderr())
+				// Security-4 / bughunt-8 (iteration 2): the verifier
+				// command requires explicit operator trust before
+				// it can execute via `sh -c`. Lexical command-string
+				// scanning (Bash obfuscation enumeration) was the
+				// wrong layer — operators authorize the command
+				// itself, by SHA-256 fingerprint, via
+				// `leonard config trust`.
+				trusted, trustErr := config.VerifyCommandTrusted(dataDir, verify.Command)
+				if trustErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "leonard: trust check failed, falling back to defaults: %v\n", trustErr)
+				} else if !trusted {
+					fmt.Fprintf(cmd.ErrOrStderr(), "leonard: [post_edit.verify].command is configured but UNTRUSTED — run `leonard config trust` to authorize. Falling back to the default `go vet` verifier for this run.\n")
+				} else {
+					// Trust granted. Wire the shell runner.
+					opts.Vet = hooks.MakeShellRunner(verify.Command, verify.WorkingDir)
+					opts.VetVerb = hooks.VerifyVerb(verify.Command)
+					opts.AlwaysVet = true
+					opts.VetTimeout = parseVerifyTimeout(verify.Timeout, cmd.ErrOrStderr())
+				}
 			}
 			if err := hooks.HandlePostEdit(cmd.Context(), opts, cmd.InOrStdin(), cmd.OutOrStdout()); err != nil {
 				return blockOnDecode(fmt.Errorf("post-edit: %w", err))
