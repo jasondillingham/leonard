@@ -98,13 +98,16 @@ func (a *GroundTruthAdapter) PostEdit(_ context.Context, p adapters.PostEditPayl
 
 // snapshot returns a read-locked copy of the adapter's load-time
 // state. The post-edit path reads this once at entry to avoid
-// holding the lock during disk I/O.
+// holding the lock during disk I/O. The pre-edit path (v0.8 #15 /
+// #16 filter guards) reads the same snapshot — sharing the type
+// keeps the contention point narrow.
 type postEditSnapshot struct {
 	projectRoot string
 	stderr      io.Writer
 	cfg         Config
 	facts       *Facts
 	rules       Rules
+	filters     *Filters
 }
 
 func (a *GroundTruthAdapter) snapshot() postEditSnapshot {
@@ -116,6 +119,7 @@ func (a *GroundTruthAdapter) snapshot() postEditSnapshot {
 		cfg:         a.cfg,
 		facts:       a.facts,
 		rules:       a.rules,
+		filters:     a.filters,
 	}
 }
 

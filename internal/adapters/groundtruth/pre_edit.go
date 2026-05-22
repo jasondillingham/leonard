@@ -26,6 +26,22 @@ import (
 // than silently degrading the guard.
 func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayload) (adapters.PreEditResult, error) {
 	snap := a.snapshot()
+
+	// #15 path_filters: check the proposed file path against
+	// forbidden-target rules BEFORE checking content. A blocked
+	// path makes the content-based check moot.
+	if verdict, ok := evalPathFilters(snap, p); ok {
+		return verdict, nil
+	}
+
+	// #16 content_filters: check whether content triggers a required-
+	// disclosure rule. Runs before the do-not-claim hard guard so a
+	// disclosure miss is the verdict rather than a forbidden-claim
+	// hit on the same text.
+	if verdict, ok := evalContentFilters(snap, p); ok {
+		return verdict, nil
+	}
+
 	if len(snap.rules) == 0 {
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
