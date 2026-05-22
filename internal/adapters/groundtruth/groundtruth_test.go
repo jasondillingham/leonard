@@ -355,12 +355,11 @@ func TestHooks_AreNoOpsInV06(t *testing.T) {
 		t.Errorf("SessionStart v0.6: want empty, got %q", ss.AdditionalContext)
 	}
 
-	stop, err := a.Stop(ctx, adapters.StopPayload{})
-	if err != nil {
+	// As of #30, Stop emits a minimal "no claims" line for empty
+	// sessions rather than returning a fully empty SystemMessage.
+	// Full markdown summary covered by TestStop_* in stop_test.go.
+	if _, err := a.Stop(ctx, adapters.StopPayload{}); err != nil {
 		t.Fatalf("Stop: %v", err)
-	}
-	if stop.SystemMessage != "" {
-		t.Errorf("Stop v0.6: want empty, got %q", stop.SystemMessage)
 	}
 
 	// As of #10-#12, RegisterTools wires three tools onto the server

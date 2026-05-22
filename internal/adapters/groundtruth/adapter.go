@@ -224,10 +224,8 @@ func (a *GroundTruthAdapter) SessionStart(_ context.Context, _ adapters.SessionS
 	return adapters.SessionStartResult{}, nil
 }
 
-// Stop is a no-op in v0.6. Stop hook session summary lands in #30.
-func (a *GroundTruthAdapter) Stop(_ context.Context, _ adapters.StopPayload) (adapters.StopResult, error) {
-	return adapters.StopResult{}, nil
-}
+// Stop is implemented in stop.go. v0.9 (#30): scans pending-audit.log
+// for this session and emits a markdown digest via SystemMessage.
 
 // RegisterTools is implemented in mcp.go. The signature there
 // satisfies the adapters.Adapter contract by attaching verify_claim,
