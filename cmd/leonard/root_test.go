@@ -40,6 +40,10 @@ type fakeRuntime struct {
 	getTruthHistoryOut   []TruthHistoryRow
 	getTruthHistoryErr   error
 
+	getTruthChangesCalls []getTruthChangesCall
+	getTruthChangesOut   []TruthHistoryRow
+	getTruthChangesErr   error
+
 	getUnverifiedCalls []getUnverifiedCall
 	getUnverifiedOut   []ClaimRow
 	getUnverifiedErr   error
@@ -69,6 +73,11 @@ type getStaleCall struct{ Limit int }
 type getTruthHistoryCall struct {
 	FilePath string
 	Limit    int
+}
+type getTruthChangesCall struct {
+	Scope string
+	Since int64
+	Limit int
 }
 type getUnverifiedCall struct{ SessionID string }
 
@@ -121,6 +130,11 @@ func (f *fakeRuntime) GetDecisions(_ context.Context, _, topic string, since int
 func (f *fakeRuntime) GetStaleDecisions(_ context.Context, _ string, limit int) ([]StaleDecisionRow, error) {
 	f.getStaleCalls = append(f.getStaleCalls, getStaleCall{limit})
 	return f.getStaleOut, f.getStaleErr
+}
+
+func (f *fakeRuntime) GetTruthChanges(_ context.Context, _, scope string, since int64, limit int) ([]TruthHistoryRow, error) {
+	f.getTruthChangesCalls = append(f.getTruthChangesCalls, getTruthChangesCall{scope, since, limit})
+	return f.getTruthChangesOut, f.getTruthChangesErr
 }
 
 func (f *fakeRuntime) GetTruthHistory(_ context.Context, _, filePath string, limit int) ([]TruthHistoryRow, error) {

@@ -46,6 +46,11 @@ type Runtime interface {
 	// related_symbols no longer resolve against the live index.
 	GetStaleDecisions(ctx context.Context, dataDir string, limit int) ([]StaleDecisionRow, error)
 
+	// GetTruthChanges returns all truth-tracking decisions
+	// (across all files) filtered by scope and since. Oldest first.
+	// Used by `leonard truth-story`.
+	GetTruthChanges(ctx context.Context, dataDir, scope string, since int64, limit int) ([]TruthHistoryRow, error)
+
 	// GetTruthHistory opens the store and returns decisions whose
 	// TruthChange.Files includes filePath, oldest first. Used by
 	// `leonard truth-history`.
@@ -198,5 +203,6 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newTruthEditCmd())
 	root.AddCommand(newOverrideCmd())
 	root.AddCommand(newTruthHistoryCmd(rt))
+	root.AddCommand(newTruthStoryCmd(rt))
 	return root
 }
