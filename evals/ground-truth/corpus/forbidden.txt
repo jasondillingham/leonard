@@ -1,0 +1,48 @@
+# Phrases that SHOULD trigger a forbidden-claim match.
+# Comments and blank lines are ignored by the corpus loader.
+
+# --- ExampleSaaS HIPAA — exact + near-paraphrase ---
+ExampleSaaS supports HIPAA-compliant workflows
+ExampleSaaS supports HIPPA-compliant workflows
+ExampleSaaS supports HIPAA-compliant workflow
+ExampleSaaS supports HIPAA compliant workflows
+Our product ExampleSaaS supports HIPAA-compliant workflows out of the box.
+Marketing page: ExampleSaaS supports HIPAA-compliant workflows for healthcare orgs.
+examplesaas supports hipaa-compliant workflows
+Yes! ExampleSaaS supports HIPAA-compliant workflows.
+ExampleSaaS supports HIPAA compliant workflow
+ExampleSaaS  supports  HIPAA-compliant  workflows
+
+# --- We have a mobile app — exact + paraphrase ---
+We have a mobile app
+We have a mobile App
+we have a mobile app
+We've got a mobile app
+We have a Mobile app
+We have a mobil app
+We have an mobile app
+
+# --- Real-time collaboration ---
+Real-time collaboration
+real-time collaboration
+realtime collaboration
+Real time collaboration
+real-time collaborations
+Real-time, collaboration
+
+# --- SOC 2 audit complete ---
+SOC 2 audit complete
+SOC2 audit complete
+SOC 2 audit completed
+soc 2 audit complete
+
+# --- GDPR compliant by default (EXACT — must match literally) ---
+GDPR compliant by default
+gdpr compliant by default
+GDPR Compliant by default
+
+# --- Substring/context tests: forbidden claim embedded in larger text ---
+Heading: ExampleSaaS supports HIPAA-compliant workflows for everyone.
+We've shipped tons of features; we have a mobile app and a web UI.
+Pitch deck: Real-time collaboration is at the core.
+Audit summary: SOC 2 audit complete, audit report attached.

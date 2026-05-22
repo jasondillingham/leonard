@@ -1,0 +1,55 @@
+# Phrases that should NOT trigger any forbidden-claim match.
+# Comments and blank lines are ignored.
+
+# --- Unrelated prose ---
+The weather is nice today.
+Please review the document.
+Send the report by Friday.
+What is the deadline?
+Refactor this function for clarity.
+Schedule the meeting for tomorrow.
+Hello, how are you?
+Coffee or tea?
+Bring an umbrella.
+The room is warm.
+Lunch is at noon.
+Talk to you soon.
+Thanks for the heads up.
+Whatever works for you.
+Open the file and edit it.
+The tests should be green.
+Type `make test` to verify.
+
+# --- Topically adjacent but not forbidden ---
+HIPAA is a US health-care privacy law.
+The HIPAA standard requires several controls.
+GDPR took effect in May 2018.
+SOC 2 has five trust principles.
+We are working toward HIPAA compliance.
+We do NOT currently support HIPAA-compliant workflows.
+We do not have a mobile app.
+We don't have a mobile app.
+Mobile apps are common in this market.
+Native mobile apps require their own build pipeline.
+Real-time data is hard; we use eventual consistency.
+Realtime feeds are nice but not what we offer.
+Our collaboration model is async, not synchronous.
+We collaborate over email rather than in-app.
+We're targeting SOC 2 audit completion in Q4.
+Our SOC 2 audit is in progress.
+GDPR-style consent banners are common.
+GDPR has been a focus for legal review.
+
+# --- Adjacent forms (should not match because content differs) ---
+ExampleSaaS supports custom workflows
+ExampleSaaS supports many workflow types
+ExampleSaaS workflows are configurable
+HIPAA-compliant features are on our roadmap
+Mobile apps are out of scope for this release
+Our app is mobile-friendly via responsive web
+
+# --- Casual mentions / negations ---
+"Are we HIPAA-compliant?" — a question, not a claim
+HIPAA compliance: not yet certified.
+We can't claim SOC 2 audit complete until Q4.
+GDPR-compliant by design is a goal, not a fact.
