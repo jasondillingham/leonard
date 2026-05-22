@@ -33,8 +33,127 @@ const Filename = "config.toml"
 //     vanish on `leonard init` re-runs) because the command is project-
 //     authored TOML, not a discovered default.
 type Config struct {
-	Hooks    HooksConfig    `toml:"hooks"`
-	PostEdit PostEditConfig `toml:"post_edit"`
+	Hooks    HooksConfig     `toml:"hooks"`
+	PostEdit PostEditConfig  `toml:"post_edit"`
+	Adapters []AdapterConfig `toml:"adapters"`
+}
+
+// AdapterConfig is one [[adapters]] entry. v1.0 ships three adapter
+// types: "code", "ground-truth", "self-logging". The Type field is
+// the lookup key into the adapter registry. Additional TOML fields
+// inside the [[adapters]] block (e.g., truth_dir for ground-truth)
+// are captured in Raw via UnmarshalTOML so the dispatcher can hand
+// them to the adapter's Init verbatim.
+//
+// Example:
+//
+//	[[adapters]]
+//	type = "ground-truth"
+//	truth_dir = "source-of-truth/"
+//
+// truth_dir lands in Raw["truth_dir"] which the groundtruth adapter
+// reads in its decodeConfig path.
+type AdapterConfig struct {
+	Type string         `toml:"type"`
+	Raw  map[string]any `toml:"-"`
+}
+
+// UnmarshalTOML captures the full [[adapters]] block in Raw so the
+// dispatcher can pass per-adapter configuration through to Init.
+// Without a custom unmarshal, TOML's default would only populate
+// the typed Type field and drop everything else.
+func (a *AdapterConfig) UnmarshalTOML(data any) error {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return fmt.Errorf("adapter config: expected map, got %T", data)
+	}
+	if t, ok := m["type"].(string); ok {
+		a.Type = t
+	}
+	a.Raw = make(map[string]any, len(m))
+	for k, v := range m {
+		if k == "type" {
+			continue
+		}
+		a.Raw[k] = v
+	}
+	return nil
+}
+
+// EnabledAdapters returns the list of adapter type names the
+// dispatcher should load for projectRoot, based on the parsed
+// config. When [[adapters]] blocks are present, returns their Type
+// values in declared order. Otherwise auto-detects:
+//
+//   - "code" when go.mod exists at projectRoot OR
+//     [post_edit.verify].command is set
+//   - "ground-truth" when .leonard/ground-truth/ exists. Operators
+//     who want a non-default truth dir set it via an explicit
+//     [[adapters]] block.
+//
+// Self-logging is never auto-enabled; operators opt in via an
+// explicit [[adapters]] block (it's a discipline, not a default).
+//
+// Returns at minimum []string{"code"} so a project with no config
+// and no go.mod still keeps the v0.52 fabrication-guard surface.
+// The "code" adapter degrades gracefully on a missing DB (see its
+// Init for the permissive-store fallback) so the no-go-mod case
+// just no-ops every hook rather than blocking edits.
+func (c *Config) EnabledAdapters(projectRoot string) []string {
+	if len(c.Adapters) > 0 {
+		out := make([]string, 0, len(c.Adapters))
+		seen := map[string]bool{}
+		for _, a := range c.Adapters {
+			if a.Type == "" || seen[a.Type] {
+				continue
+			}
+			seen[a.Type] = true
+			out = append(out, a.Type)
+		}
+		if len(out) == 0 {
+			return []string{"code"}
+		}
+		return out
+	}
+
+	var enabled []string
+
+	// "code" — auto when go.mod is present at root OR an operator-
+	// trusted verifier is configured. Also the always-on fallback
+	// so the v0.52 surface keeps working on projects that haven't
+	// opted into anything.
+	hasGoMod := false
+	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
+		hasGoMod = true
+	}
+	hasVerifier := c.PostEdit.Verify.Command != ""
+	if hasGoMod || hasVerifier {
+		enabled = append(enabled, "code")
+	}
+
+	// "ground-truth" — auto when .leonard/ground-truth/ exists on
+	// disk. Operators who want a non-default truth dir set it via
+	// an explicit [[adapters]] block (this auto-detection path is
+	// for the default layout only).
+	if _, err := os.Stat(filepath.Join(projectRoot, ".leonard", "ground-truth")); err == nil {
+		enabled = append(enabled, "ground-truth")
+	}
+
+	if len(enabled) == 0 {
+		return []string{"code"}
+	}
+	return enabled
+}
+
+// GroundTruthConfig mirrors what internal/adapters/groundtruth/config.go
+// reads off the [adapters.ground-truth] block. Duplicated here so the
+// dispatcher can decide whether ground-truth should auto-enable
+// without importing the adapter package (cycle avoidance — config
+// is imported BY adapter packages, so it can't import them).
+type GroundTruthConfig struct {
+	// TruthDir is the project-relative directory where the truth
+	// tree lives. Empty means "use the default .leonard/ground-truth/".
+	TruthDir string `toml:"truth_dir"`
 }
 
 // HooksConfig holds tunables for the Claude Code hook dispatchers.
@@ -100,6 +219,11 @@ func Load(path string) (Config, error) {
 	var c Config
 	if err := toml.Unmarshal(data, &c); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	// Normalize: empty slice → nil so round-trips against Default()
+	// compare equal under reflect.DeepEqual.
+	if len(c.Adapters) == 0 {
+		c.Adapters = nil
 	}
 	return c, nil
 }

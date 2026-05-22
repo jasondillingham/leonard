@@ -2,308 +2,91 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
-
+	"github.com/jasondillingham/leonard/internal/config"
 	"github.com/jasondillingham/leonard/internal/hooks"
 )
 
-type fakePreEditStore struct {
-	has map[string]bool
-}
+// TestPreEditCmd_RoutesThroughDispatcher exercises the cobra
+// subcommand wiring end-to-end with a ground-truth adapter
+// configured to deny a forbidden claim. Confirms #46's pre-edit
+// path actually reaches the adapters and surfaces their verdicts
+// in the wire response.
+//
+// The deep-coverage tests for the adapter logic live in
+// internal/adapters/{code,groundtruth}/; this file only checks
+// that the leonard-hook binary's CLI wiring connects them
+// correctly via internal/dispatcher.
+func TestPreEditCmd_RoutesThroughDispatcher(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 
-func (f *fakePreEditStore) HasSymbol(name string) (bool, error) {
-	return f.has[name], nil
-}
-
-func writeProjectFile(t *testing.T, dir, name, body string) string {
-	t.Helper()
-	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-		t.Fatalf("write %s: %v", name, err)
-	}
-	return p
-}
-
-func setupProjectRoot(t *testing.T) string {
-	t.Helper()
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, dataDirName), 0o755); err != nil {
+	dataDir := filepath.Join(root, ".leonard")
+	gtDir := filepath.Join(dataDir, "ground-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "go.mod"),
-		[]byte("module github.com/jasondillingham/leonard\n\ngo 1.25\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for name, body := range map[string]string{
+		"facts.yaml":      "x: 1\n",
+		"stories.md":      "# Stories\n",
+		"do-not-claim.md": "## Compliance\n\n- ❌ \"HIPAA-compliant\" — Not certified.\n",
+		"filters.yaml":    "",
+	} {
+		if err := os.WriteFile(filepath.Join(gtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
+	resolved, _ := filepath.EvalSymlinks(root)
+	if err := config.WriteAdapterTrust(resolved, "ground-truth"); err != nil {
+		t.Fatalf("WriteAdapterTrust: %v", err)
 	}
-	if err := os.Chdir(root); err != nil {
+
+	// Chdir so resolveProjectRoot uses our tempdir.
+	orig, _ := os.Getwd()
+	if err := os.Chdir(resolved); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(orig) })
-	return root
-}
 
-func runPreEditCmd(t *testing.T, open preEditOpener, readModule modulePathReader, payload []byte) (hooks.PreEditResponse, error) {
-	t.Helper()
-	cmd := &cobra.Command{Use: "leonard-hook"}
-	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
-	cmd.SetIn(bytes.NewReader(payload))
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetContext(context.Background())
-	cmd.SetArgs([]string{"pre-edit"})
-	if err := cmd.Execute(); err != nil {
-		return hooks.PreEditResponse{}, fmt.Errorf("execute: %w\nstdout=%s", err, out.String())
+	envelope := hooks.PreToolUsePayload{
+		SessionID:     "test-session",
+		HookEventName: "PreToolUse",
+		ToolName:      "Write",
+		ToolInput: hooks.PreEditToolInput{
+			FilePath: filepath.Join(resolved, "draft.md"),
+			Content:  "We are HIPAA-compliant for healthcare.",
+		},
+		CWD: resolved,
 	}
+	in, _ := json.Marshal(envelope)
+
+	backend := newDefaultBackend()
+	defer backend.Close()
+	rootCmd := newRootCmd(backend)
+	rootCmd.SetArgs([]string{"pre-edit"})
+	rootCmd.SetIn(bytes.NewReader(in))
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	// The pre-edit RunE returns a "blockOnDecode" error on deny so
+	// main exits non-zero — that's expected here. The wire response
+	// body on stdout is what we assert against.
+	_ = rootCmd.Execute()
+
 	var resp hooks.PreEditResponse
-	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v\nstdout=%q", err, out.String())
+	if err := json.NewDecoder(&out).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v\nbody=%s", err, out.String())
 	}
-	return resp, nil
-}
-
-func TestPreEditCmd_RoundTripAllow(t *testing.T) {
-	root := setupProjectRoot(t)
-	target := writeProjectFile(t, root, "foo.go", `package foo
-
-import "fmt"
-`)
-
-	closedCount := 0
-	open := func(string) (hooks.SymbolStore, func() error, error) {
-		return &fakePreEditStore{has: map[string]bool{"Println": true}},
-			func() error { closedCount++; return nil }, nil
+	if resp.HookSpecificOutput == nil {
+		t.Fatalf("expected hookSpecificOutput on deny, got %+v", resp)
 	}
-	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
-
-	payload, err := json.Marshal(hooks.PreToolUsePayload{
-		HookEventName: "PreToolUse",
-		ToolName:      "Edit",
-		ToolInput:     hooks.PreEditToolInput{FilePath: target, NewString: `fmt.Println("hi")`},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := runPreEditCmd(t, open, readModule, payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !resp.Continue || resp.HookSpecificOutput != nil {
-		t.Fatalf("expected allow, got %+v", resp)
-	}
-	if closedCount != 1 {
-		t.Errorf("closer called %d times, want 1", closedCount)
-	}
-}
-
-func TestPreEditCmd_RoundTripBlock(t *testing.T) {
-	root := setupProjectRoot(t)
-	target := writeProjectFile(t, root, "foo.go", `package foo
-
-import "github.com/jasondillingham/leonard/internal/store"
-`)
-
-	open := func(string) (hooks.SymbolStore, func() error, error) {
-		return &fakePreEditStore{has: map[string]bool{}}, func() error { return nil }, nil
-	}
-	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
-
-	payload, err := json.Marshal(hooks.PreToolUsePayload{
-		HookEventName: "PreToolUse",
-		ToolName:      "Edit",
-		ToolInput:     hooks.PreEditToolInput{FilePath: target, NewString: "store.PhantomFunction()"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := runPreEditCmd(t, open, readModule, payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.HookSpecificOutput == nil || resp.HookSpecificOutput.PermissionDecision != "deny" {
-		t.Fatalf("expected deny, got %+v", resp)
-	}
-	if !strings.Contains(resp.HookSpecificOutput.PermissionDecisionReason, "store.PhantomFunction") {
-		t.Errorf("permissionDecisionReason missing phantom: %q",
-			resp.HookSpecificOutput.PermissionDecisionReason)
-	}
-}
-
-// F1 reproducer at the cobra layer: a fabricated symbol reference in a
-// PreToolUse payload must yield a deny-shaped response (permissionDecision
-// inside hookSpecificOutput) and must NOT carry the legacy `decision` field
-// or `continue: false` — the latter would halt the entire Claude Code agent
-// instead of just rejecting this one tool call.
-func TestPreEditCmd_DenyWireShape(t *testing.T) {
-	root := setupProjectRoot(t)
-	target := writeProjectFile(t, root, "foo.go", `package foo
-
-import "github.com/jasondillingham/leonard/internal/store"
-`)
-	open := func(string) (hooks.SymbolStore, func() error, error) {
-		return &fakePreEditStore{has: map[string]bool{}}, func() error { return nil }, nil
-	}
-	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
-
-	cmd := &cobra.Command{Use: "leonard-hook"}
-	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
-	payload, _ := json.Marshal(hooks.PreToolUsePayload{
-		SessionID:     "s",
-		HookEventName: "PreToolUse",
-		ToolName:      "Edit",
-		ToolInput:     hooks.PreEditToolInput{FilePath: target, NewString: "store.NonExistent()"},
-	})
-	cmd.SetIn(bytes.NewReader(payload))
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetContext(context.Background())
-	cmd.SetArgs([]string{"pre-edit"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute: %v\nstdout=%s", err, out.String())
-	}
-	raw := out.Bytes()
-	if !bytes.Contains(raw, []byte(`"permissionDecision":"deny"`)) {
-		t.Errorf("response missing permissionDecision=deny: %s", raw)
-	}
-	if !bytes.Contains(raw, []byte(`"hookEventName":"PreToolUse"`)) {
-		t.Errorf("response missing hookEventName=PreToolUse: %s", raw)
-	}
-	if bytes.Contains(raw, []byte(`"continue":false`)) {
-		t.Errorf("deny response must not carry continue:false (halts agent): %s", raw)
-	}
-	if bytes.Contains(raw, []byte(`"decision"`)) {
-		t.Errorf("deny response must not carry the PostToolUse-style decision field: %s", raw)
-	}
-}
-
-// F2 reproducer: garbage on stdin to pre-edit must exit with code 2 (block)
-// so the fabrication guard doesn't fail open on a malformed payload.
-func TestPreEditCmd_DecodeFailureExitsBlocking(t *testing.T) {
-	setupProjectRoot(t)
-	open := func(string) (hooks.SymbolStore, func() error, error) {
-		return &fakePreEditStore{has: map[string]bool{}}, func() error { return nil }, nil
-	}
-	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
-	cmd := &cobra.Command{Use: "leonard-hook"}
-	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
-	cmd.SetIn(strings.NewReader("not json{"))
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetContext(context.Background())
-	cmd.SetArgs([]string{"pre-edit"})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected decode error on garbage stdin")
-	}
-	if got := exitCodeFor(err); got != 2 {
-		t.Errorf("decode failure exit code = %d, want 2 (block)", got)
-	}
-}
-
-// F9 reproducer: empty stdin to pre-edit must also exit 2 (block). The F2
-// garbage-stdin test covers malformed JSON; F9 calls out that the empty-bytes
-// path can fire independently during agent stress (Claude Code restarts,
-// truncated pipes) and must not silently fail open.
-func TestPreEditCmd_EmptyStdinExitsBlocking(t *testing.T) {
-	setupProjectRoot(t)
-	open := func(string) (hooks.SymbolStore, func() error, error) {
-		return &fakePreEditStore{has: map[string]bool{}}, func() error { return nil }, nil
-	}
-	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
-	cmd := &cobra.Command{Use: "leonard-hook"}
-	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
-	cmd.SetIn(strings.NewReader(""))
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetContext(context.Background())
-	cmd.SetArgs([]string{"pre-edit"})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected decode error on empty stdin")
-	}
-	if got := exitCodeFor(err); got != 2 {
-		t.Errorf("empty-stdin exit code = %d, want 2 (block)", got)
-	}
-}
-
-func TestPreEditCmd_OpenerErrorBubblesUp(t *testing.T) {
-	setupProjectRoot(t)
-	open := func(string) (hooks.SymbolStore, func() error, error) {
-		return nil, func() error { return nil }, errors.New("locked db")
-	}
-	readModule := func(string) string { return "github.com/jasondillingham/leonard" }
-	cmd := &cobra.Command{Use: "leonard-hook"}
-	cmd.AddCommand(newPreEditCmdWithDeps(open, readModule))
-	payload, _ := json.Marshal(hooks.PreToolUsePayload{
-		ToolName:  "Edit",
-		ToolInput: hooks.PreEditToolInput{FilePath: "foo.go", NewString: "x := 1"},
-	})
-	cmd.SetIn(bytes.NewReader(payload))
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetContext(context.Background())
-	cmd.SetArgs([]string{"pre-edit"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "locked db") {
-		t.Fatalf("expected opener error to bubble up, got %v", err)
-	}
-}
-
-func TestDefaultModulePath_ReadsGoMod(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "go.mod"),
-		[]byte("module github.com/example/leonard\n\ngo 1.25\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := defaultModulePath(root), "github.com/example/leonard"; got != want {
-		t.Errorf("defaultModulePath = %q, want %q", got, want)
-	}
-}
-
-func TestDefaultModulePath_QuotedDirective(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "go.mod"),
-		[]byte("module \"github.com/example/leonard\"\n\ngo 1.25\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := defaultModulePath(root), "github.com/example/leonard"; got != want {
-		t.Errorf("defaultModulePath = %q, want %q", got, want)
-	}
-}
-
-func TestDefaultModulePath_ReturnsEmptyOnMissingFile(t *testing.T) {
-	t.Parallel()
-	if got := defaultModulePath(t.TempDir()); got != "" {
-		t.Errorf("defaultModulePath without go.mod = %q, want empty", got)
-	}
-}
-
-func TestPermissiveStoreAllowsEverything(t *testing.T) {
-	t.Parallel()
-	has, err := permissiveStore{}.HasSymbol("anything")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !has {
-		t.Error("permissiveStore should report every name as present")
+	if resp.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("PermissionDecision: want deny, got %q", resp.HookSpecificOutput.PermissionDecision)
 	}
 }
