@@ -101,18 +101,20 @@ func parseStories(path string, r io.Reader) (Stories, error) {
 		trimmed := strings.TrimSpace(line)
 
 		switch {
-		case strings.HasPrefix(trimmed, "## STORY:"):
+		case strings.HasPrefix(trimmed, "## "):
+			// Any ## heading begins a story. v0.6 required the
+			// "## STORY:" prefix; v0.53 (fix/stories-loose-heading)
+			// relaxes the rule so operators can use their existing
+			// markdown style. The "STORY:" prefix is still accepted
+			// for backwards compat — it gets stripped from the name.
 			commit()
-			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "## STORY:"))
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "## "))
+			name = strings.TrimSpace(strings.TrimPrefix(name, "STORY:"))
 			if name == "" {
 				return nil, fmt.Errorf("%s:%d: empty story name", path, lineNum)
 			}
 			current = &Story{Name: name}
 			storyLine = lineNum
-
-		case strings.HasPrefix(trimmed, "## "):
-			// A non-STORY ## header terminates any in-progress story.
-			commit()
 
 		case current == nil:
 			// Preamble lines before the first story header — ignored.
