@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jasondillingham/leonard/internal/adapters"
+	"github.com/jasondillingham/leonard/internal/config"
 )
 
 // Name is the registry key under which SelfLogAdapter registers.
@@ -55,9 +56,16 @@ func (a *SelfLogAdapter) Init(_ context.Context, cfg adapters.Config) error {
 	if cfg.ProjectRoot == "" {
 		return errors.New("self-logging adapter: Init requires ProjectRoot")
 	}
+	// Canonicalize the project root so trust-marker lookups hash
+	// the same path no matter how the caller spelled it. Mirrors
+	// the groundtruth adapter's fix.
+	canonRoot := cfg.ProjectRoot
+	if resolved, err := filepath.EvalSymlinks(cfg.ProjectRoot); err == nil {
+		canonRoot = resolved
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.projectRoot = cfg.ProjectRoot
+	a.projectRoot = canonRoot
 	a.stderr = cfg.Stderr
 	if a.stderr == nil {
 		a.stderr = io.Discard
@@ -69,9 +77,114 @@ func (a *SelfLogAdapter) Init(_ context.Context, cfg adapters.Config) error {
 // handle; for now the adapter holds nothing.
 func (a *SelfLogAdapter) Close() error { return nil }
 
-// PreEdit is a no-op in v0.6. #25 wires require-tier blocking.
-func (a *SelfLogAdapter) PreEdit(_ context.Context, _ adapters.PreEditPayload) (adapters.PreEditResult, error) {
-	return adapters.PreEditResult{Decision: adapters.Pass}, nil
+// PreEdit classifies the touched file against the tier policy
+// (#25):
+//
+//   - skip      → Pass silently
+//   - warn      → Pass + stderr warning
+//   - require   → Deny when trusted AND no rationale has been
+//                 confirmed; otherwise advisory (warn-style Pass)
+//
+// "Trusted" means `leonard config trust self-logging` has granted
+// the adapter authority to block. Without trust the require tier
+// degrades to a warning so an unconfigured install never accidentally
+// blocks an operator from working.
+//
+// "Confirmed" means an operator has either:
+//   - Marked the edit trivial via the env var
+//     LEONARD_TRUTH_TRIVIAL set to the file path (#26's mechanism),
+//     OR
+//   - Recorded a rationale via the LEONARD_TRUTH_CONFIRMED_FILES
+//     env var (comma-separated paths). v0.7 keeps the confirmation
+//     mechanism env-var-based so the CLI surface stays minimal;
+//     v0.8 promotes it to a persistent confirmation log.
+//
+// Each branch's behavior is non-blocking for the file paths the
+// guard doesn't apply to (classify() returns ok=false) so edits to
+// non-truth files always pass through cleanly.
+func (a *SelfLogAdapter) PreEdit(_ context.Context, p adapters.PreEditPayload) (adapters.PreEditResult, error) {
+	a.mu.RLock()
+	root := a.projectRoot
+	stderr := a.stderr
+	a.mu.RUnlock()
+
+	if p.FilePath == "" {
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+
+	absPath := p.FilePath
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(root, absPath)
+	}
+	rel, ok := projectRelative(root, absPath)
+	if !ok {
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+
+	_, tier, ok := classify(rel)
+	if !ok || tier == TierSkip {
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+
+	if tier == TierWarn {
+		fmt.Fprintf(stderr,
+			"leonard: self-logging: edit to %s is warn-tier — a TruthChange entry will be drafted on completion\n",
+			rel,
+		)
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+
+	// tier == TierRequire from here on.
+	if pathConfirmed(rel, "LEONARD_TRUTH_TRIVIAL") {
+		fmt.Fprintf(stderr,
+			"leonard: self-logging: edit to %s allowed via LEONARD_TRUTH_TRIVIAL\n",
+			rel,
+		)
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+	if pathConfirmed(rel, "LEONARD_TRUTH_CONFIRMED_FILES") {
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+
+	trusted, err := config.AdapterTrusted(root, Name)
+	if err != nil {
+		fmt.Fprintf(stderr,
+			"leonard: self-logging: trust check failed, falling through to Pass: %v\n",
+			err,
+		)
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+	if !trusted {
+		fmt.Fprintf(stderr,
+			"leonard: self-logging: %s is REQUIRE-tier; rationale would have been required. Run `leonard config trust self-logging` to enable blocking. Proceeding.\n",
+			rel,
+		)
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
+
+	reason := fmt.Sprintf("Self-logging: edit to %s is require-tier. Record a rationale via `leonard truth-edit %s` or bypass with `LEONARD_TRUTH_TRIVIAL=%s` for trivial fixes.", rel, rel, rel)
+	return adapters.PreEditResult{
+		Decision:    adapters.Deny,
+		Reason:      reason,
+		AdapterName: Name,
+	}, nil
+}
+
+// pathConfirmed reports whether rel appears in the comma-separated
+// env var named by varName. Case-sensitive; paths must match exactly
+// (the v0.7 env-var mechanism is intentionally strict — no glob, no
+// normalization, so the operator's intent is unambiguous).
+func pathConfirmed(rel, varName string) bool {
+	raw := os.Getenv(varName)
+	if raw == "" {
+		return false
+	}
+	for _, p := range strings.Split(raw, ",") {
+		if strings.TrimSpace(p) == rel {
+			return true
+		}
+	}
+	return false
 }
 
 // PostEdit classifies the touched file. When the file matches a
@@ -192,14 +305,8 @@ func projectRelative(projectRoot, absPath string) (string, bool) {
 	if projectRoot == "" {
 		return "", false
 	}
-	cleanRoot, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return "", false
-	}
-	cleanPath, err := filepath.Abs(absPath)
-	if err != nil {
-		return "", false
-	}
+	cleanRoot := canonicalizePath(projectRoot)
+	cleanPath := canonicalizePath(absPath)
 	rel, err := filepath.Rel(cleanRoot, cleanPath)
 	if err != nil {
 		return "", false
@@ -208,4 +315,35 @@ func projectRelative(projectRoot, absPath string) (string, bool) {
 		return "", false
 	}
 	return rel, true
+}
+
+// canonicalizePath returns EvalSymlinks(p) if possible. For paths
+// whose leaf or intermediate dirs don't exist yet (PreEdit on a
+// Write of a new file), walks up until it finds an existing
+// ancestor, resolves that, and rejoins the missing tail components.
+// Falls back to Abs(p) only when no ancestor exists.
+func canonicalizePath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	var tail []string
+	cur := abs
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
+	}
 }

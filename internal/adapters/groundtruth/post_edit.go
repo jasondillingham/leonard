@@ -231,9 +231,12 @@ func insideProject(projectRoot, absPath string) bool {
 	return !strings.HasPrefix(rel, "..") && rel != ".."
 }
 
-// canonicalize returns EvalSymlinks(p) if possible, else Abs(p), so
-// callers get a consistent canonical form across existing and
-// not-yet-existing paths. Used by insideProject / relativeOrAbs.
+// canonicalize returns EvalSymlinks(p) if possible. For paths whose
+// leaf or intermediate dirs don't exist yet (PreEdit on a Write of a
+// new file in a subdirectory), walks up until it finds an existing
+// ancestor, resolves that, and rejoins the missing tail components.
+// Used by insideProject / relativeOrAbs so they line up regardless
+// of whether the file is on disk yet.
 func canonicalize(p string) string {
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return resolved
@@ -242,14 +245,22 @@ func canonicalize(p string) string {
 	if err != nil {
 		return p
 	}
-	// If the file itself doesn't exist (PreEdit on a Write of a new
-	// file), try canonicalizing the parent dir and rejoin.
-	if dir, file := filepath.Split(abs); dir != "" {
-		if resolved, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
-			return filepath.Join(resolved, file)
+	var tail []string
+	cur := abs
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(tail) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, tail[i])
+			}
+			return resolved
 		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs
+		}
+		tail = append(tail, filepath.Base(cur))
+		cur = parent
 	}
-	return abs
 }
 
 // matchesAnyGlob reports whether absPath matches any pattern in
