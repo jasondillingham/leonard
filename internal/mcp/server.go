@@ -35,6 +35,15 @@ func NewServer(store SymbolStore, impl Implementation) *mcp.Server {
 	return srv
 }
 
+// RegisterTools wires Leonard's v1 tool set onto srv with the supplied
+// store. v0.6+ exposes this so the adapter system can attach tools to
+// an already-constructed *mcp.Server (see internal/adapters/code.
+// CodeAdapter.RegisterTools); cmd/leonard-mcp continues to use
+// NewServer, which calls this internally.
+func RegisterTools(srv *mcp.Server, store SymbolStore) {
+	register(srv, store)
+}
+
 // register wires the v1 tool set onto srv. Split out so tests can assert
 // the tool list without rebuilding the server constructor.
 func register(srv *mcp.Server, store SymbolStore) {
