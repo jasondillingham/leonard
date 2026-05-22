@@ -37,6 +37,13 @@ type GroundTruthAdapter struct {
 	stories        Stories
 	rules          Rules
 	auditLogExists bool
+
+	// watchStop / watchDone are the lifecycle channels for the
+	// hot-reload polling goroutine (#27). nil before Init starts
+	// the watcher; close(watchStop) signals shutdown and
+	// <-watchDone confirms the goroutine has exited.
+	watchStop chan struct{}
+	watchDone chan struct{}
 }
 
 // New returns an uninitialized GroundTruthAdapter. Callers MUST invoke
@@ -120,15 +127,32 @@ func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error 
 	a.auditLogExists = hasAudit
 	a.mu.Unlock()
 
+	// Start the hot-reload watcher (#27). The goroutine polls
+	// mtimes every reloadInterval and re-parses on change. Stops
+	// when Close is called.
+	a.startWatch(context.Background())
+
 	return nil
 }
 
-// Close releases any resources held by the adapter. v0.6 holds none
-// (parsed structures live on the GC heap), so this is a no-op. The
-// method is here so the contract holds; future versions that hold an
-// open audit-log file handle (e.g., #29's append path) will close it
-// here.
-func (a *GroundTruthAdapter) Close() error { return nil }
+// Close releases any resources held by the adapter. v0.8 (#27)
+// stops the hot-reload polling goroutine. Idempotent — a second
+// call after the goroutine has already exited is a no-op.
+func (a *GroundTruthAdapter) Close() error {
+	a.mu.Lock()
+	stop := a.watchStop
+	done := a.watchDone
+	a.watchStop = nil
+	a.watchDone = nil
+	a.mu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
+	if done != nil {
+		<-done
+	}
+	return nil
+}
 
 // Facts returns the parsed facts.yaml tree. Used by tests and by
 // later issues' MCP tools (list_facts in #11, verify_claim in #10).
