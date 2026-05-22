@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -222,6 +223,74 @@ func TestSync_RefusesUntrustedPlugin(t *testing.T) {
 	}
 	if strings.Contains(out, "running test") {
 		t.Errorf("untrusted plugin should not actually run: %s", out)
+	}
+}
+
+// TestSync_TwoPluginsSeeAccumulatedFacts covers bughunt-11 F5:
+// when two plugins run in sequence, plugin B's input must reflect
+// plugin A's writes. The fix re-reads facts.yaml between plugins
+// so we don't silently overwrite earlier plugins' changes.
+func TestSync_TwoPluginsSeeAccumulatedFacts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip()
+	}
+	// Test plugin B uses jq to echo+modify the facts envelope. Skip
+	// cleanly when jq isn't available rather than fail.
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; skipping multi-plugin facts test")
+	}
+	root := t.TempDir()
+	dataDir := filepath.Join(root, dataDirName)
+	if err := os.MkdirAll(filepath.Join(dataDir, "ground-truth"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plugin A: adds key "a" → "alpha".
+	pluginA := filepath.Join(root, "a.sh")
+	if err := os.WriteFile(pluginA, []byte(`#!/bin/sh
+cat > /dev/null
+cat <<'BODY'
+{"updated_facts": {"a": "alpha"}, "changes": [{"path": "a", "new": "alpha"}]}
+BODY
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plugin B: echoes the input facts and tacks on key "b" → "beta".
+	// If B receives stale (empty) facts, the merged result drops A's
+	// "a" key. If B receives A's writes, the result has both keys.
+	pluginB := filepath.Join(root, "b.sh")
+	if err := os.WriteFile(pluginB, []byte(`#!/bin/sh
+PAYLOAD=$(cat)
+FACTS=$(echo "$PAYLOAD" | jq '.facts + {"b": "beta"}')
+jq -n --argjson facts "$FACTS" '{updated_facts: $facts, changes: [{"path": "b", "new": "beta"}]}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := "[sync.alpha]\ncommand = \"" + pluginA + "\"\n\n[sync.beta]\ncommand = \"" + pluginB + "\"\n"
+	if err := os.WriteFile(filepath.Join(dataDir, "config.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root)
+	grantSyncTrust(t, root, "alpha")
+	grantSyncTrust(t, root, "beta")
+	rt := &fakeRuntime{}
+	if _, err := runRoot(t, rt, "sync"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dataDir, "ground-truth", "facts.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both A's and B's writes should be present.
+	if !strings.Contains(string(body), "alpha") {
+		t.Errorf("plugin A's write is missing — B overwrote it:\n%s", body)
+	}
+	if !strings.Contains(string(body), "beta") {
+		t.Errorf("plugin B's write is missing:\n%s", body)
 	}
 }
 

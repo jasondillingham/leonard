@@ -79,10 +79,6 @@ Flags:
 
 			truthDir := filepath.Join(dataDir, "ground-truth")
 			factsPath := filepath.Join(truthDir, "facts.yaml")
-			facts, err := readFactsYAML(factsPath)
-			if err != nil {
-				return fmt.Errorf("sync: read facts.yaml: %w", err)
-			}
 
 			projectRoot := filepath.Dir(dataDir)
 			out := cmd.OutOrStdout()
@@ -101,6 +97,16 @@ Flags:
 				if !ok {
 					fmt.Fprintf(out, "sync: %s: command %q is not trusted; run `leonard config trust sync %s` to authorize.\n",
 						name, pc.Command, name)
+					continue
+				}
+				// bughunt-11 F5: re-read facts.yaml for each plugin.
+				// If plugin A wrote updates earlier in the loop,
+				// plugin B's input must reflect those changes —
+				// otherwise plugin B's writeFactsAtomically would
+				// overwrite plugin A's work with the stale tree.
+				facts, err := readFactsYAML(factsPath)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "sync: %s: read facts.yaml: %v\n", name, err)
 					continue
 				}
 				if err := runOneSyncPlugin(cmd, name, pc, facts, factsPath, dryRun, out); err != nil {

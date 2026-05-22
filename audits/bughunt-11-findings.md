@@ -1,6 +1,6 @@
 # Bughunt-11 + security-5 — findings
 
-**Status:** investigation complete; HIGH fixes landed; MEDIUM TBD
+**Status:** investigation complete; all HIGH + MEDIUM fixes landed
 **Audit branch:** `audit/bughunt-11-security-5`
 **Started:** 2026-05-22
 
@@ -22,9 +22,9 @@
 | F1 | HIGH | Self-logging / filter override | Bypass tokens live under `.leonard/` — vulnerable to the bash-obfuscation class that bughunt-9 closed for verifier trust → **closed in `b862b0a`** |
 | F2 | HIGH | Self-logging / filter override | Bypass token read follows symlinks — same shape as bughunt-9 F2 → **closed in `b862b0a`** |
 | F3 | HIGH | Sync plugins | Plugin command has no trust gate — same shape as the pre-bughunt-9 verifier-trust gap → **closed in `51bc166`** |
-| F4 | MEDIUM | Sync plugins | Plugin stdout/stderr buffers unbounded — DoS |
-| F5 | MEDIUM | Sync plugins | Cross-plugin facts cross-pollution: plugin B silently overwrites plugin A's changes |
-| F6 | MEDIUM | MCP — verify_claim | Input text unbounded; expensive fuzzy matching on large payloads |
+| F4 | MEDIUM | Sync plugins | Plugin stdout/stderr buffers unbounded — DoS → **closed in `8b091c0`** |
+| F5 | MEDIUM | Sync plugins | Cross-plugin facts cross-pollution → **closed in pending commit** |
+| F6 | MEDIUM | MCP — verify_claim | Input text unbounded → **closed in `8b091c0`** |
 | F7 | LOW | github sync | No iteration cap on `oss_contributions` count |
 | F8 | LOW | github sync | HTTP response body decoded without size limit |
 | F9 | LOW | Sync CLI | Plugin command path printed without escape filtering |
