@@ -1,0 +1,20 @@
+{
+  "claims": [
+    {
+      "text": "shipped Go",
+      "category": "tech_in_production",
+      "verdict": "verified",
+      "evidence_path": "tech_stack.primary_language",
+      "evidence_value": "Go",
+      "start_byte": 3,
+      "end_byte": 13
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "verified": 1,
+    "unverified": 0,
+    "forbidden": 0,
+    "opinion": 0
+  }
+}

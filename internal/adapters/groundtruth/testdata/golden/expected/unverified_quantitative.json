@@ -1,0 +1,18 @@
+{
+  "claims": [
+    {
+      "text": "50,000 users",
+      "category": "quantitative",
+      "verdict": "unverified",
+      "start_byte": 8,
+      "end_byte": 20
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "verified": 0,
+    "unverified": 1,
+    "forbidden": 0,
+    "opinion": 0
+  }
+}

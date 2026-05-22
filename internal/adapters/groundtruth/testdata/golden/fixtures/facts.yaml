@@ -1,0 +1,10 @@
+product:
+  name: ExampleSaaS
+
+tech_stack:
+  primary_language: Go
+  database: PostgreSQL
+
+releases:
+  - version: 1.0
+    shipped: 2025-09-15

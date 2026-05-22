@@ -1,0 +1,20 @@
+{
+  "claims": [
+    {
+      "text": "ExampleSaaS supports HIPAA-compliant workflows",
+      "category": "forbidden",
+      "verdict": "forbidden",
+      "rule_path": "Product capability gaps#1",
+      "rule_text": "ExampleSaaS supports HIPAA-compliant workflows",
+      "start_byte": 14,
+      "end_byte": 60
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "verified": 0,
+    "unverified": 0,
+    "forbidden": 1,
+    "opinion": 0
+  }
+}
