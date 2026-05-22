@@ -92,8 +92,21 @@ func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error 
 		return err
 	}
 
+	// Canonicalize the project root once, so trust lookups (which
+	// hash projectRoot to derive the trust-file path) match no
+	// matter how the caller spelled the directory. On macOS
+	// t.TempDir() returns the unresolved /var/folders form while
+	// os.Getwd() after chdir returns the resolved /private/var/
+	// folders form; without canonicalization the two hashes diverge
+	// and a trust grant from the CLI doesn't satisfy the adapter's
+	// trust check.
+	canonRoot := cfg.ProjectRoot
+	if resolved, err := filepath.EvalSymlinks(cfg.ProjectRoot); err == nil {
+		canonRoot = resolved
+	}
+
 	a.mu.Lock()
-	a.projectRoot = cfg.ProjectRoot
+	a.projectRoot = canonRoot
 	a.truthDir = truthDir
 	a.stderr = cfg.Stderr
 	if a.stderr == nil {
@@ -173,11 +186,9 @@ func (a *GroundTruthAdapter) Detect(text string) DetectionResult {
 	return Detect(text, facts, rules)
 }
 
-// PreEdit is a no-op in v0.6. Hard-deny behavior lands in #23 (forbidden-
-// claim guard); advisory pending-audit log lands in #18.
-func (a *GroundTruthAdapter) PreEdit(_ context.Context, _ adapters.PreEditPayload) (adapters.PreEditResult, error) {
-	return adapters.PreEditResult{Decision: adapters.Pass}, nil
-}
+// PreEdit is implemented in pre_edit.go. v0.7: hard-deny on forbidden-
+// claim matches when the adapter is trusted; warning-to-stderr
+// otherwise.
 
 // PostEdit is implemented in post_edit.go. v0.6: advisory writes to
 // .leonard/pending-audit.log when the just-written file produces
