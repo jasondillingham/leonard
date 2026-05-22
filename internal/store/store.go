@@ -28,9 +28,58 @@ func normalizeClaimPath(p string) string {
 	return norm.NFC.String(filepath.ToSlash(p))
 }
 
+// TruthChange is the optional provenance carried by decision-log
+// entries that record a change to project ground-truth (per the
+// self-logging amendment to docs/ROADMAP-v1-ground-truth.md). When
+// present, the post-edit auto-draft logger (#22) populates this from
+// session context; operators can also fill it manually via the v0.9
+// truth-history CLI.
+//
+// All fields are optional except Scope — which must be "domain" or
+// "toolkit" to be meaningful. The store accepts other values without
+// validation so future scopes can land without a schema migration.
+type TruthChange struct {
+	// Scope is "domain" (edits inside .leonard/ground-truth/) or
+	// "toolkit" (edits to Leonard's own source). Empty string is
+	// preserved as-is for round-trip compatibility.
+	Scope string `json:"scope,omitempty"`
+
+	// Files lists the truth-source files this entry covers,
+	// relative to project root. Used by `leonard truth-history`
+	// (#28) to look up the entries that touched a given file.
+	Files []string `json:"files,omitempty"`
+
+	// DiffRef identifies the change. Conventions:
+	//   "git:<short-sha>"        — git-tracked repo
+	//   "hash:<pre>-><post>"     — content hash, non-git
+	DiffRef string `json:"diff_ref,omitempty"`
+
+	// MotivatedBy is the free-text rationale drafted from session
+	// context (or written by hand). Surfaced verbatim by
+	// truth-history / truth-story.
+	MotivatedBy string `json:"motivated_by,omitempty"`
+
+	// Supersedes is the prior decision-log entry this one replaces.
+	// nil for fresh entries. Distinct from the existing Decision.
+	// SupersededBy chain — TruthChange.Supersedes captures the
+	// per-truth-file chain, which can differ from the decision-log
+	// topic chain.
+	Supersedes *int64 `json:"supersedes,omitempty"`
+
+	// Trivial marks an entry that bypassed require-tier enforcement
+	// (typo fix, whitespace, etc.). Tracked separately so the
+	// truth-history renderer can collapse trivial entries by
+	// default. Honored by #26.
+	Trivial bool `json:"trivial,omitempty"`
+
+	// TrivialReason is the short justification an operator gave
+	// when using `--trivial`. Empty when Trivial is false.
+	TrivialReason string `json:"trivial_reason,omitempty"`
+}
+
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 7
+const schemaVersion = 8
 
 // File describes an indexed source file.
 type File struct {
@@ -69,6 +118,11 @@ type Decision struct {
 	SupersededBy   *int64
 	RelatedFiles   []string
 	RelatedSymbols []string
+
+	// TruthChange is the optional provenance block introduced by
+	// the v0.6 self-logging amendment (#21). nil for legacy
+	// entries and for any decision that isn't a truth change.
+	TruthChange *TruthChange
 }
 
 // StaleDecision is the response shape for GetStaleDecisions: the decision
@@ -182,6 +236,7 @@ var migrations = []func(*sql.Tx) error{
 	migrateV5,
 	migrateV6,
 	migrateV7,
+	migrateV8,
 }
 
 func (s *Store) migrate() error {
@@ -407,6 +462,23 @@ func migrateV7(tx *sql.Tx) error {
 		   OR claim LIKE '%index=skipped (file not found)%'
 	`); err != nil {
 		return fmt.Errorf("exec ledger cleanup: %w", err)
+	}
+	return nil
+}
+
+// migrateV8 adds an optional truth_change JSON column to the
+// decisions table for the v0.6 self-logging amendment. Per #21, the
+// column carries scope / files / diff_ref / motivated_by /
+// supersedes / trivial / trivial_reason for decision-log entries
+// that record a change to project ground-truth (.leonard/ground-
+// truth/* or Leonard's own source).
+//
+// The column is nullable so existing decision-log entries continue
+// to load without modification. Future entries can opt in by setting
+// Decision.TruthChange before calling RecordDecision.
+func migrateV8(tx *sql.Tx) error {
+	if _, err := tx.Exec(`ALTER TABLE decisions ADD COLUMN truth_change TEXT`); err != nil {
+		return fmt.Errorf("alter decisions add truth_change: %w", err)
 	}
 	return nil
 }
@@ -738,15 +810,34 @@ func (s *Store) RecordDecision(d Decision) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("store: RecordDecision marshal related_symbols: %w", err)
 	}
+	tc, err := jsonTruthChange(d.TruthChange)
+	if err != nil {
+		return 0, fmt.Errorf("store: RecordDecision marshal truth_change: %w", err)
+	}
 	res, err := s.db.Exec(`INSERT INTO decisions(
-		topic, choice, reasoning, recorded_at, superseded_by, related_files, related_symbols
-	) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		topic, choice, reasoning, recorded_at, superseded_by, related_files, related_symbols, truth_change
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.Topic, d.Choice, d.Reasoning, d.RecordedAt, nullableInt64(d.SupersededBy),
-		relFiles, relSyms)
+		relFiles, relSyms, tc)
 	if err != nil {
 		return 0, fmt.Errorf("store: RecordDecision: %w", err)
 	}
 	return res.LastInsertId()
+}
+
+// jsonTruthChange serializes tc as JSON, or returns nil so the
+// caller persists SQL NULL. Mirrors jsonStringArray's nil-on-empty
+// contract so the column is NULL for decisions that aren't truth
+// changes.
+func jsonTruthChange(tc *TruthChange) (any, error) {
+	if tc == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(tc)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
 }
 
 // GetDecisions returns decisions matching the optional topic and since
@@ -768,7 +859,7 @@ func (s *Store) GetDecisions(topic string, since int64, limit int) ([]Decision, 
 		args = append(args, since)
 	}
 	q := `SELECT id, topic, choice, reasoning, recorded_at, superseded_by,
-		related_files, related_symbols FROM decisions`
+		related_files, related_symbols, truth_change FROM decisions`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -807,7 +898,7 @@ func (s *Store) GetStaleDecisions(limit int) ([]StaleDecision, error) {
 		limit = 200
 	}
 	rows, err := s.db.Query(`SELECT id, topic, choice, reasoning, recorded_at,
-		superseded_by, related_files, related_symbols FROM decisions
+		superseded_by, related_files, related_symbols, truth_change FROM decisions
 		WHERE related_files IS NOT NULL OR related_symbols IS NOT NULL
 		ORDER BY recorded_at DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -995,16 +1086,17 @@ func (s *Store) existingSymbols(names []string) (map[string]bool, error) {
 // scanDecision factors out the common row scan used by GetDecisions and
 // GetStaleDecisions. The row's column list must match exactly:
 //   id, topic, choice, reasoning, recorded_at, superseded_by,
-//   related_files, related_symbols
+//   related_files, related_symbols, truth_change
 func scanDecision(rows *sql.Rows) (Decision, error) {
 	var (
 		d       Decision
 		sup     sql.NullInt64
 		relF    sql.NullString
 		relS    sql.NullString
+		tcRaw   sql.NullString
 	)
 	if err := rows.Scan(&d.ID, &d.Topic, &d.Choice, &d.Reasoning,
-		&d.RecordedAt, &sup, &relF, &relS); err != nil {
+		&d.RecordedAt, &sup, &relF, &relS, &tcRaw); err != nil {
 		return Decision{}, err
 	}
 	if sup.Valid {
@@ -1020,6 +1112,13 @@ func scanDecision(rows *sql.Rows) (Decision, error) {
 		if err := json.Unmarshal([]byte(relS.String), &d.RelatedSymbols); err != nil {
 			return Decision{}, fmt.Errorf("decode related_symbols: %w", err)
 		}
+	}
+	if tcRaw.Valid && tcRaw.String != "" {
+		var tc TruthChange
+		if err := json.Unmarshal([]byte(tcRaw.String), &tc); err != nil {
+			return Decision{}, fmt.Errorf("decode truth_change: %w", err)
+		}
+		d.TruthChange = &tc
 	}
 	return d, nil
 }
