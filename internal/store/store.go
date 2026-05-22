@@ -1137,6 +1137,63 @@ func jsonStringArray(xs []string) (any, error) {
 	return string(b), nil
 }
 
+// GetTruthChanges returns all decisions that carry a TruthChange
+// block, filtered by scope and date. Used by `leonard truth-story`
+// (#35) to render the full chronological narrative of truth-source
+// changes across the project.
+//
+// scope: "" returns all scopes; "domain" or "toolkit" filters to
+//   matching TruthChange.Scope values. Other values match
+//   literally so future scopes work without code changes.
+//
+// since: unix-second lower bound on recorded_at (inclusive). 0
+//   returns all entries regardless of age.
+//
+// limit caps the slice (0 = default 200). Results are oldest-first
+// to read as a narrative.
+func (s *Store) GetTruthChanges(scope string, since int64, limit int) ([]Decision, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	q := `SELECT id, topic, choice, reasoning, recorded_at,
+		superseded_by, related_files, related_symbols, truth_change FROM decisions
+		WHERE truth_change IS NOT NULL`
+	args := []any{}
+	if since > 0 {
+		q += " AND recorded_at >= ?"
+		args = append(args, since)
+	}
+	q += " ORDER BY recorded_at ASC, id ASC"
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: GetTruthChanges: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Decision
+	for rows.Next() {
+		d, err := scanDecision(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: GetTruthChanges scan: %w", err)
+		}
+		if d.TruthChange == nil {
+			continue
+		}
+		if scope != "" && d.TruthChange.Scope != scope {
+			continue
+		}
+		out = append(out, d)
+		if len(out) >= limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: GetTruthChanges iter: %w", err)
+	}
+	return out, nil
+}
+
 // GetTruthHistory returns decisions whose TruthChange.Files
 // includes filePath. Used by `leonard truth-history` and the
 // get_truth_history MCP tool (#28) to answer "why is this rule the
