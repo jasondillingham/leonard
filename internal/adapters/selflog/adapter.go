@@ -135,6 +135,16 @@ func (a *SelfLogAdapter) PreEdit(_ context.Context, p adapters.PreEditPayload) (
 	}
 
 	// tier == TierRequire from here on.
+	if tok, ok := consumeTrivialToken(root, rel); ok {
+		fmt.Fprintf(stderr,
+			"leonard: self-logging: trivial bypass consumed for %s (reason: %s)\n",
+			rel, tok.TrivialReason,
+		)
+		if err := appendTrivialDraftEntry(root, p, rel, tok); err != nil {
+			fmt.Fprintf(stderr, "leonard: self-logging: append trivial entry: %v\n", err)
+		}
+		return adapters.PreEditResult{Decision: adapters.Pass}, nil
+	}
 	if pathConfirmed(rel, "LEONARD_TRUTH_TRIVIAL") {
 		fmt.Fprintf(stderr,
 			"leonard: self-logging: edit to %s allowed via LEONARD_TRUTH_TRIVIAL\n",
