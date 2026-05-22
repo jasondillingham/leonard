@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jasondillingham/leonard/internal/config"
 )
 
 func TestOverride_WritesToken(t *testing.T) {
@@ -20,17 +22,13 @@ func TestOverride_WritesToken(t *testing.T) {
 		t.Fatalf("override: %v\nout=%s", err, out)
 	}
 
-	tokenDir := filepath.Join(root, dataDirName, "pending-override")
-	entries, err := os.ReadDir(tokenDir)
+	tokenPath, err := config.PendingTokenPath("override", root, "applications/acme-corp/cover-letter.md")
 	if err != nil {
-		t.Fatalf("read token dir: %v", err)
+		t.Fatalf("PendingTokenPath: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("want 1 token, got %d", len(entries))
-	}
-	data, err := os.ReadFile(filepath.Join(tokenDir, entries[0].Name()))
+	data, err := os.ReadFile(tokenPath)
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("read token at %s: %v", tokenPath, err)
 	}
 	var tok OverrideToken
 	if err := json.Unmarshal(data, &tok); err != nil {

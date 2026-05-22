@@ -1,19 +1,9 @@
 package groundtruth_test
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"time"
-)
+import "time"
 
-// overrideTestTokenName mirrors override.go's overrideTokenFilename.
-// Reimplemented in the test file so we don't reach into the
-// adapter's unexported helpers.
-func overrideTestTokenName(rel string) string {
-	sum := sha256.Sum256([]byte(rel))
-	return hex.EncodeToString(sum[:])[:32] + ".json"
-}
-
+// nowRFC3339 is a tiny helper used by the override-token test
+// fixture to stamp a fresh timestamp into the token JSON.
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }

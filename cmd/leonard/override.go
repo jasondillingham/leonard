@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,14 +10,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-)
 
-// pendingOverrideDirName mirrors internal/adapters/groundtruth's
-// constant — the directory where single-use bypass tokens live.
-// Kept duplicated (rather than imported) because cmd/* and
-// internal/* shouldn't cross-import; the format is the on-disk
-// contract.
-const pendingOverrideDirName = "pending-override"
+	"github.com/jasondillingham/leonard/internal/config"
+)
 
 // overrideTokenTTL is informational only on the CLI side — the
 // adapter enforces it on read. Kept here so the operator gets a
@@ -42,8 +35,8 @@ func newOverrideCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "override [path]",
 		Short: "Grant a single-use bypass of ground-truth filter rules.",
-		Long: `Records a single-use override token at .leonard/pending-override/<hash>.json
-that bypasses path_filters / content_filters for the next matching edit.
+		Long: `Records a single-use override token that bypasses path_filters /
+content_filters for the next matching edit.
 
 v0.8 ships --once + --reason as required flags. Other shapes (e.g.,
 --for=<duration>, --session-scoped) are forthcoming as the use cases
@@ -53,7 +46,11 @@ Token semantics:
 - Single-use: consumed by the next matching PreEdit and deleted.
 - Expires after 5 minutes if unused.
 - Reason is recorded and surfaced in audit logs (pending-decisions.log
-  on consumption, then promoted to the decisions DB in #28).`,
+  on consumption, then promoted to the decisions DB in #28).
+- v1.0 (bughunt-11 F1): token lives at $XDG_CONFIG_HOME/leonard/
+  pending-override/<projHash>.<relHash>.json, NOT under .leonard/.
+  Relocated out of the project tree so the bash-obfuscation
+  attack class can't plant a forged token.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rel := args[0]
@@ -67,6 +64,7 @@ Token semantics:
 			if err != nil {
 				return err
 			}
+			projectRoot := filepath.Dir(dataDir)
 			if filepath.IsAbs(rel) {
 				return fmt.Errorf("override: path must be relative to project root, got absolute %q", rel)
 			}
@@ -75,11 +73,20 @@ Token semantics:
 				return fmt.Errorf("override: path escapes project root: %q", rel)
 			}
 
-			tokenDir := filepath.Join(dataDir, pendingOverrideDirName)
-			if err := os.MkdirAll(tokenDir, 0o755); err != nil {
-				return fmt.Errorf("override: mkdir %s: %w", tokenDir, err)
+			// bughunt-11 F1: token at XDG_CONFIG_HOME, not .leonard/.
+			tokenPath, err := config.PendingTokenPath("override", projectRoot, cleanRel)
+			if err != nil {
+				return fmt.Errorf("override: %w", err)
 			}
-			tokenPath := filepath.Join(tokenDir, overrideTokenFilename(cleanRel))
+			if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
+				return fmt.Errorf("override: mkdir %s: %w", filepath.Dir(tokenPath), err)
+			}
+
+			// bughunt-11 F2 defense in depth: refuse symlink at the
+			// canonical token path.
+			if info, err := os.Lstat(tokenPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("override: %s is a symlink; refusing to overwrite — delete it first", tokenPath)
+			}
 
 			tok := OverrideToken{
 				FilePath:  cleanRel,
@@ -104,10 +111,4 @@ Token semantics:
 	cmd.Flags().BoolVar(&once, "once", false, "grant a single-use bypass (required in v0.8)")
 	cmd.Flags().StringVar(&reason, "reason", "", "justification recorded with the override (required)")
 	return cmd
-}
-
-// overrideTokenFilename matches the adapter side. Keep both in sync.
-func overrideTokenFilename(rel string) string {
-	sum := sha256.Sum256([]byte(rel))
-	return hex.EncodeToString(sum[:])[:32] + ".json"
 }

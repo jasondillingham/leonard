@@ -128,6 +128,63 @@ func WriteTrustedFingerprint(projectRoot, fingerprint string) error {
 	return os.WriteFile(path, []byte(fingerprint+"\n"), 0o600)
 }
 
+// PendingTokenPath returns the path where a single-use bypass token
+// lives. v1.0 (bughunt-11 F1) relocates these out of .leonard/ for
+// the same reason bughunt-9 relocated the verifier trust file:
+// .leonard/-write attacks (bash obfuscation, multi-step writes) can
+// otherwise plant a forged token.
+//
+//	kind:        "trivial" (selflog bypass) or "override" (filter bypass)
+//	projectRoot: absolute path of the project
+//	rel:         project-relative target file path that the token authorizes
+//
+// File layout:
+//
+//	$XDG_CONFIG_HOME/leonard/pending-<kind>/<project-hash>.<rel-hash>.json
+//
+// Both hashes are SHA-256 hex (truncated to 32 chars for filename
+// length). The double-hash key prevents a token written for project
+// A from being mis-read when reading project B's token directory.
+//
+// Returns an error on invalid kind so callers can't forge a path
+// component via attacker-controlled values.
+func PendingTokenPath(kind, projectRoot, rel string) (string, error) {
+	if kind != "trivial" && kind != "override" {
+		return "", fmt.Errorf("trust: invalid token kind %q (allowed: trivial, override)", kind)
+	}
+	if projectRoot == "" || rel == "" {
+		return "", fmt.Errorf("trust: PendingTokenPath: projectRoot and rel are required")
+	}
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve project root: %w", err)
+	}
+	// Canonicalize through symlinks so /var/... and /private/var/...
+	// (the macOS /var symlink + the same temp-folder shape) hash to
+	// the same digest. Without this, the CLI writer's hash diverges
+	// from the adapter reader's hash when one of them is invoked
+	// from a chdir'd path that the OS canonicalizes.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	projectHash := sha256Hex(abs)[:32]
+	relHash := sha256Hex(rel)[:32]
+
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve user config dir: %w", err)
+	}
+	return filepath.Join(cfgDir, "leonard", "pending-"+kind, projectHash+"."+relHash+".json"), nil
+}
+
+// sha256Hex is an internal helper used by PendingTokenPath /
+// TrustFilePath / AdapterTrustFilePath. Kept package-private so the
+// callers can't smuggle in a non-hex algorithm.
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
 // AdapterTrustFilePath returns the trust file path for an adapter
 // scoped to projectRoot. Used by v0.7+ adapters (ground-truth, and
 // future blocking adapters) that need a per-adapter trust signal

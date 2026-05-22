@@ -142,6 +142,58 @@ func TestPathFilters_WarnsWhenUntrusted(t *testing.T) {
 	}
 }
 
+// TestPathFilters_OverrideToken_RefusesSymlink covers bughunt-11
+// F2: a symlink planted at the canonical override-token path must
+// be refused, not followed. Same attack shape as the trivial-token
+// symlink-refusal test in internal/adapters/selflog.
+func TestPathFilters_OverrideToken_RefusesSymlink(t *testing.T) {
+	a, tmp, _ := filterFixture(t, `path_filters:
+  - path_pattern: "applications/([^/]+)/"
+    forbidden_values:
+      - acme-corp
+`)
+	grantGroundTruthTrust(t, tmp)
+	resolved, _ := filepath.EvalSymlinks(tmp)
+	rel := "applications/acme-corp/cover-letter.md"
+
+	// Plant a forged token elsewhere with a fresh timestamp.
+	stash := filepath.Join(t.TempDir(), "forged.json")
+	body := []byte(`{"file_path":"` + rel + `","reason":"attacker","ts":"` + nowRFC3339() + `"}`)
+	if err := os.WriteFile(stash, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath, err := config.PendingTokenPath("override", resolved, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(stash, tokenPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// PreEdit should Deny — the symlinked override must not bypass
+	// the path_filter rule.
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:     "Write",
+		FilePath: filepath.Join(tmp, rel),
+		Content:  "Body",
+	})
+	if err != nil {
+		t.Fatalf("PreEdit: %v", err)
+	}
+	if out.Decision != adapters.Deny {
+		t.Errorf("symlinked override: want Deny, got %v", out.Decision)
+	}
+	// Symlink should still be there.
+	if info, err := os.Lstat(tokenPath); err != nil {
+		t.Errorf("symlink should still exist after refusal: %v", err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("token path no longer a symlink — was it auto-resolved?")
+	}
+}
+
 func TestPathFilters_BypassedByOverrideToken(t *testing.T) {
 	a, tmp, _ := filterFixture(t, `path_filters:
   - path_pattern: "applications/([^/]+)/"
@@ -289,23 +341,27 @@ func TestPathFilters_RejectsMalformedYAML(t *testing.T) {
 }
 
 // writeOverrideToken drops a JSON token mirroring what `leonard
-// override --once` will write (issue #17 — CLI lands in a sibling
-// PR). The shape is captured here so the filter tests can exercise
-// the consumption path independently.
+// override --once` writes.
+//
+// v1.0 (bughunt-11 F1): token lives at $XDG_CONFIG_HOME/leonard/
+// pending-override/, not under .leonard/. The enclosing test
+// fixtures set XDG_CONFIG_HOME to a tempdir so this writes to
+// test-isolated state.
 func writeOverrideToken(t *testing.T, projectRoot, rel, reason string) {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(projectRoot)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	tokenDir := filepath.Join(resolved, ".leonard", "pending-override")
-	if err := os.MkdirAll(tokenDir, 0o755); err != nil {
+	tokenPath, err := config.PendingTokenPath("override", resolved, rel)
+	if err != nil {
+		t.Fatalf("PendingTokenPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// Mirror the adapter's filename: sha256(rel)[:32].json
-	name := overrideTestTokenName(rel)
 	body := []byte(`{"file_path":"` + rel + `","reason":"` + reason + `","ts":"` + nowRFC3339() + `"}`)
-	if err := os.WriteFile(filepath.Join(tokenDir, name), body, 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, body, 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
 	}
 }

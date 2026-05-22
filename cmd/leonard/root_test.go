@@ -172,6 +172,11 @@ func runRoot(t *testing.T, rt Runtime, args ...string) (string, error) {
 
 // withCwd temporarily chdirs to dir. The Runtime fakes use cwd, so each test
 // hops into a tempdir.
+//
+// Also redirects XDG_CONFIG_HOME / HOME to a per-test tempdir so any CLI
+// that touches $XDG_CONFIG_HOME (trust files, v1.0 bypass tokens) doesn't
+// scribble in the operator's real config. v1.0 (bughunt-11 F1) made this
+// load-bearing — truth-edit / override now write tokens under XDG.
 func withCwd(t *testing.T, dir string) {
 	t.Helper()
 	orig, err := os.Getwd()
@@ -182,6 +187,10 @@ func withCwd(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", xdg)
 }
 
 func TestInitCmd_UsesCwdWhenNoArg(t *testing.T) {
