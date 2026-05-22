@@ -7,6 +7,113 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.53.0 — adapter dispatcher (#46) + bughunt-11 closeout
+
+**The wiring that makes v1.0 actually work.** The v0.6 → v1.0 work
+(merged on 2026-05-22) built the adapter framework but left the
+load-bearing dispatcher unimplemented — `leonard-hook` and
+`leonard-mcp` still called `internal/hooks` and `internal/mcp`
+directly, so the ground-truth and self-logging adapters never
+actually fired in real Claude Code sessions. v0.53 closes that gap
+plus the three HIGH bughunt-11 findings.
+
+### Adapter dispatcher (#46)
+
+- `[[adapters]]` config schema in `.leonard/config.toml`:
+
+  ```toml
+  [[adapters]]
+  type = "code"
+
+  [[adapters]]
+  type = "ground-truth"
+  truth_dir = "source-of-truth/"
+  ```
+
+  Per-adapter fields (e.g., `truth_dir`) inside the block flow
+  through to `Adapter.Init` via `adapters.Config.Raw`.
+
+- Auto-detection when no `[[adapters]]` block is present:
+  - `code` enables on `go.mod` at root OR `[post_edit.verify]` set
+  - `ground-truth` enables when `.leonard/ground-truth/` exists
+  - At least `code` always loads as the fallback (degraded mode
+    when there's no DB)
+
+- `internal/dispatcher.LoadEnabled` instantiates + Inits each
+  enabled adapter and returns a `Loaded` with a `Close` cleanup
+  func. Per-adapter Init failures are non-fatal (logged + skipped)
+  so a malformed truth tree doesn't take down the whole hook
+  pipeline.
+
+- `leonard-hook` rewired: pre-edit / post-edit / session-start /
+  stop subcommands all route through `dispatcher.HandleX` which
+  parses the Claude Code envelope, dispatches to every loaded
+  adapter, aggregates results, and writes the response. The code
+  adapter still wraps `internal/hooks.HandleX` internally so the
+  v0.52 fabrication-guard / verifier / decisions-injection logic
+  is preserved verbatim.
+
+- `leonard-mcp` rewired: bare MCP server, each adapter calls its
+  own `RegisterTools(srv)`. Ground-truth adapter's MCP tools
+  (`verify_claim`, `list_facts`, `get_story`, `get_truth_history`)
+  are now actually exposed to Claude Code clients.
+
+### Bughunt-11 + security-5
+
+Three HIGH findings closed from the v0.6→v1.0 audit:
+
+- **F1** — bypass tokens (`--trivial`, `--once`) relocated from
+  `.leonard/pending-{trivial,override}/` to
+  `$XDG_CONFIG_HOME/leonard/pending-{trivial,override}/`. Same
+  reasoning as bughunt-9 moving the verifier trust file out of
+  `.leonard/`: the bash-obfuscation attack class can plant forged
+  tokens under `.leonard/`.
+
+- **F2** — token reads `os.Lstat` first and refuse symlinks
+  (defense-in-depth matching bughunt-9 F2).
+
+- **F3** — sync plugin trust gate: new
+  `leonard config trust sync <name>` fingerprints the plugin
+  command at `$XDG_CONFIG_HOME/leonard/trust/<hash>.sync-<name>.sha256`.
+  The runner refuses to exec until the fingerprint matches.
+
+Three MEDIUM findings also closed: F4 (16 MiB cap on sync plugin
+stdout/stderr), F5 (re-read facts.yaml between plugins to prevent
+cross-pollution), F6 (256 KiB cap on `verify_claim` input).
+
+### Test coverage
+
+- 8 new tests for `config.EnabledAdapters` (resolution rules)
+- 5 new tests for `dispatcher.LoadEnabled` (auto-detect, explicit
+  config, close-idempotent, unknown-adapter handling)
+- 2 new dispatcher tests for `HandlePreEdit` (ground-truth deny,
+  happy-path Continue)
+- 1 new dispatcher smoke test for multi-adapter `RegisterTools`
+- 4 thin smoke tests in `cmd/leonard-hook/` for the cobra wiring
+- 9 new tests for the bughunt-11 fixes (sync plugin trust round-
+  trip, symlink refusal, F4 stdout cap, F5 plugin sequencing, F6
+  oversize input)
+
+All ~270 prior tests still pass.
+
+### Backwards compatibility
+
+- Projects on v0.52 keep working without touching config. Auto-
+  detection enables only `code` for them.
+- The v0.52 MCP tool surface (`verify_symbol` et al.) is
+  unchanged.
+- `leonard config trust` keeps its v0.52 verifier-only form
+  (`leonard config trust` with no target = verifier); new
+  subtargets `ground-truth` and `sync <name>` extend it.
+
+### What's still pending for v1.0
+
+The full v1.0 tag still wants:
+- A round of dogfooding on the wired-up adapter system
+- Bughunt-12 against the integrated dispatcher surface (this
+  release only audited the unwired adapters)
+- Operator-facing docs on the `[[adapters]]` config schema
+
 ## v1.0.0 — generalized ground-truth toolkit
 
 **The big shift:** Leonard generalized from "code ground-truth" to
