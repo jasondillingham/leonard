@@ -204,5 +204,6 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newOverrideCmd())
 	root.AddCommand(newTruthHistoryCmd(rt))
 	root.AddCommand(newTruthStoryCmd(rt))
+	root.AddCommand(newSyncCmd())
 	return root
 }
