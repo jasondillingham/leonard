@@ -98,6 +98,12 @@ func register(srv *mcp.Server, store SymbolStore) {
 	if cs, ok := store.(ChangesStore); ok {
 		registerChangesTool(srv, cs)
 	}
+
+	// get_truth_history (#28): wired only when the store satisfies
+	// TruthHistoryStore. Matches the gated-tool pattern above.
+	if ts, ok := store.(TruthHistoryStore); ok {
+		registerTruthHistoryTool(srv, ts)
+	}
 }
 
 // verifySymbol is the thin shim: name lookup + optional kind/language

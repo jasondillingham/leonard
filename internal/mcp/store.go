@@ -41,6 +41,8 @@ type SymbolStore interface {
 // layer surfaces through the decision tools. RecordedAt is unix seconds.
 // RelatedFiles / RelatedSymbols are decoded from the JSON columns added in
 // schema v4; nil for decisions recorded before that migration.
+// TruthChange is decoded from the JSON column added in schema v8 (#21);
+// nil for decisions that aren't truth-tracking entries.
 type DecisionRecord struct {
 	ID             int64
 	Topic          string
@@ -49,6 +51,20 @@ type DecisionRecord struct {
 	RecordedAt     int64
 	RelatedFiles   []string
 	RelatedSymbols []string
+	TruthChange    *TruthChangeRecord
+}
+
+// TruthChangeRecord mirrors internal/store.TruthChange on the MCP
+// wire. Fields use snake_case JSON tags so the MCP client sees the
+// same shape that lands in audit/audit-log.md.
+type TruthChangeRecord struct {
+	Scope         string   `json:"scope,omitempty"`
+	Files         []string `json:"files,omitempty"`
+	DiffRef       string   `json:"diff_ref,omitempty"`
+	MotivatedBy   string   `json:"motivated_by,omitempty"`
+	Supersedes    *int64   `json:"supersedes,omitempty"`
+	Trivial       bool     `json:"trivial,omitempty"`
+	TrivialReason string   `json:"trivial_reason,omitempty"`
 }
 
 // StaleDecisionRecord wraps DecisionRecord with the specific refs that no
@@ -72,6 +88,15 @@ type DecisionStore interface {
 	GetDecisions(ctx context.Context, topic string, since int64, limit int) ([]DecisionRecord, error)
 	SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error)
 	GetStaleDecisions(ctx context.Context, limit int) ([]StaleDecisionRecord, error)
+}
+
+// TruthHistoryStore is the read surface the get_truth_history tool
+// (#28) depends on. Sibling to DecisionStore so test fixtures that
+// don't track truth changes don't have to grow this method. The
+// real StoreAdapter satisfies both; register() gates the tool on
+// this interface assertion.
+type TruthHistoryStore interface {
+	GetTruthHistory(ctx context.Context, filePath string, limit int) ([]DecisionRecord, error)
 }
 
 // ClaimRecord is the subset of internal/store.Claim that the MCP layer

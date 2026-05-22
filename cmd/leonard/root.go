@@ -46,6 +46,11 @@ type Runtime interface {
 	// related_symbols no longer resolve against the live index.
 	GetStaleDecisions(ctx context.Context, dataDir string, limit int) ([]StaleDecisionRow, error)
 
+	// GetTruthHistory opens the store and returns decisions whose
+	// TruthChange.Files includes filePath, oldest first. Used by
+	// `leonard truth-history`.
+	GetTruthHistory(ctx context.Context, dataDir, filePath string, limit int) ([]TruthHistoryRow, error)
+
 	// GetUnverifiedClaims returns claim rows where verified=false.
 	// sessionID is optional (empty = all sessions).
 	GetUnverifiedClaims(ctx context.Context, dataDir, sessionID string) ([]ClaimRow, error)
@@ -104,6 +109,25 @@ type DecisionRow struct {
 	Choice     string
 	Reasoning  string
 	RecordedAt int64
+}
+
+// TruthHistoryRow carries a decision plus its TruthChange block for
+// `leonard truth-history`'s rendering. Mirrors store.Decision +
+// store.TruthChange, declared locally to keep cmd/leonard
+// decoupled from internal/store types.
+type TruthHistoryRow struct {
+	ID            int64
+	Topic         string
+	Choice        string
+	Reasoning     string
+	RecordedAt    int64
+	Scope         string
+	Files         []string
+	DiffRef       string
+	MotivatedBy   string
+	Supersedes    *int64
+	Trivial       bool
+	TrivialReason string
 }
 
 // StaleDecisionRow carries the decision plus the specific refs that no
@@ -173,5 +197,6 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newMCPCmd())
 	root.AddCommand(newTruthEditCmd())
 	root.AddCommand(newOverrideCmd())
+	root.AddCommand(newTruthHistoryCmd(rt))
 	return root
 }

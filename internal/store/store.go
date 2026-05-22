@@ -1137,6 +1137,69 @@ func jsonStringArray(xs []string) (any, error) {
 	return string(b), nil
 }
 
+// GetTruthHistory returns decisions whose TruthChange.Files
+// includes filePath. Used by `leonard truth-history` and the
+// get_truth_history MCP tool (#28) to answer "why is this rule the
+// way it is?"
+//
+// Returned oldest-first so the slice reads as a story: how the
+// rule got to its current shape. limit caps the slice; 0 means
+// "use the default" (200).
+//
+// Implementation: fetch all decisions with a non-null truth_change
+// column and filter in Go. Decision tables are typically small
+// enough (operators ship hundreds, not millions) that a full scan
+// is cheaper than the SQLite JSON-search machinery.
+func (s *Store) GetTruthHistory(filePath string, limit int) ([]Decision, error) {
+	if filePath == "" {
+		return nil, errors.New("store: GetTruthHistory: empty filePath")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.Query(`SELECT id, topic, choice, reasoning, recorded_at,
+		superseded_by, related_files, related_symbols, truth_change FROM decisions
+		WHERE truth_change IS NOT NULL
+		ORDER BY recorded_at ASC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: GetTruthHistory: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Decision
+	for rows.Next() {
+		d, err := scanDecision(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: GetTruthHistory scan: %w", err)
+		}
+		if d.TruthChange == nil {
+			continue
+		}
+		if truthChangeMentionsFile(d.TruthChange, filePath) {
+			out = append(out, d)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: GetTruthHistory iter: %w", err)
+	}
+	return out, nil
+}
+
+// truthChangeMentionsFile reports whether the entry's Files slice
+// includes filePath. Exact match; future versions may relax to glob
+// or path-prefix when the operator workflow demands it.
+func truthChangeMentionsFile(tc *TruthChange, filePath string) bool {
+	for _, f := range tc.Files {
+		if f == filePath {
+			return true
+		}
+	}
+	return false
+}
+
 // SupersedeDecision records a replacement for an existing decision under the
 // same topic, points the old row's superseded_by at the new row, and returns
 // the new row ID. Errors if id doesn't exist or has already been superseded.
