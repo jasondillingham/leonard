@@ -1,6 +1,6 @@
 # Bughunt-11 + security-5 — findings
 
-**Status:** investigation complete; fixes pending
+**Status:** investigation complete; HIGH fixes landed; MEDIUM TBD
 **Audit branch:** `audit/bughunt-11-security-5`
 **Started:** 2026-05-22
 
@@ -19,9 +19,9 @@
 
 | # | Severity | Theme | Summary |
 |---|---|---|---|
-| F1 | HIGH | Self-logging / filter override | Bypass tokens live under `.leonard/` — vulnerable to the bash-obfuscation class that bughunt-9 closed for verifier trust |
-| F2 | HIGH | Self-logging / filter override | Bypass token read follows symlinks — same shape as bughunt-9 F2 |
-| F3 | HIGH | Sync plugins | Plugin command has no trust gate — same shape as the pre-bughunt-9 verifier-trust gap |
+| F1 | HIGH | Self-logging / filter override | Bypass tokens live under `.leonard/` — vulnerable to the bash-obfuscation class that bughunt-9 closed for verifier trust → **closed in `b862b0a`** |
+| F2 | HIGH | Self-logging / filter override | Bypass token read follows symlinks — same shape as bughunt-9 F2 → **closed in `b862b0a`** |
+| F3 | HIGH | Sync plugins | Plugin command has no trust gate — same shape as the pre-bughunt-9 verifier-trust gap → **closed in `51bc166`** |
 | F4 | MEDIUM | Sync plugins | Plugin stdout/stderr buffers unbounded — DoS |
 | F5 | MEDIUM | Sync plugins | Cross-plugin facts cross-pollution: plugin B silently overwrites plugin A's changes |
 | F6 | MEDIUM | MCP — verify_claim | Input text unbounded; expensive fuzzy matching on large payloads |
