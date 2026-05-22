@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-
 	"github.com/jasondillingham/leonard/internal/adapters"
 )
 
@@ -198,6 +196,6 @@ func (a *GroundTruthAdapter) Stop(_ context.Context, _ adapters.StopPayload) (ad
 	return adapters.StopResult{}, nil
 }
 
-// RegisterTools is a no-op in v0.6. The MCP tools (verify_claim,
-// list_facts, get_story) land in #10, #11, #12.
-func (a *GroundTruthAdapter) RegisterTools(_ *mcp.Server) error { return nil }
+// RegisterTools is implemented in mcp.go. The signature there
+// satisfies the adapters.Adapter contract by attaching verify_claim,
+// list_facts, and get_story to srv.
