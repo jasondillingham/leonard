@@ -363,9 +363,10 @@ func TestHooks_AreNoOpsInV06(t *testing.T) {
 		t.Errorf("Stop v0.6: want empty, got %q", stop.SystemMessage)
 	}
 
-	if err := a.RegisterTools(nil); err != nil {
-		t.Errorf("RegisterTools v0.6: want nil, got %v", err)
-	}
+	// As of #10-#12, RegisterTools wires three tools onto the server
+	// and rejects a nil server. The nil-server rejection is a v0.6+
+	// contract change from the parser-layer no-op; covered by
+	// TestRegisterTools_RejectsNilServer in mcp_test.go.
 }
 
 func TestRegistry_GroundTruthAdapterIsRegistered(t *testing.T) {

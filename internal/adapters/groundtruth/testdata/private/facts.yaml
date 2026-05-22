@@ -1,0 +1,16 @@
+public_info:
+  product_name: ExampleSaaS
+  homepage: https://example.com
+
+internal_metrics:
+  mrr_usd: 50000
+  sensitivity: private
+
+customers:
+  - id: acme-corp
+    name: Acme Corp
+    contract_value_usd: 50000
+    sensitivity: private
+  - id: beta-co
+    name: Beta Co
+    sensitivity: public
