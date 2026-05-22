@@ -131,6 +131,39 @@ func (realRuntime) GetDecisions(_ context.Context, dataDir, topic string, since 
 	return out, nil
 }
 
+func (realRuntime) GetTruthHistory(_ context.Context, dataDir, filePath string, limit int) ([]TruthHistoryRow, error) {
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	rows, err := s.GetTruthHistory(filePath, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TruthHistoryRow, 0, len(rows))
+	for _, d := range rows {
+		row := TruthHistoryRow{
+			ID:         d.ID,
+			Topic:      d.Topic,
+			Choice:     d.Choice,
+			Reasoning:  d.Reasoning,
+			RecordedAt: d.RecordedAt,
+		}
+		if d.TruthChange != nil {
+			row.Scope = d.TruthChange.Scope
+			row.Files = d.TruthChange.Files
+			row.DiffRef = d.TruthChange.DiffRef
+			row.MotivatedBy = d.TruthChange.MotivatedBy
+			row.Supersedes = d.TruthChange.Supersedes
+			row.Trivial = d.TruthChange.Trivial
+			row.TrivialReason = d.TruthChange.TrivialReason
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 func (realRuntime) GetStaleDecisions(_ context.Context, dataDir string, limit int) ([]StaleDecisionRow, error) {
 	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
 	if err != nil {

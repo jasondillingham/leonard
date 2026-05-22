@@ -167,7 +167,7 @@ func (a *StoreAdapter) GetStaleDecisions(ctx context.Context, limit int) ([]Stal
 }
 
 func decisionToRecord(d store.Decision) DecisionRecord {
-	return DecisionRecord{
+	rec := DecisionRecord{
 		ID:             d.ID,
 		Topic:          d.Topic,
 		Choice:         d.Choice,
@@ -176,6 +176,36 @@ func decisionToRecord(d store.Decision) DecisionRecord {
 		RelatedFiles:   d.RelatedFiles,
 		RelatedSymbols: d.RelatedSymbols,
 	}
+	if d.TruthChange != nil {
+		rec.TruthChange = &TruthChangeRecord{
+			Scope:         d.TruthChange.Scope,
+			Files:         d.TruthChange.Files,
+			DiffRef:       d.TruthChange.DiffRef,
+			MotivatedBy:   d.TruthChange.MotivatedBy,
+			Supersedes:    d.TruthChange.Supersedes,
+			Trivial:       d.TruthChange.Trivial,
+			TrivialReason: d.TruthChange.TrivialReason,
+		}
+	}
+	return rec
+}
+
+// GetTruthHistory delegates to store.Store.GetTruthHistory. Satisfies
+// the TruthHistoryStore interface so get_truth_history (#28) is
+// auto-registered when the underlying store supports it.
+func (a *StoreAdapter) GetTruthHistory(ctx context.Context, filePath string, limit int) ([]DecisionRecord, error) {
+	if err := a.preflight(ctx); err != nil {
+		return nil, err
+	}
+	ds, err := a.S.GetTruthHistory(filePath, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DecisionRecord, len(ds))
+	for i, d := range ds {
+		out[i] = decisionToRecord(d)
+	}
+	return out, nil
 }
 
 func (a *StoreAdapter) SupersedeDecision(ctx context.Context, decisionID int64, newChoice, newReasoning string) (int64, error) {
