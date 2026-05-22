@@ -128,6 +128,108 @@ func WriteTrustedFingerprint(projectRoot, fingerprint string) error {
 	return os.WriteFile(path, []byte(fingerprint+"\n"), 0o600)
 }
 
+// AdapterTrustFilePath returns the trust file path for an adapter
+// scoped to projectRoot. Used by v0.7+ adapters (ground-truth, and
+// future blocking adapters) that need a per-adapter trust signal
+// distinct from the verifier fingerprint.
+//
+// The filename is "<project-hash>.<adapter>.trust" so granting
+// verifier trust does not accidentally grant adapter trust, and
+// each adapter's trust is independently revocable by `rm`'ing the
+// matching file.
+//
+// adapterName is restricted to characters safe in a path component:
+// returns an error on anything other than [a-z0-9-]. The check is
+// intentionally strict so adapter authors can't pick a name that
+// confuses path resolution.
+func AdapterTrustFilePath(projectRoot, adapterName string) (string, error) {
+	if !validAdapterName(adapterName) {
+		return "", fmt.Errorf("trust: invalid adapter name %q (allowed: lowercase letters, digits, hyphens)", adapterName)
+	}
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve project root: %w", err)
+	}
+	hash := sha256.Sum256([]byte(abs))
+	projectHash := hex.EncodeToString(hash[:])
+
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve user config dir: %w", err)
+	}
+	return filepath.Join(cfgDir, "leonard", "trust", projectHash+"."+adapterName+".trust"), nil
+}
+
+// validAdapterName whitelists name characters. Matches the existing
+// adapter naming convention (code, ground-truth, self-logging).
+func validAdapterName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// WriteAdapterTrust grants adapterName the right to take blocking
+// actions in projectRoot. Idempotent — re-running overwrites the
+// existing marker with a fresh timestamp.
+//
+// Mirrors the WriteTrustedFingerprint security posture: the marker
+// lives under $XDG_CONFIG_HOME (out of the project tree), parent
+// dir 0o700, file 0o600, refuses to overwrite a symlink.
+func WriteAdapterTrust(projectRoot, adapterName string) error {
+	path, err := AdapterTrustFilePath(projectRoot, adapterName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("trust: mkdir %s: %w", filepath.Dir(path), err)
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("trust: %s is a symlink; refusing to overwrite — delete it first", path)
+	}
+	// Marker content: project + adapter context. Useful when an
+	// operator audits ~/.config/leonard/trust/ to see what they've
+	// authorized. Not security-bearing — the file's existence is
+	// the trust signal; content is informational.
+	body := fmt.Sprintf("project: %s\nadapter: %s\n", projectRoot, adapterName)
+	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+// AdapterTrusted reports whether adapterName has been granted
+// blocking authorization for projectRoot. The trust signal is the
+// marker file's existence (any non-empty content). Symlink refusal
+// matches ReadTrustedFingerprint's bughunt-9 F2 defense.
+//
+// Returns (false, nil) when no trust has been granted; (true, nil)
+// when the marker is present; (false, err) on I/O failures or
+// symlink refusal.
+func AdapterTrusted(projectRoot, adapterName string) (bool, error) {
+	path, err := AdapterTrustFilePath(projectRoot, adapterName)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("trust: lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("trust: %s is a symlink; refusing to follow", path)
+	}
+	return info.Size() > 0, nil
+}
+
 // VerifyCommandTrusted reports whether `command` matches the
 // stored trust fingerprint for projectRoot. Returns:
 //

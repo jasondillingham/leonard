@@ -34,69 +34,151 @@ func newConfigCmd() *cobra.Command {
 // obfuscation bypass class by moving authorization from "is the
 // command lexically safe?" (impossible to enumerate) to "did the
 // operator interactively approve this exact command?".
+// trustTargetVerifier and trustTargetGroundTruth name the two
+// trust targets supported by `leonard config trust`. New targets
+// land alongside these as additional cases in the switch below.
+const (
+	trustTargetVerifier    = "verifier"
+	trustTargetGroundTruth = "ground-truth"
+)
+
 func newConfigTrustCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:   "trust",
-		Short: "Authorize the current [post_edit.verify].command to execute.",
-		Long: `Reads the [post_edit.verify].command field from .leonard/config.toml,
-shows it to the operator, and (on confirmation) writes its SHA-256
-fingerprint to .leonard/trusted-verifier.sha256. The post-edit hook
-will refuse to run the verifier until the fingerprint matches.
+		Use:   "trust [target]",
+		Short: "Authorize a blocking action — verifier command or ground-truth adapter.",
+		Long: `Grants operator trust for blocking actions.
 
-v0.52: trust is per-project, attached to the canonical absolute
-path of the project root. The fingerprint file lives OUTSIDE the
-project tree — at $XDG_CONFIG_HOME/leonard/trust/<hash>.sha256 —
-so .leonard/ write attacks can't poison it.`,
-		Args: cobra.NoArgs,
+Targets:
+  verifier      Authorize [post_edit.verify].command (default for backwards
+                compat — empty target means verifier). Hashes the command
+                with SHA-256 and stores the fingerprint at
+                $XDG_CONFIG_HOME/leonard/trust/<hash>.sha256.
+
+  ground-truth  Authorize the ground-truth adapter to reject edits that
+                introduce forbidden claims. Writes a marker file at
+                $XDG_CONFIG_HOME/leonard/trust/<hash>.ground-truth.trust
+                — until the marker exists, the adapter logs warnings
+                instead of denying.
+
+Trust is per-project, attached to the canonical absolute path of the
+project root. Files live OUTSIDE the project tree so .leonard/ write
+attacks can't poison them.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dataDir, err := dataDirForCwd()
-			if err != nil {
-				return err
+			target := trustTargetVerifier
+			if len(args) == 1 {
+				target = args[0]
 			}
-			projectRoot := filepath.Dir(dataDir) // dataDir is <root>/.leonard
-			cfgPath := filepath.Join(dataDir, config.Filename)
-			cfg, err := config.Load(cfgPath)
-			if err != nil {
-				return fmt.Errorf("config trust: read %s: %w", cfgPath, err)
+			switch target {
+			case trustTargetVerifier:
+				return runTrustVerifier(cmd, yes)
+			case trustTargetGroundTruth:
+				return runTrustGroundTruth(cmd, yes)
+			default:
+				return fmt.Errorf("config trust: unknown target %q (expected one of: verifier, ground-truth)", target)
 			}
-			command := strings.TrimSpace(cfg.PostEdit.Verify.Command)
-			if command == "" {
-				return fmt.Errorf("config trust: [post_edit.verify].command is empty in %s; nothing to authorize", cfgPath)
-			}
-			trustPath, err := config.TrustFilePath(projectRoot)
-			if err != nil {
-				return fmt.Errorf("config trust: %w", err)
-			}
-
-			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "leonard: about to trust the following [post_edit.verify].command:")
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "    "+command)
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "On every Edit/Write the post-edit hook will run this through `sh -c`.")
-			fmt.Fprintln(out, "Fingerprint will be stored at "+trustPath)
-			fmt.Fprintln(out)
-
-			if !yes {
-				fmt.Fprint(out, "Type 'yes' to confirm: ")
-				var response string
-				if _, err := fmt.Fscanln(cmd.InOrStdin(), &response); err != nil {
-					return fmt.Errorf("config trust: aborted: %w", err)
-				}
-				if strings.ToLower(strings.TrimSpace(response)) != "yes" {
-					return fmt.Errorf("config trust: aborted (must type 'yes' verbatim)")
-				}
-			}
-
-			fp := config.FingerprintCommand(command)
-			if err := config.WriteTrustedFingerprint(projectRoot, fp); err != nil {
-				return fmt.Errorf("config trust: write trust file: %w", err)
-			}
-			fmt.Fprintf(out, "leonard: verifier command authorized (fingerprint %s…).\n", fp[:12])
-			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip interactive confirmation (intended for scripted setup)")
 	return cmd
+}
+
+// runTrustVerifier authorizes [post_edit.verify].command. Extracted
+// from the original newConfigTrustCmd body so the new top-level
+// trust command can dispatch on target without nesting case-bodies.
+func runTrustVerifier(cmd *cobra.Command, yes bool) error {
+	dataDir, err := dataDirForCwd()
+	if err != nil {
+		return err
+	}
+	projectRoot := filepath.Dir(dataDir)
+	cfgPath := filepath.Join(dataDir, config.Filename)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("config trust: read %s: %w", cfgPath, err)
+	}
+	command := strings.TrimSpace(cfg.PostEdit.Verify.Command)
+	if command == "" {
+		return fmt.Errorf("config trust: [post_edit.verify].command is empty in %s; nothing to authorize", cfgPath)
+	}
+	trustPath, err := config.TrustFilePath(projectRoot)
+	if err != nil {
+		return fmt.Errorf("config trust: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "leonard: about to trust the following [post_edit.verify].command:")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "    "+command)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "On every Edit/Write the post-edit hook will run this through `sh -c`.")
+	fmt.Fprintln(out, "Fingerprint will be stored at "+trustPath)
+	fmt.Fprintln(out)
+
+	if err := confirmTrust(cmd, yes); err != nil {
+		return err
+	}
+
+	fp := config.FingerprintCommand(command)
+	if err := config.WriteTrustedFingerprint(projectRoot, fp); err != nil {
+		return fmt.Errorf("config trust: write trust file: %w", err)
+	}
+	fmt.Fprintf(out, "leonard: verifier command authorized (fingerprint %s…).\n", fp[:12])
+	return nil
+}
+
+// runTrustGroundTruth grants the ground-truth adapter authority to
+// reject edits. Mirrors runTrustVerifier's confirmation flow but
+// writes the per-adapter marker file (no command fingerprint —
+// adapter trust is binary).
+func runTrustGroundTruth(cmd *cobra.Command, yes bool) error {
+	dataDir, err := dataDirForCwd()
+	if err != nil {
+		return err
+	}
+	projectRoot := filepath.Dir(dataDir)
+
+	trustPath, err := config.AdapterTrustFilePath(projectRoot, trustTargetGroundTruth)
+	if err != nil {
+		return fmt.Errorf("config trust: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "leonard: about to grant the ground-truth adapter authority to reject edits.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Once trusted, the pre-edit hook will hard-reject Edit/Write/MultiEdit")
+	fmt.Fprintln(out, "operations whose content matches any rule in .leonard/ground-truth/do-not-claim.md.")
+	fmt.Fprintln(out, "Untrusted: the adapter logs warnings but does not block.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Trust marker will be stored at "+trustPath)
+	fmt.Fprintln(out)
+
+	if err := confirmTrust(cmd, yes); err != nil {
+		return err
+	}
+
+	if err := config.WriteAdapterTrust(projectRoot, trustTargetGroundTruth); err != nil {
+		return fmt.Errorf("config trust: write trust file: %w", err)
+	}
+	fmt.Fprintln(out, "leonard: ground-truth adapter authorized to reject edits.")
+	return nil
+}
+
+// confirmTrust handles the "yes/no" prompt shared by the verifier
+// and ground-truth flows. Honors --yes for scripted setup.
+func confirmTrust(cmd *cobra.Command, yes bool) error {
+	if yes {
+		return nil
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprint(out, "Type 'yes' to confirm: ")
+	var response string
+	if _, err := fmt.Fscanln(cmd.InOrStdin(), &response); err != nil {
+		return fmt.Errorf("config trust: aborted: %w", err)
+	}
+	if strings.ToLower(strings.TrimSpace(response)) != "yes" {
+		return fmt.Errorf("config trust: aborted (must type 'yes' verbatim)")
+	}
+	return nil
 }
