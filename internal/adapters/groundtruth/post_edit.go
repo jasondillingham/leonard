@@ -213,26 +213,43 @@ func appendPendingAudit(projectRoot string, entry pendingAuditEntry) error {
 }
 
 // insideProject reports whether absPath resolves under projectRoot.
-// Mirrors the existing path-trust guard in cmd/leonard-hook — the
-// post-edit hook should never read or log content from files outside
-// the operator-trusted tree.
+// Both paths are passed through filepath.EvalSymlinks before
+// comparison so an unresolved-vs-resolved spelling of the same
+// directory (the macOS /var ↔ /private/var case) lines up rather
+// than diverging through filepath.Rel. Falls back to filepath.Abs
+// for paths that don't exist on disk yet (Write of a new file).
 func insideProject(projectRoot, absPath string) bool {
 	if projectRoot == "" {
 		return false
 	}
-	cleanRoot, err := filepath.Abs(projectRoot)
-	if err != nil {
-		return false
-	}
-	cleanPath, err := filepath.Abs(absPath)
-	if err != nil {
-		return false
-	}
+	cleanRoot := canonicalize(projectRoot)
+	cleanPath := canonicalize(absPath)
 	rel, err := filepath.Rel(cleanRoot, cleanPath)
 	if err != nil {
 		return false
 	}
 	return !strings.HasPrefix(rel, "..") && rel != ".."
+}
+
+// canonicalize returns EvalSymlinks(p) if possible, else Abs(p), so
+// callers get a consistent canonical form across existing and
+// not-yet-existing paths. Used by insideProject / relativeOrAbs.
+func canonicalize(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	// If the file itself doesn't exist (PreEdit on a Write of a new
+	// file), try canonicalizing the parent dir and rejoin.
+	if dir, file := filepath.Split(abs); dir != "" {
+		if resolved, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
+			return filepath.Join(resolved, file)
+		}
+	}
+	return abs
 }
 
 // matchesAnyGlob reports whether absPath matches any pattern in
@@ -270,7 +287,9 @@ func relativeOrAbs(projectRoot, absPath string) string {
 	if projectRoot == "" {
 		return absPath
 	}
-	if rel, err := filepath.Rel(projectRoot, absPath); err == nil && !strings.HasPrefix(rel, "..") {
+	cleanRoot := canonicalize(projectRoot)
+	cleanPath := canonicalize(absPath)
+	if rel, err := filepath.Rel(cleanRoot, cleanPath); err == nil && !strings.HasPrefix(rel, "..") {
 		return rel
 	}
 	return absPath
