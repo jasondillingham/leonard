@@ -179,11 +179,9 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, _ adapters.PreEditPayloa
 	return adapters.PreEditResult{Decision: adapters.Pass}, nil
 }
 
-// PostEdit is a no-op in v0.6. Advisory pending-audit log lands in
-// #18; auto-append to audit-log.md lands in #29.
-func (a *GroundTruthAdapter) PostEdit(_ context.Context, _ adapters.PostEditPayload) (adapters.PostEditResult, error) {
-	return adapters.PostEditResult{}, nil
-}
+// PostEdit is implemented in post_edit.go. v0.6: advisory writes to
+// .leonard/pending-audit.log when the just-written file produces
+// UNVERIFIED or FORBIDDEN findings.
 
 // SessionStart is a no-op in v0.6. Later issues may inject a
 // "loaded N facts / M rules" summary at session start.
