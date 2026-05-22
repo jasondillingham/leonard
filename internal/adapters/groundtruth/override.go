@@ -1,22 +1,14 @@
 package groundtruth
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"time"
-)
 
-// pendingOverrideDirName is the subdirectory under .leonard/ where
-// `leonard override --once` (#17) drops single-use bypass tokens
-// scoped to a file path. Mirrors the trivial-bypass mechanism but
-// targets path/content filter rules rather than self-logging
-// require-tier blocks.
-const pendingOverrideDirName = "pending-override"
+	"github.com/jasondillingham/leonard/internal/config"
+)
 
 // overrideTokenTTL caps how long an override is honored after the
 // CLI wrote it. Same value as the trivial-bypass TTL for operator
@@ -35,13 +27,37 @@ type overrideToken struct {
 // consumeOverrideToken looks for a token matching rel. On hit,
 // validates the path + timestamp, deletes the file (single-use),
 // and returns true so the filter guard short-circuits to Pass.
-// Misses, expirations, and corrupt tokens all return false; expired
-// or malformed tokens are deleted so they don't accumulate.
+// Misses, expirations, corrupt tokens, or symlinks return false.
+//
+// Token path: $XDG_CONFIG_HOME/leonard/pending-override/<projHash>.<relHash>.json
+//
+// v1.0 (bughunt-11 F1): relocated OUT of .leonard/ because the
+// bash-obfuscation attack class can plant a forged token there.
+// Same reasoning as bughunt-9 moving the verifier trust file.
+//
+// v1.0 (bughunt-11 F2): refuses symlinked tokens so an attacker
+// who plants a symlink at the canonical token path can't redirect
+// the read to attacker-controlled content.
 func consumeOverrideToken(projectRoot, rel string) bool {
 	if projectRoot == "" || rel == "" {
 		return false
 	}
-	tokenPath := filepath.Join(projectRoot, ".leonard", pendingOverrideDirName, overrideTokenFilename(rel))
+	tokenPath, err := config.PendingTokenPath("override", projectRoot, rel)
+	if err != nil {
+		return false
+	}
+
+	// bughunt-11 F2: refuse symlinks before reading.
+	info, err := os.Lstat(tokenPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 
 	data, err := os.ReadFile(tokenPath)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -73,12 +89,3 @@ func consumeOverrideToken(projectRoot, rel string) bool {
 	_ = os.Remove(tokenPath)
 	return true
 }
-
-// overrideTokenFilename is the per-path filename. Same shape as the
-// trivial-bypass token name (sha256(rel)[:32] + .json) so operators
-// who know the trivial format don't need to learn a second one.
-func overrideTokenFilename(rel string) string {
-	sum := sha256.Sum256([]byte(rel))
-	return hex.EncodeToString(sum[:])[:32] + ".json"
-}
-

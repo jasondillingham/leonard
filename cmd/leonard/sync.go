@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/jasondillingham/leonard/internal/adapters/groundtruth/sync"
+	"github.com/jasondillingham/leonard/internal/config"
 )
 
 // syncConfig is the cmd/leonard-side mirror of the sync plugin
@@ -78,14 +79,36 @@ Flags:
 
 			truthDir := filepath.Join(dataDir, "ground-truth")
 			factsPath := filepath.Join(truthDir, "facts.yaml")
-			facts, err := readFactsYAML(factsPath)
-			if err != nil {
-				return fmt.Errorf("sync: read facts.yaml: %w", err)
-			}
 
+			projectRoot := filepath.Dir(dataDir)
 			out := cmd.OutOrStdout()
 			for _, name := range targets {
 				pc := cfg.Sync[name]
+				// bughunt-11 F3: refuse to exec the plugin until the
+				// operator has trusted its fingerprint via
+				// `leonard config trust sync <name>`. Protects
+				// against the bash-obfuscation attack class
+				// planting a malicious command path.
+				ok, err := config.VerifySyncPluginTrusted(projectRoot, name, pc.Command)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "sync: %s: trust check failed: %v\n", name, err)
+					continue
+				}
+				if !ok {
+					fmt.Fprintf(out, "sync: %s: command %q is not trusted; run `leonard config trust sync %s` to authorize.\n",
+						name, pc.Command, name)
+					continue
+				}
+				// bughunt-11 F5: re-read facts.yaml for each plugin.
+				// If plugin A wrote updates earlier in the loop,
+				// plugin B's input must reflect those changes —
+				// otherwise plugin B's writeFactsAtomically would
+				// overwrite plugin A's work with the stale tree.
+				facts, err := readFactsYAML(factsPath)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "sync: %s: read facts.yaml: %v\n", name, err)
+					continue
+				}
 				if err := runOneSyncPlugin(cmd, name, pc, facts, factsPath, dryRun, out); err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "sync: %s: %v\n", name, err)
 				}

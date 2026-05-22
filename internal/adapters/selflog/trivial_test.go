@@ -17,18 +17,24 @@ import (
 // writeTrivialToken drops a JSON token file mirroring what
 // cmd/leonard/truth-edit writes. Tests use this to set up the
 // bypass-token state without invoking the CLI.
+//
+// v1.0 (bughunt-11 F1): token lives at $XDG_CONFIG_HOME/leonard/
+// pending-trivial/, not under .leonard/. preEditFixture sets
+// XDG_CONFIG_HOME to a tempdir so this writes to test-isolated
+// state.
 func writeTrivialToken(t *testing.T, projectRoot, rel, reason string, ts time.Time) {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(projectRoot)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	tokenDir := filepath.Join(resolved, ".leonard", "pending-trivial")
-	if err := os.MkdirAll(tokenDir, 0o755); err != nil {
+	tokenPath, err := config.PendingTokenPath("trivial", resolved, rel)
+	if err != nil {
+		t.Fatalf("PendingTokenPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// Mirror the CLI's filename derivation: sha256(rel)[:32].
-	// Implementing it inline keeps test isolation from cmd/* code.
 	body, err := json.Marshal(map[string]any{
 		"file_path":      rel,
 		"trivial_reason": reason,
@@ -37,36 +43,9 @@ func writeTrivialToken(t *testing.T, projectRoot, rel, reason string, ts time.Ti
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tokenDir, hashName(rel)), body, 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, body, 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
 	}
-}
-
-// hashName mirrors selflog.tokenFilename and
-// cmd/leonard.trivialTokenFilename. Reimplemented locally so the
-// test doesn't reach into either package's unexported helpers.
-func hashName(rel string) string {
-	// crypto/sha256 + encoding/hex live in stdlib; inlining the
-	// expression keeps the test self-contained.
-	return shaHex(rel) + ".json"
-}
-
-func shaHex(s string) string {
-	// Two-level helper so the import lives in one place per file.
-	return shaHexImpl(s)
-}
-
-// (Tiny detour to keep test imports tight.)
-func shaHexImpl(s string) string {
-	// Defer to crypto/sha256 via a separate helper file would be
-	// over-engineered. Use the stdlib here.
-	return hexSha256Prefix32(s)
-}
-
-func hexSha256Prefix32(s string) string {
-	// Implementation in trivial_helpers_test.go to keep this file
-	// focused on test cases.
-	return computeSha256Prefix32(s)
 }
 
 // TestConsumeTrivialToken_AllowsRequireTier covers the happy path:
@@ -139,12 +118,70 @@ func TestConsumeTrivialToken_ExpiresAfterTTL(t *testing.T) {
 		t.Errorf("expired token: want Deny, got %v", out.Decision)
 	}
 	// Expired tokens are deleted on read so they don't accumulate.
-	tokenDir := filepath.Join(resolved, ".leonard", "pending-trivial")
-	entries, _ := os.ReadDir(tokenDir)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") {
-			t.Errorf("expired token not deleted: %s", e.Name())
-		}
+	tokenPath, err := config.PendingTokenPath("trivial", resolved, rel)
+	if err != nil {
+		t.Fatalf("PendingTokenPath: %v", err)
+	}
+	if _, err := os.Stat(tokenPath); err == nil {
+		t.Errorf("expired token not deleted: %s", tokenPath)
+	}
+}
+
+// TestConsumeTrivialToken_RefusesSymlink covers bughunt-11 F2:
+// a symlink planted at the canonical token path must be refused,
+// not followed. The attack model: an actor who gets write access to
+// $XDG_CONFIG_HOME/leonard/pending-trivial/ (multi-user box, mis-
+// configured perms) plants a symlink to a forged token stored
+// elsewhere. Without symlink refusal, consumeTrivialToken would
+// read the forged content and grant bypass authority.
+func TestConsumeTrivialToken_RefusesSymlink(t *testing.T) {
+	a, tmp := preEditFixture(t)
+	resolved, _ := filepath.EvalSymlinks(tmp)
+	if err := config.WriteAdapterTrust(resolved, selflog.Name); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join(".leonard", "ground-truth", "do-not-claim.md")
+
+	// Plant a "real" forged token elsewhere with valid content +
+	// fresh timestamp.
+	stash := filepath.Join(t.TempDir(), "forged.json")
+	body, _ := json.Marshal(map[string]any{
+		"file_path":      rel,
+		"trivial_reason": "attacker-supplied",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+	})
+	if err := os.WriteFile(stash, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink the canonical token path to the forged file.
+	tokenPath, err := config.PendingTokenPath("trivial", resolved, rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(stash, tokenPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// PreEdit on a require-tier file should Deny — the symlinked
+	// token must not be honored.
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool: "Edit", FilePath: filepath.Join(tmp, rel),
+	})
+	if err != nil {
+		t.Fatalf("PreEdit: %v", err)
+	}
+	if out.Decision != adapters.Deny {
+		t.Errorf("symlinked token: want Deny, got %v", out.Decision)
+	}
+	// And the symlink should still be there — F2 says refuse without
+	// auto-delete (operator visibility).
+	if info, err := os.Lstat(tokenPath); err != nil {
+		t.Errorf("symlink should still exist after refusal: %v", err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("token path no longer a symlink — was it auto-resolved?")
 	}
 }
 

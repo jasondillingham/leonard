@@ -1,24 +1,16 @@
 package selflog
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/jasondillingham/leonard/internal/adapters"
+	"github.com/jasondillingham/leonard/internal/config"
 )
-
-// pendingTrivialDirName mirrors cmd/leonard/truth_edit.go's
-// constant. Kept duplicated rather than imported because cmd/* and
-// internal/* shouldn't cross-import — the format is part of the
-// on-disk contract between the two.
-const pendingTrivialDirName = "pending-trivial"
 
 // trivialTokenTTL caps how long a token is honored after the CLI
 // wrote it. Matches cmd/leonard's value. Tokens older than the TTL
@@ -36,17 +28,40 @@ type trivialToken struct {
 // consumeTrivialToken looks for a per-path token written by
 // `leonard truth-edit --trivial`. On hit: validates the file_path
 // matches, checks the token age, deletes the file (single-use), and
-// returns the decoded token. On miss / expiry / mismatch: returns
-// ok=false.
+// returns the decoded token. On miss / expiry / mismatch / symlink:
+// returns ok=false.
 //
-// Token path: <projectRoot>/.leonard/pending-trivial/<sha256(rel)>.json
-// The 32-char hex prefix keeps the filename short while staying
-// unique enough for the v0.7 use case (no two project paths collide).
+// Token path: $XDG_CONFIG_HOME/leonard/pending-trivial/<projHash>.<relHash>.json
+//
+// v1.0 (bughunt-11 F1): relocated OUT of .leonard/ because the
+// bash-obfuscation attack class can plant a forged token there.
+// Same reasoning as bughunt-9 moving the verifier trust file.
+//
+// v1.0 (bughunt-11 F2): refuses symlinked tokens so an attacker
+// who plants a symlink at the canonical token path can't redirect
+// the read to attacker-controlled content.
 func consumeTrivialToken(projectRoot, rel string) (trivialToken, bool) {
 	if projectRoot == "" || rel == "" {
 		return trivialToken{}, false
 	}
-	tokenPath := filepath.Join(projectRoot, ".leonard", pendingTrivialDirName, tokenFilename(rel))
+	tokenPath, err := config.PendingTokenPath("trivial", projectRoot, rel)
+	if err != nil {
+		return trivialToken{}, false
+	}
+
+	// bughunt-11 F2: refuse symlinks before reading.
+	info, err := os.Lstat(tokenPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return trivialToken{}, false
+	}
+	if err != nil {
+		return trivialToken{}, false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// Don't auto-delete — operator visibility on the planted
+		// symlink is more useful than silent cleanup.
+		return trivialToken{}, false
+	}
 
 	data, err := os.ReadFile(tokenPath)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -87,13 +102,6 @@ func consumeTrivialToken(projectRoot, rel string) (trivialToken, bool) {
 	// invocation must re-grant.
 	_ = os.Remove(tokenPath)
 	return tok, true
-}
-
-// tokenFilename produces the same per-path name the CLI writes.
-// Keep this in sync with cmd/leonard/truth_edit.go.
-func tokenFilename(rel string) string {
-	sum := sha256.Sum256([]byte(rel))
-	return hex.EncodeToString(sum[:])[:32] + ".json"
 }
 
 // appendTrivialDraftEntry writes a draft entry to

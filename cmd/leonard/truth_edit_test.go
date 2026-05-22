@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jasondillingham/leonard/internal/config"
 )
 
 func TestTruthEdit_TrivialWritesToken(t *testing.T) {
@@ -20,19 +22,13 @@ func TestTruthEdit_TrivialWritesToken(t *testing.T) {
 		t.Fatalf("truth-edit: %v\nout=%s", err, out)
 	}
 
-	tokenDir := filepath.Join(root, dataDirName, "pending-trivial")
-	entries, err := os.ReadDir(tokenDir)
+	tokenPath, err := config.PendingTokenPath("trivial", root, ".leonard/ground-truth/facts.yaml")
 	if err != nil {
-		t.Fatalf("read token dir: %v", err)
+		t.Fatalf("PendingTokenPath: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("want 1 token, got %d", len(entries))
-	}
-
-	tokenPath := filepath.Join(tokenDir, entries[0].Name())
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
-		t.Fatalf("read token: %v", err)
+		t.Fatalf("read token at %s: %v", tokenPath, err)
 	}
 	var tok TrivialToken
 	if err := json.Unmarshal(data, &tok); err != nil {
@@ -115,8 +111,11 @@ func TestTruthEdit_Idempotent(t *testing.T) {
 			t.Fatalf("trial %q: %v", reason, err)
 		}
 	}
-	entries, _ := os.ReadDir(filepath.Join(root, dataDirName, "pending-trivial"))
-	if len(entries) != 1 {
-		t.Errorf("want 1 token after re-run, got %d", len(entries))
+	tokenPath, err := config.PendingTokenPath("trivial", root, ".leonard/ground-truth/facts.yaml")
+	if err != nil {
+		t.Fatalf("PendingTokenPath: %v", err)
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Errorf("token missing after re-run: %v", err)
 	}
 }

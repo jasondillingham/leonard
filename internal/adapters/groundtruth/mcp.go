@@ -29,9 +29,13 @@ func (a *GroundTruthAdapter) RegisterTools(srv *mcp.Server) error {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "verify_claim",
-		Description: "Detect claims in the supplied text and classify each against facts.yaml + do-not-claim.md. Returns per-claim verdicts (verified | unverified | forbidden | opinion) with provenance.",
+		Description: "Detect claims in the supplied text and classify each against facts.yaml + do-not-claim.md. Returns per-claim verdicts (verified | unverified | forbidden | opinion) with provenance. Input text is capped at 256 KiB; oversize requests return an error.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in VerifyClaimInput) (*mcp.CallToolResult, VerifyClaimOutput, error) {
-		return nil, a.verifyClaim(in), nil
+		out, err := a.verifyClaimChecked(in)
+		if err != nil {
+			return nil, VerifyClaimOutput{}, err
+		}
+		return nil, out, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -54,6 +58,12 @@ func (a *GroundTruthAdapter) RegisterTools(srv *mcp.Server) error {
 
 	return nil
 }
+
+// maxVerifyClaimBytes caps the verify_claim input size. 256 KiB
+// is large enough for any realistic prose artifact (a normal blog
+// post is a few KB; a long document is tens of KB) while keeping
+// detector cost bounded.
+const maxVerifyClaimBytes = 256 << 10 // 256 KiB
 
 // ----- verify_claim -----
 
@@ -92,6 +102,17 @@ type VerifyClaimSummary struct {
 	Unverified int `json:"unverified"`
 	Forbidden  int `json:"forbidden"`
 	Opinion    int `json:"opinion"`
+}
+
+// verifyClaimChecked wraps verifyClaim with the bughunt-11 F6
+// input-size cap. The MCP closure calls this; verifyClaim itself
+// is kept cap-free so internal callers (Detect-equivalent paths)
+// don't accidentally inherit the wire-level limit.
+func (a *GroundTruthAdapter) verifyClaimChecked(in VerifyClaimInput) (VerifyClaimOutput, error) {
+	if len(in.Text) > maxVerifyClaimBytes {
+		return VerifyClaimOutput{}, fmt.Errorf("verify_claim: input text exceeds %d-byte cap (got %d bytes)", maxVerifyClaimBytes, len(in.Text))
+	}
+	return a.verifyClaim(in), nil
 }
 
 func (a *GroundTruthAdapter) verifyClaim(in VerifyClaimInput) VerifyClaimOutput {

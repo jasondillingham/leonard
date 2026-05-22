@@ -140,6 +140,36 @@ func TestRun_RequiresCommand(t *testing.T) {
 	}
 }
 
+// TestRun_BoundsStdoutSize covers bughunt-11 F4: a plugin that
+// emits more than maxPluginOutputBytes (16 MiB) to stdout must
+// produce an error rather than allocate unbounded memory.
+func TestRun_BoundsStdoutSize(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip()
+	}
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "huge.sh")
+	// Write 17 MiB of 'x' to stdout — just over the cap. dd's
+	// stderr goes to /dev/null so it doesn't pollute the test's
+	// stderr buffer.
+	script := `#!/bin/sh
+cat > /dev/null
+dd if=/dev/zero bs=1048576 count=17 2>/dev/null | tr '\0' 'x'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := sync.Run(context.Background(), sync.Plugin{
+		Name: "huge", Command: scriptPath,
+	}, nil)
+	if err == nil {
+		t.Fatal("expected error for over-cap stdout")
+	}
+	if !strings.Contains(err.Error(), "cap") {
+		t.Errorf("want cap-exceeded error, got %v", err)
+	}
+}
+
 // Note: context-deadline cancellation behavior is governed by
 // exec.CommandContext, which on some platforms doesn't propagate
 // SIGKILL through `/bin/sh` to grandchildren (the `sleep` we'd want

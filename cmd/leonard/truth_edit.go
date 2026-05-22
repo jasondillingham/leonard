@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,14 +10,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-)
 
-// pendingTrivialDirName is the subdirectory under .leonard/ where
-// `leonard truth-edit --trivial` drops single-use bypass tokens.
-// Selflog's PreEdit (#25) consumes a matching token to allow a
-// require-tier edit through and logs the trivial entry to
-// pending-decisions.log.
-const pendingTrivialDirName = "pending-trivial"
+	"github.com/jasondillingham/leonard/internal/config"
+)
 
 // trivialTokenTTL caps how long a token stays valid after creation.
 // 5 minutes is generous enough for an operator to issue the CLI
@@ -55,7 +48,11 @@ Token semantics:
 - Token expires after 5 minutes if unused, so a forgotten command
   doesn't grant indefinite bypass.
 - Token's trivial_reason is logged to .leonard/pending-decisions.log
-  when consumed.`,
+  when consumed.
+- v1.0 (bughunt-11 F1): token lives at $XDG_CONFIG_HOME/leonard/
+  pending-trivial/<projHash>.<relHash>.json, NOT under .leonard/.
+  Relocated out of the project tree so the bash-obfuscation
+  attack class can't plant a forged token.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rel := args[0]
@@ -82,11 +79,22 @@ Token semantics:
 				return fmt.Errorf("truth-edit: path escapes project root: %q", rel)
 			}
 
-			tokenDir := filepath.Join(dataDir, pendingTrivialDirName)
-			if err := os.MkdirAll(tokenDir, 0o755); err != nil {
-				return fmt.Errorf("truth-edit: mkdir %s: %w", tokenDir, err)
+			// bughunt-11 F1: token at XDG_CONFIG_HOME, not .leonard/.
+			tokenPath, err := config.PendingTokenPath("trivial", projectRoot, cleanRel)
+			if err != nil {
+				return fmt.Errorf("truth-edit: %w", err)
 			}
-			tokenPath := filepath.Join(tokenDir, trivialTokenFilename(cleanRel))
+			if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
+				return fmt.Errorf("truth-edit: mkdir %s: %w", filepath.Dir(tokenPath), err)
+			}
+
+			// bughunt-11 F2 defense in depth: if a symlink is
+			// sitting at the canonical token path, refuse rather
+			// than overwrite (matches WriteTrustedFingerprint
+			// posture).
+			if info, err := os.Lstat(tokenPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("truth-edit: %s is a symlink; refusing to overwrite — delete it first", tokenPath)
+			}
 
 			tok := TrivialToken{
 				FilePath:      cleanRel,
@@ -105,19 +113,9 @@ Token semantics:
 			fmt.Fprintf(out, "leonard: trivial bypass recorded for %s\n", cleanRel)
 			fmt.Fprintf(out, "         reason: %s\n", trivialReason)
 			fmt.Fprintf(out, "         token expires in %s; consumed on next matching edit.\n", trivialTokenTTL)
-			_ = projectRoot
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&trivialReason, "trivial", "", "mark the edit trivial (typo, whitespace) with a short reason; bypasses require-tier rationale gate")
 	return cmd
-}
-
-// trivialTokenFilename returns the per-path filename for a trivial
-// bypass token. SHA-256 of the relative path so paths with slashes
-// or unusual characters land cleanly in a flat directory. Suffix
-// .json keeps the file content-type obvious.
-func trivialTokenFilename(rel string) string {
-	sum := sha256.Sum256([]byte(rel))
-	return hex.EncodeToString(sum[:])[:32] + ".json"
 }

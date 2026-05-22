@@ -2,11 +2,37 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jasondillingham/leonard/internal/config"
 )
+
+// grantSyncTrust reads the plugin command from .leonard/config.toml
+// and writes the corresponding sync-plugin trust fingerprint.
+// Tests call this after withCwd (which redirects XDG_CONFIG_HOME)
+// so trust lands in the test-isolated config dir.
+//
+// v1.0 (bughunt-11 F3): the sync runner refuses to exec an
+// untrusted plugin; every test that drives a real `sync` run
+// has to call this first.
+func grantSyncTrust(t *testing.T, projectRoot, pluginName string) {
+	t.Helper()
+	cfg, err := loadSyncConfig(filepath.Join(projectRoot, dataDirName))
+	if err != nil {
+		t.Fatalf("loadSyncConfig: %v", err)
+	}
+	pc, ok := cfg.Sync[pluginName]
+	if !ok {
+		t.Fatalf("grantSyncTrust: no plugin %q in config", pluginName)
+	}
+	if err := config.WriteSyncPluginTrust(projectRoot, pluginName, pc.Command); err != nil {
+		t.Fatalf("WriteSyncPluginTrust: %v", err)
+	}
+}
 
 // syncFixture creates a tempdir, .leonard/, an initial facts.yaml,
 // a bash plugin that emits the supplied output JSON, and a
@@ -45,6 +71,7 @@ func TestSync_RunsAllConfiguredPlugins(t *testing.T) {
 		`{"updated_facts": {"hello": "world"}, "changes": [{"path": "hello", "old": "", "new": "world", "reason": "init"}]}`,
 		"")
 	withCwd(t, root)
+	grantSyncTrust(t, root, "test")
 	rt := &fakeRuntime{}
 	out, err := runRoot(t, rt, "sync")
 	if err != nil {
@@ -71,6 +98,7 @@ func TestSync_DryRunDoesNotWrite(t *testing.T) {
 		`{"updated_facts": {"different": "value"}, "changes": [{"path": "different", "new": "value"}]}`,
 		"original: 1\n")
 	withCwd(t, root)
+	grantSyncTrust(t, root, "test")
 	rt := &fakeRuntime{}
 	out, err := runRoot(t, rt, "sync", "--dry-run")
 	if err != nil {
@@ -102,6 +130,7 @@ func TestSync_NamedPluginOnly(t *testing.T) {
 	}
 
 	withCwd(t, root)
+	grantSyncTrust(t, root, "alpha")
 	rt := &fakeRuntime{}
 	out, err := runRoot(t, rt, "sync", "alpha")
 	if err != nil {
@@ -173,6 +202,98 @@ func TestSyncList_EmptyMessage(t *testing.T) {
 	}
 }
 
+// TestSync_RefusesUntrustedPlugin covers bughunt-11 F3: until the
+// operator runs `leonard config trust sync <name>`, the sync runner
+// must refuse to invoke the plugin command and print a hint.
+func TestSync_RefusesUntrustedPlugin(t *testing.T) {
+	root := syncFixture(t, "test",
+		`{"updated_facts": {"x": 1}, "changes": []}`, "")
+	withCwd(t, root)
+	// Note: NO grantSyncTrust call.
+	rt := &fakeRuntime{}
+	out, err := runRoot(t, rt, "sync")
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if !strings.Contains(out, "is not trusted") {
+		t.Errorf("untrusted plugin: want 'is not trusted' message, got %s", out)
+	}
+	if !strings.Contains(out, "leonard config trust sync test") {
+		t.Errorf("untrusted plugin: want trust-grant hint, got %s", out)
+	}
+	if strings.Contains(out, "running test") {
+		t.Errorf("untrusted plugin should not actually run: %s", out)
+	}
+}
+
+// TestSync_TwoPluginsSeeAccumulatedFacts covers bughunt-11 F5:
+// when two plugins run in sequence, plugin B's input must reflect
+// plugin A's writes. The fix re-reads facts.yaml between plugins
+// so we don't silently overwrite earlier plugins' changes.
+func TestSync_TwoPluginsSeeAccumulatedFacts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip()
+	}
+	// Test plugin B uses jq to echo+modify the facts envelope. Skip
+	// cleanly when jq isn't available rather than fail.
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; skipping multi-plugin facts test")
+	}
+	root := t.TempDir()
+	dataDir := filepath.Join(root, dataDirName)
+	if err := os.MkdirAll(filepath.Join(dataDir, "ground-truth"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plugin A: adds key "a" → "alpha".
+	pluginA := filepath.Join(root, "a.sh")
+	if err := os.WriteFile(pluginA, []byte(`#!/bin/sh
+cat > /dev/null
+cat <<'BODY'
+{"updated_facts": {"a": "alpha"}, "changes": [{"path": "a", "new": "alpha"}]}
+BODY
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plugin B: echoes the input facts and tacks on key "b" → "beta".
+	// If B receives stale (empty) facts, the merged result drops A's
+	// "a" key. If B receives A's writes, the result has both keys.
+	pluginB := filepath.Join(root, "b.sh")
+	if err := os.WriteFile(pluginB, []byte(`#!/bin/sh
+PAYLOAD=$(cat)
+FACTS=$(echo "$PAYLOAD" | jq '.facts + {"b": "beta"}')
+jq -n --argjson facts "$FACTS" '{updated_facts: $facts, changes: [{"path": "b", "new": "beta"}]}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := "[sync.alpha]\ncommand = \"" + pluginA + "\"\n\n[sync.beta]\ncommand = \"" + pluginB + "\"\n"
+	if err := os.WriteFile(filepath.Join(dataDir, "config.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root)
+	grantSyncTrust(t, root, "alpha")
+	grantSyncTrust(t, root, "beta")
+	rt := &fakeRuntime{}
+	if _, err := runRoot(t, rt, "sync"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dataDir, "ground-truth", "facts.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both A's and B's writes should be present.
+	if !strings.Contains(string(body), "alpha") {
+		t.Errorf("plugin A's write is missing — B overwrote it:\n%s", body)
+	}
+	if !strings.Contains(string(body), "beta") {
+		t.Errorf("plugin B's write is missing:\n%s", body)
+	}
+}
+
 func TestSync_PluginFailurePrintsStderr(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip()
@@ -193,6 +314,7 @@ func TestSync_PluginFailurePrintsStderr(t *testing.T) {
 	}
 
 	withCwd(t, root)
+	grantSyncTrust(t, root, "failer")
 	rt := &fakeRuntime{}
 	// `sync` doesn't return an error from the cobra-level when a
 	// plugin fails (we log + continue), but we want the failure to
