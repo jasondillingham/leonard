@@ -13,15 +13,20 @@ import (
 const dataDirName = ".leonard"
 
 func newInitCmd(rt Runtime) *cobra.Command {
-	return &cobra.Command{
+	var adapterFlag string
+	cmd := &cobra.Command{
 		Use:   "init [path]",
 		Short: "Create .leonard/ and run the schema migration.",
-		Long:  "Creates .leonard/leonard.db and writes a default config.toml. Safe to re-run — the underlying schema migration is idempotent.",
+		Long:  "Creates .leonard/leonard.db and writes a default config.toml. With --adapter=ground-truth, also scaffolds the .leonard/ground-truth/ tree. Safe to re-run — the schema migration and ground-truth scaffold are both idempotent.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := resolveProjectRoot(args)
 			if err != nil {
 				return err
+			}
+			adapters, err := parseAdapterFlag(adapterFlag)
+			if err != nil {
+				return fmt.Errorf("init %s: %w", root, err)
 			}
 			dataDir := filepath.Join(root, dataDirName)
 			// Security-4 F15 (HIGH PROMOTED): refuse to operate on
@@ -37,13 +42,38 @@ func newInitCmd(rt Runtime) *cobra.Command {
 			if info, err := os.Lstat(dataDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
 				return fmt.Errorf("init %s: %s is a symlink; refusing to initialize. Delete or replace it with a real directory first", root, dataDir)
 			}
-			if err := rt.Init(cmd.Context(), root, dataDir); err != nil {
-				return fmt.Errorf("init %s: %w", root, err)
+			// Always run the SQLite store init when "code" is in
+			// the adapter set (the v0.52 default). Operators who
+			// only want the ground-truth adapter (--adapter=
+			// ground-truth) skip the DB; the .leonard/ground-
+			// truth/ tree still lands.
+			if adapters["code"] {
+				if err := rt.Init(cmd.Context(), root, dataDir); err != nil {
+					return fmt.Errorf("init %s: %w", root, err)
+				}
+			} else {
+				if err := os.MkdirAll(dataDir, 0o755); err != nil {
+					return fmt.Errorf("init %s: %w", root, err)
+				}
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "leonard: initialized %s\n", dataDir)
+
+			if adapters["ground-truth"] {
+				created, err := scaffoldGroundTruth(dataDir)
+				if err != nil {
+					return fmt.Errorf("init %s: %w", root, err)
+				}
+				if len(created) == 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "leonard: ground-truth tree already present at %s\n", filepath.Join(dataDir, groundTruthDirName))
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "leonard: scaffolded ground-truth tree (%d file(s) created)\n", len(created))
+				}
+			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&adapterFlag, "adapter", "code", "Comma-separated adapters to enable. Values: code, ground-truth. Default: code.")
+	return cmd
 }
 
 // resolveProjectRoot returns the explicit arg if given, else os.Getwd.
