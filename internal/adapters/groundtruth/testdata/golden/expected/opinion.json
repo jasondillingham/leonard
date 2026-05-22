@@ -1,0 +1,19 @@
+{
+  "claims": [
+    {
+      "text": "I prefer",
+      "category": "opinion",
+      "verdict": "opinion",
+      "note": "preference / value statement; not verifiable",
+      "start_byte": 0,
+      "end_byte": 8
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "verified": 0,
+    "unverified": 0,
+    "forbidden": 0,
+    "opinion": 1
+  }
+}

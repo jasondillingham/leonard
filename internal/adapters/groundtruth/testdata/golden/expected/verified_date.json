@@ -1,0 +1,20 @@
+{
+  "claims": [
+    {
+      "text": "2025-09-15",
+      "category": "date",
+      "verdict": "verified",
+      "evidence_path": "releases[0].shipped",
+      "evidence_value": "2025-09-15T00:00:00Z",
+      "start_byte": 24,
+      "end_byte": 34
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "verified": 1,
+    "unverified": 0,
+    "forbidden": 0,
+    "opinion": 0
+  }
+}
