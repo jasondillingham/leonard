@@ -93,6 +93,13 @@ func (a *GroundTruthAdapter) PostEdit(_ context.Context, p adapters.PostEditPayl
 		fmt.Fprintf(snap.stderr, "leonard: ground-truth post-edit: append audit log: %v\n", err)
 	}
 
+	// #29: also write the canonical markdown audit-log.md alongside
+	// the JSON pending-audit.log. The markdown file is the
+	// operator-facing ledger; the JSON file is for grep / scripts.
+	if err := appendMarkdownAudit(snap.truthDir, entry); err != nil {
+		fmt.Fprintf(snap.stderr, "leonard: ground-truth post-edit: append audit-log.md: %v\n", err)
+	}
+
 	return adapters.PostEditResult{}, nil
 }
 
@@ -103,6 +110,7 @@ func (a *GroundTruthAdapter) PostEdit(_ context.Context, p adapters.PostEditPayl
 // keeps the contention point narrow.
 type postEditSnapshot struct {
 	projectRoot string
+	truthDir    string
 	stderr      io.Writer
 	cfg         Config
 	facts       *Facts
@@ -115,6 +123,7 @@ func (a *GroundTruthAdapter) snapshot() postEditSnapshot {
 	defer a.mu.RUnlock()
 	return postEditSnapshot{
 		projectRoot: a.projectRoot,
+		truthDir:    a.truthDir,
 		stderr:      a.stderr,
 		cfg:         a.cfg,
 		facts:       a.facts,
