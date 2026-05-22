@@ -1,0 +1,20 @@
+product:
+  name: ExampleSaaS
+  features:
+    - id: feature-search
+      name: Universal search
+      shipped: 2025-09-15
+      tier: pro
+    - id: feature-export
+      name: CSV export
+      shipped: 2025-11-02
+      tier: free
+
+tech_stack:
+  primary_language: Go
+  database: PostgreSQL
+
+customers:
+  - id: acme-corp
+    name: Acme Corp
+    tier: enterprise

@@ -1,0 +1,5 @@
+product:
+  name: ExampleSaaS
+  features:
+    - id: feature-search
+    name: oops, this is mis-indented and breaks the list

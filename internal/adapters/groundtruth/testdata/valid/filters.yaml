@@ -1,0 +1,9 @@
+customer_engagement:
+  forbidden_customers:
+    - id: acme-corp
+      reason: "Contract terminated 2026-03-15"
+      forbidden_until: 2027-01-01
+
+product_messaging:
+  forbidden_channels:
+    - twitter
