@@ -159,6 +159,22 @@ func (a *GroundTruthAdapter) ResolvedConfig() Config {
 	return a.cfg
 }
 
+// Detect runs the heuristic claim detector against text using the
+// loaded Facts + Rules. Thin wrapper around the package-level Detect
+// function — exposed as a method so future call sites (the
+// verify_claim MCP tool in #10, the pre-edit hard guard in #23, the
+// post-edit advisory logger in #18) only need a *GroundTruthAdapter
+// reference, not the underlying Facts / Rules slices.
+//
+// Returns an empty DetectionResult before Init.
+func (a *GroundTruthAdapter) Detect(text string) DetectionResult {
+	a.mu.RLock()
+	facts := a.facts
+	rules := a.rules
+	a.mu.RUnlock()
+	return Detect(text, facts, rules)
+}
+
 // PreEdit is a no-op in v0.6. Hard-deny behavior lands in #23 (forbidden-
 // claim guard); advisory pending-audit log lands in #18.
 func (a *GroundTruthAdapter) PreEdit(_ context.Context, _ adapters.PreEditPayload) (adapters.PreEditResult, error) {
