@@ -57,7 +57,11 @@ type Config struct {
 // [[adapters]] block is absent or only partially specified.
 func defaultConfig() Config {
 	return Config{
-		TruthDir:         "ground-truth/",
+		// Default lives under .leonard/ so a project that hasn't
+		// configured truth_dir gets the v0.6 layout. Operators who
+		// want their tree at the project root (e.g. "source-of-
+		// truth/") set truth_dir explicitly.
+		TruthDir:         ".leonard/ground-truth/",
 		VerifyTargets:    []string{"*.md", "*.txt", "*.yaml"},
 		ForbiddenAction:  ActionReject,
 		UnverifiedAction: ActionWarn,

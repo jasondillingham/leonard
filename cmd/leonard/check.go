@@ -81,9 +81,14 @@ Flags:
 			}
 
 			a := groundtruth.New()
+			raw, err := loadGroundTruthRaw(dataDir)
+			if err != nil {
+				return fmt.Errorf("check: %w", err)
+			}
 			if err := a.Init(context.Background(), adapters.Config{
 				ProjectRoot: projectRoot,
 				Stderr:      cmd.ErrOrStderr(),
+				Raw:         raw,
 			}); err != nil {
 				return fmt.Errorf("check: init ground-truth adapter: %w", err)
 			}
