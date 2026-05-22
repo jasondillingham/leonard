@@ -41,9 +41,15 @@ exit 0 if the whole tree loads cleanly.`,
 			projectRoot := filepath.Dir(dataDir)
 
 			a := groundtruth.New()
+			raw, err := loadGroundTruthRaw(dataDir)
+			if err != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "leonard ground-truth lint: FAIL\n  %v\n", err)
+				return &exitCode{code: 1}
+			}
 			if err := a.Init(context.Background(), adapters.Config{
 				ProjectRoot: projectRoot,
 				Stderr:      cmd.ErrOrStderr(),
+				Raw:         raw,
 			}); err != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "leonard ground-truth lint: FAIL\n  %v\n", err)
 				return &exitCode{code: 1}
@@ -84,9 +90,14 @@ func newGroundTruthStatsCmd() *cobra.Command {
 			projectRoot := filepath.Dir(dataDir)
 
 			a := groundtruth.New()
+			raw, err := loadGroundTruthRaw(dataDir)
+			if err != nil {
+				return fmt.Errorf("ground-truth stats: %w", err)
+			}
 			if err := a.Init(context.Background(), adapters.Config{
 				ProjectRoot: projectRoot,
 				Stderr:      cmd.ErrOrStderr(),
+				Raw:         raw,
 			}); err != nil {
 				return fmt.Errorf("ground-truth stats: %w", err)
 			}

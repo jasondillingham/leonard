@@ -73,9 +73,15 @@ func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error 
 		return err
 	}
 
+	// truth_dir is project-relative by default. The historical
+	// implementation force-prepended ".leonard/" before joining,
+	// which trapped operators who wanted their truth tree at e.g.
+	// "source-of-truth/" at the project root. v0.53 makes the
+	// path operator-controlled: relative paths join directly to
+	// projectRoot, absolute paths pass through unchanged.
 	truthDir := parsed.TruthDir
 	if !filepath.IsAbs(truthDir) {
-		truthDir = filepath.Join(cfg.ProjectRoot, ".leonard", truthDir)
+		truthDir = filepath.Join(cfg.ProjectRoot, truthDir)
 	}
 
 	facts, err := loadFacts(filepath.Join(truthDir, "facts.yaml"))

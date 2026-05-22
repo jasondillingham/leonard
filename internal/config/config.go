@@ -220,6 +220,40 @@ func Load(path string) (Config, error) {
 	if err := toml.Unmarshal(data, &c); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
 	}
+
+	// pelletier/go-toml/v2 doesn't invoke UnmarshalTOML on array
+	// elements, so AdapterConfig.Raw stays nil after the typed
+	// unmarshal. Do a second pass into a generic map to capture
+	// each [[adapters]] block's full field set, then merge into
+	// the typed slice. Cheapest way to make Raw load without
+	// forking the toml library.
+	if len(c.Adapters) > 0 {
+		var rawTop map[string]any
+		if err := toml.Unmarshal(data, &rawTop); err == nil {
+			if rawList, ok := rawTop["adapters"].([]any); ok {
+				for i, block := range rawList {
+					if i >= len(c.Adapters) {
+						break
+					}
+					m, ok := block.(map[string]any)
+					if !ok {
+						continue
+					}
+					raw := make(map[string]any, len(m))
+					for k, v := range m {
+						if k == "type" {
+							continue
+						}
+						raw[k] = v
+					}
+					if len(raw) > 0 {
+						c.Adapters[i].Raw = raw
+					}
+				}
+			}
+		}
+	}
+
 	// Normalize: empty slice → nil so round-trips against Default()
 	// compare equal under reflect.DeepEqual.
 	if len(c.Adapters) == 0 {
