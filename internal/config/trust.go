@@ -287,6 +287,89 @@ func AdapterTrusted(projectRoot, adapterName string) (bool, error) {
 	return info.Size() > 0, nil
 }
 
+// SyncPluginTrustPath returns the trust file path for a sync plugin
+// fingerprint scoped to projectRoot. v1.0 (bughunt-11 F3) added
+// trust gating to the sync plugin runner — same posture as the
+// verifier-command trust (bughunt-9): SHA-256 fingerprint stored
+// outside the project tree at $XDG_CONFIG_HOME so a .leonard/
+// write attack can't poison it.
+//
+// pluginName follows the same whitelist as adapter names: lowercase
+// letters, digits, hyphens. Strict so attacker-controlled values
+// can't smuggle path separators or .. segments.
+func SyncPluginTrustPath(projectRoot, pluginName string) (string, error) {
+	if !validAdapterName(pluginName) {
+		return "", fmt.Errorf("trust: invalid sync plugin name %q (allowed: lowercase letters, digits, hyphens)", pluginName)
+	}
+	abs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve project root: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	projectHash := sha256Hex(abs)
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("trust: resolve user config dir: %w", err)
+	}
+	return filepath.Join(cfgDir, "leonard", "trust", projectHash+".sync-"+pluginName+".sha256"), nil
+}
+
+// WriteSyncPluginTrust stores the SHA-256 fingerprint of command as
+// the trusted plugin command for (projectRoot, pluginName). Operator
+// invokes this through `leonard config trust sync <name>` after
+// reviewing the configured plugin path.
+//
+// Mirrors the verifier trust posture: refuses to overwrite a
+// symlinked target; parent dir 0o700; file 0o600.
+func WriteSyncPluginTrust(projectRoot, pluginName, command string) error {
+	if strings.TrimSpace(command) == "" {
+		return errors.New("trust: sync plugin command is empty; nothing to fingerprint")
+	}
+	path, err := SyncPluginTrustPath(projectRoot, pluginName)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("trust: mkdir %s: %w", filepath.Dir(path), err)
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("trust: %s is a symlink; refusing to overwrite — delete it first", path)
+	}
+	return os.WriteFile(path, []byte(FingerprintCommand(command)+"\n"), 0o600)
+}
+
+// VerifySyncPluginTrusted reports whether the stored fingerprint
+// for (projectRoot, pluginName) matches the SHA-256 of command.
+// Returns (false, nil) when no trust file exists (operator hasn't
+// granted trust); (false, err) on symlink or I/O failure.
+func VerifySyncPluginTrusted(projectRoot, pluginName, command string) (bool, error) {
+	if strings.TrimSpace(command) == "" {
+		return false, nil
+	}
+	path, err := SyncPluginTrustPath(projectRoot, pluginName)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("trust: lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("trust: %s is a symlink; refusing to follow", path)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("trust: read %s: %w", path, err)
+	}
+	want := FingerprintCommand(command)
+	return strings.TrimSpace(string(stored)) == want, nil
+}
+
 // VerifyCommandTrusted reports whether `command` matches the
 // stored trust fingerprint for projectRoot. Returns:
 //

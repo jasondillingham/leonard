@@ -40,34 +40,42 @@ func newConfigCmd() *cobra.Command {
 const (
 	trustTargetVerifier    = "verifier"
 	trustTargetGroundTruth = "ground-truth"
+	trustTargetSync        = "sync"
 )
 
 func newConfigTrustCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:   "trust [target]",
-		Short: "Authorize a blocking action — verifier command or ground-truth adapter.",
+		Use:   "trust [target] [args]",
+		Short: "Authorize a blocking action — verifier command, ground-truth adapter, or sync plugin.",
 		Long: `Grants operator trust for blocking actions.
 
 Targets:
-  verifier      Authorize [post_edit.verify].command (default for backwards
-                compat — empty target means verifier). Hashes the command
-                with SHA-256 and stores the fingerprint at
-                $XDG_CONFIG_HOME/leonard/trust/<hash>.sha256.
+  verifier         Authorize [post_edit.verify].command (default for backwards
+                   compat — empty target means verifier). Hashes the command
+                   with SHA-256 and stores the fingerprint at
+                   $XDG_CONFIG_HOME/leonard/trust/<hash>.sha256.
 
-  ground-truth  Authorize the ground-truth adapter to reject edits that
-                introduce forbidden claims. Writes a marker file at
-                $XDG_CONFIG_HOME/leonard/trust/<hash>.ground-truth.trust
-                — until the marker exists, the adapter logs warnings
-                instead of denying.
+  ground-truth     Authorize the ground-truth adapter to reject edits that
+                   introduce forbidden claims. Writes a marker file at
+                   $XDG_CONFIG_HOME/leonard/trust/<hash>.ground-truth.trust
+                   — until the marker exists, the adapter logs warnings
+                   instead of denying.
+
+  sync <name>      Authorize a sync plugin's command path. Hashes the
+                   .leonard/config.toml [sync.<name>].command with SHA-256
+                   and stores the fingerprint at
+                   $XDG_CONFIG_HOME/leonard/trust/<hash>.sync-<name>.sha256.
+                   leonard sync refuses to invoke the plugin until the
+                   fingerprint matches (bughunt-11 F3).
 
 Trust is per-project, attached to the canonical absolute path of the
 project root. Files live OUTSIDE the project tree so .leonard/ write
 attacks can't poison them.`,
-		Args: cobra.MaximumNArgs(1),
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := trustTargetVerifier
-			if len(args) == 1 {
+			if len(args) >= 1 {
 				target = args[0]
 			}
 			switch target {
@@ -75,13 +83,69 @@ attacks can't poison them.`,
 				return runTrustVerifier(cmd, yes)
 			case trustTargetGroundTruth:
 				return runTrustGroundTruth(cmd, yes)
+			case trustTargetSync:
+				if len(args) < 2 {
+					return fmt.Errorf("config trust sync: plugin name required (e.g., `leonard config trust sync github`)")
+				}
+				return runTrustSync(cmd, args[1], yes)
 			default:
-				return fmt.Errorf("config trust: unknown target %q (expected one of: verifier, ground-truth)", target)
+				return fmt.Errorf("config trust: unknown target %q (expected one of: verifier, ground-truth, sync)", target)
 			}
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip interactive confirmation (intended for scripted setup)")
 	return cmd
+}
+
+// runTrustSync authorizes a sync plugin's command path. Reads the
+// configured plugin from .leonard/config.toml's [sync.<name>] block,
+// shows the resolved command to the operator, and (on confirmation)
+// stores the SHA-256 fingerprint. The plugin runner refuses to exec
+// until the fingerprint matches.
+//
+// Same posture as runTrustVerifier: the trust file lives outside
+// the project tree so .leonard/ write attacks can't poison it.
+func runTrustSync(cmd *cobra.Command, name string, yes bool) error {
+	dataDir, err := dataDirForCwd()
+	if err != nil {
+		return err
+	}
+	projectRoot := filepath.Dir(dataDir)
+	cfg, err := loadSyncConfig(dataDir)
+	if err != nil {
+		return fmt.Errorf("config trust sync: %w", err)
+	}
+	pc, ok := cfg.Sync[name]
+	if !ok {
+		return fmt.Errorf("config trust sync: no plugin named %q in .leonard/config.toml (configured: %s)",
+			name, strings.Join(syncNames(cfg), ", "))
+	}
+	if strings.TrimSpace(pc.Command) == "" {
+		return fmt.Errorf("config trust sync: plugin %q has empty command; nothing to authorize", name)
+	}
+	trustPath, err := config.SyncPluginTrustPath(projectRoot, name)
+	if err != nil {
+		return fmt.Errorf("config trust sync: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "leonard: about to trust sync plugin %q with command:\n\n", name)
+	fmt.Fprintln(out, "    "+pc.Command)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "When you run `leonard sync` (or `leonard sync "+name+"`), this binary will execute.")
+	fmt.Fprintln(out, "Fingerprint will be stored at "+trustPath)
+	fmt.Fprintln(out)
+
+	if err := confirmTrust(cmd, yes); err != nil {
+		return err
+	}
+
+	if err := config.WriteSyncPluginTrust(projectRoot, name, pc.Command); err != nil {
+		return fmt.Errorf("config trust sync: write trust file: %w", err)
+	}
+	fp := config.FingerprintCommand(pc.Command)
+	fmt.Fprintf(out, "leonard: sync plugin %q authorized (fingerprint %s…).\n", name, fp[:12])
+	return nil
 }
 
 // runTrustVerifier authorizes [post_edit.verify].command. Extracted
