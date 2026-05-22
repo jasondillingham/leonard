@@ -1,32 +1,30 @@
 // Command leonard-mcp is the stdio MCP server exposing Leonard's
-// ground-truth tools (verify_symbol, find_symbol, list_files) to Claude
-// Code. It speaks newline-delimited JSON-RPC over stdin/stdout per the
-// MCP stdio transport spec.
+// adapter tool surfaces (code: verify_symbol / find_symbol /
+// list_files / record_decision / etc; ground-truth: verify_claim /
+// list_facts / get_story / get_truth_history) to Claude Code.
+//
+// v1.0 (#46): routes through internal/dispatcher so the same
+// adapter selection rules apply as in leonard-hook. Each enabled
+// adapter calls its own RegisterTools onto the MCP server.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
-	leonardmcp "github.com/jasondillingham/leonard/internal/mcp"
-	"github.com/jasondillingham/leonard/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/jasondillingham/leonard/internal/dispatcher"
+	leonardmcp "github.com/jasondillingham/leonard/internal/mcp"
 )
 
 // version is overridable at build time via -ldflags "-X main.version=...".
-var version = "0.52.0"
-
-// dbWatchInterval is how often the active watcher polls the DB path for a
-// swap. Two seconds is a generous balance: well under the human latency of
-// "did my init succeed?" while keeping the syscall load trivial.
-const dbWatchInterval = 2 * time.Second
+var version = "0.53.0"
 
 func main() {
 	// Bughunt-5 launch-readiness B4: `leonard-mcp --version` used to
@@ -38,7 +36,7 @@ func main() {
 			fmt.Println("leonard-mcp", version)
 			return
 		case "--help", "-h", "help":
-			fmt.Fprintln(os.Stderr, "leonard-mcp — stdio MCP server for Leonard's ground-truth tools.")
+			fmt.Fprintln(os.Stderr, "leonard-mcp — stdio MCP server for Leonard's adapter tool surfaces.")
 			fmt.Fprintln(os.Stderr, "Run with no arguments to start the server (expects MCP JSON-RPC on stdin/stdout).")
 			fmt.Fprintln(os.Stderr, "Version:", version)
 			return
@@ -58,34 +56,37 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("cwd: %w", err)
 	}
-	dbPath := filepath.Join(cwd, ".leonard", "leonard.db")
-	if _, err := os.Stat(dbPath); err != nil {
-		return fmt.Errorf("leonard store not found at %s — run `leonard init` first", dbPath)
+	dataDir := filepath.Join(cwd, ".leonard")
+	if _, err := os.Stat(dataDir); err != nil {
+		return fmt.Errorf("leonard not initialized at %s — run `leonard init` first", dataDir)
 	}
 
-	st, err := store.Open(dbPath)
+	dispatcher.SetGlobalStderr(os.Stderr)
+	loaded, err := dispatcher.LoadEnabled(ctx, cwd, dataDir, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return fmt.Errorf("load adapters: %w", err)
 	}
-	defer st.Close()
+	defer loaded.Close()
 
-	adapter := leonardmcp.NewStoreAdapter(st)
-	if err := adapter.WatchDatabase(dbPath); err != nil {
-		return fmt.Errorf("watch database: %w", err)
-	}
-
-	go watchDatabase(ctx, stop, adapter, dbPath, os.Stderr, dbWatchInterval)
-
-	srv := leonardmcp.NewServer(adapter, leonardmcp.Implementation{
+	srv := leonardmcp.NewBareServer(leonardmcp.Implementation{
 		Name:    "leonard-mcp",
 		Version: version,
 	})
 
-	// Filter stdin through a JSON-RPC envelope screen so that a stray
-	// non-JSON line from a misbehaving parent process doesn't crash the
-	// server. Use IOTransport directly rather than StdioTransport so we
-	// can substitute the reader. Writer side mirrors what StdioTransport
-	// does internally (no-op Close around os.Stdout). Bughunt-2 mcp F1.
+	// Each loaded adapter contributes its own tool surface. The code
+	// adapter registers the v0.52 code-symbol + decisions/claims
+	// tools; the ground-truth adapter registers verify_claim /
+	// list_facts / get_story (+ get_truth_history when the store
+	// satisfies the right interface).
+	for _, a := range loaded.Adapters {
+		if err := a.RegisterTools(srv); err != nil {
+			fmt.Fprintf(os.Stderr, "leonard-mcp: %s RegisterTools: %v\n", a.Name(), err)
+		}
+	}
+
+	// Filter stdin through a JSON-RPC envelope screen so a stray
+	// non-JSON line from a misbehaving parent process doesn't crash
+	// the server. Bughunt-2 mcp F1 defense, kept from v0.52.
 	transport := &mcp.IOTransport{
 		Reader: newJSONLineFilter(os.Stdin, os.Stderr),
 		Writer: nopWriteCloser{os.Stdout},
@@ -94,38 +95,12 @@ func run() error {
 }
 
 // translateExitErr maps the MCP SDK's run-loop result onto exit semantics.
-// SIGINT, SIGTERM, and the db-watcher's stop() all cancel the run context,
-// which surfaces as context.Canceled — those are clean shutdowns and must
-// exit 0 so process supervisors don't treat them as crashes. Any other
-// error propagates unchanged.
+// SIGINT / SIGTERM cancel the run context, which surfaces as
+// context.Canceled — those are clean shutdowns and must exit 0 so
+// process supervisors don't treat them as crashes.
 func translateExitErr(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
-}
-
-// watchDatabase polls the DB path on a ticker and triggers a clean
-// shutdown if the file disappears or its inode no longer matches the
-// open handle. Lazy detection on each tool call (in StoreAdapter) is the
-// primary guard; this watcher tears the server down so a session that
-// goes idle after the swap doesn't keep returning stale reads.
-//
-// interval is parameterized so tests can poll at millisecond speed
-// without changing the production cadence.
-func watchDatabase(ctx context.Context, stop func(), a *leonardmcp.StoreAdapter, dbPath string, errOut io.Writer, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := a.CheckDatabase(); err != nil {
-				fmt.Fprintf(errOut, "leonard-mcp: database at %s was removed or replaced — shutting down\n", dbPath)
-				stop()
-				return
-			}
-		}
-	}
 }

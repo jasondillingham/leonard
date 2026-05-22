@@ -35,6 +35,24 @@ func NewServer(store SymbolStore, impl Implementation) *mcp.Server {
 	return srv
 }
 
+// NewBareServer constructs an MCP server with NO tools registered.
+// Used by the v1.0 dispatcher-based leonard-mcp main: each loaded
+// adapter calls its own RegisterTools onto the returned server, so
+// the bare-server step is just the identity advertisement.
+//
+// Tests and embedded callers that want the v0.52 code-symbol tool
+// set should call NewServer instead (or call RegisterTools manually
+// after NewBareServer).
+func NewBareServer(impl Implementation) *mcp.Server {
+	if impl.Name == "" {
+		impl = DefaultImplementation()
+	}
+	return mcp.NewServer(&mcp.Implementation{
+		Name:    impl.Name,
+		Version: impl.Version,
+	}, nil)
+}
+
 // RegisterTools wires Leonard's v1 tool set onto srv with the supplied
 // store. v0.6+ exposes this so the adapter system can attach tools to
 // an already-constructed *mcp.Server (see internal/adapters/code.
