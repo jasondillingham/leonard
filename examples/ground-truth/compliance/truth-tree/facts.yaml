@@ -1,0 +1,38 @@
+framework:
+  active: SOC 2 Type II
+  audit_window: "2026-01-01 to 2026-12-31"
+  expected_completion: 2027-Q1
+
+auditor:
+  firm: ExampleCPA LLP
+  engagement_letter: 2025-12-10
+
+controls:
+  - id: CC1.1
+    name: Board governance
+    status: implemented
+    last_verified: 2026-05-01
+  - id: CC2.2
+    name: Communication of policies
+    status: implemented
+    last_verified: 2026-05-01
+  - id: CC6.1
+    name: Logical access controls
+    status: implemented
+    last_verified: 2026-05-15
+  - id: CC6.8
+    name: Boundary protection
+    status: implemented
+    last_verified: 2026-05-15
+  - id: CC7.2
+    name: System monitoring
+    status: in_progress
+    last_verified: 2026-04-20
+    note: "Migration to centralized logging not complete"
+
+data_flows:
+  - id: customer_data
+    sources: [api, web_ui]
+    storage: PostgreSQL (us-east-1)
+    encryption_at_rest: AES-256
+    encryption_in_transit: TLS 1.3

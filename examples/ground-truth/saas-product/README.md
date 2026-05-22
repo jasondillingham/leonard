@@ -12,12 +12,12 @@ tree prevents:
 ## Tree
 
 ```
-.leonard/ground-truth/
-├── facts.yaml         what IS true about the product
-├── stories.md         canonical launch + founding narratives
-├── do-not-claim.md    capability gaps + customer NDAs
-├── filters.yaml       blocked outreach paths + disclosure rules
-└── audit-log.md       (populated as edits happen)
+truth-tree/                     # copy to your-project/.leonard/ground-truth/
+├── facts.yaml                  what IS true about the product
+├── stories.md                  canonical launch + founding narratives
+├── do-not-claim.md             capability gaps + customer NDAs
+├── filters.yaml                blocked outreach paths + disclosure rules
+└── audit-log.md                (populated as edits happen)
 ```
 
 ## Domain choices encoded

@@ -15,12 +15,12 @@ amendment — see [`docs/ROADMAP-v1-ground-truth.md`](../../../docs/ROADMAP-v1-g
 ## Tree
 
 ```
-.leonard/ground-truth/
-├── facts.yaml         employment / projects / OSS / skills / certifications
-├── stories.md         canonical career narratives
-├── do-not-claim.md    skills not held + certifications not earned + comp rules
-├── filters.yaml       company-fit filters + role-shape filters
-└── audit-log.md       (populated per application)
+truth-tree/                     # copy to your-project/.leonard/ground-truth/
+├── facts.yaml                  employment / projects / OSS / skills / certifications
+├── stories.md                  canonical career narratives
+├── do-not-claim.md             skills not held + certifications not earned + comp rules
+├── filters.yaml                company-fit filters + role-shape filters
+└── audit-log.md                (populated per application)
 ```
 
 ## Domain choices encoded

@@ -16,11 +16,20 @@ own project as a starting point.
 Each example has its own `README.md` explaining the domain choices
 the fixture encodes.
 
+## Layout
+
+Each example ships its fixture under `truth-tree/` rather than under
+a `.leonard/` directory. The reason is mechanical: Leonard's own
+pre-edit guard refuses writes under any `.leonard/` path (operator
+trust boundary, bughunt-2 F1). Operators copy the `truth-tree/`
+contents into their project's `.leonard/ground-truth/` directly.
+
 ## Using an example
 
 ```
 # Copy the tree you want to start from:
-cp -r examples/ground-truth/saas-product/.leonard/ground-truth /path/to/your-project/.leonard/
+mkdir -p /path/to/your-project/.leonard/ground-truth
+cp -r examples/ground-truth/saas-product/truth-tree/* /path/to/your-project/.leonard/ground-truth/
 
 # Then customize for your real data:
 cd /path/to/your-project

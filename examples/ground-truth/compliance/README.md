@@ -13,12 +13,12 @@ ground-truth tree prevents:
 ## Tree
 
 ```
-.leonard/ground-truth/
-├── facts.yaml         implemented controls + technologies + data flows
-├── stories.md         canonical control-narrative phrasings
-├── do-not-claim.md    framework gaps + auditor finding restrictions
-├── filters.yaml       counsel-routing requirements
-└── audit-log.md       (populated as artifacts are written)
+truth-tree/                     # copy to your-project/.leonard/ground-truth/
+├── facts.yaml                  implemented controls + technologies + data flows
+├── stories.md                  canonical control-narrative phrasings
+├── do-not-claim.md             framework gaps + auditor finding restrictions
+├── filters.yaml                counsel-routing requirements
+└── audit-log.md                (populated as artifacts are written)
 ```
 
 ## Domain choices encoded

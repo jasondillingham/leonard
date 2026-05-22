@@ -1,0 +1,43 @@
+product:
+  name: ExampleSaaS
+  homepage: https://example.com
+  features:
+    - id: feature-search
+      name: Universal search
+      shipped: 2025-09-15
+      tier: pro
+    - id: feature-export
+      name: CSV export
+      shipped: 2025-11-02
+      tier: free
+    - id: feature-team
+      name: Team collaboration
+      shipped: 2024-03-15
+      tier: pro
+  pricing:
+    free_tier_users: 1
+    pro_tier_users: 5
+    enterprise_tier_users: unlimited
+  uptime_30d: 99.94
+
+tech_stack:
+  primary_language: Go
+  database: PostgreSQL
+  hosting: Fly.io
+  monitoring: Grafana Cloud
+
+customers:
+  - id: acme-corp
+    name: Acme Corp
+    tier: enterprise
+    sensitivity: private
+    note: "NDA in place; no public case study"
+  - id: beta-co
+    name: Beta Co
+    tier: pro
+    sensitivity: public
+    case_study_url: https://example.com/case-studies/beta-co
+  - id: gamma-inc
+    name: Gamma Inc
+    tier: pro
+    sensitivity: public
