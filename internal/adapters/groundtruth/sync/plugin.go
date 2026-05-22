@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"time"
 )
@@ -58,6 +59,43 @@ type Result struct {
 // hard ceiling so a hung plugin doesn't block `leonard sync` forever.
 const defaultTimeout = 5 * time.Minute
 
+// maxPluginOutputBytes caps stdout / stderr per invocation
+// (bughunt-11 F4). A misbehaving plugin that writes gigabytes to
+// stdout would otherwise OOM the leonard CLI process. 16 MiB is
+// generous so legitimate plugins (large facts.yaml updates,
+// verbose progress on stderr) aren't truncated.
+const maxPluginOutputBytes = 16 << 20 // 16 MiB
+
+// boundedBuffer is an io.Writer that drops writes past a cap and
+// flags Truncated. Used to wrap both stdout and stderr so a
+// misbehaving plugin can't exhaust the CLI process's memory.
+type boundedBuffer struct {
+	buf       bytes.Buffer
+	cap       int
+	Truncated bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	remaining := b.cap - b.buf.Len()
+	if remaining <= 0 {
+		b.Truncated = true
+		return len(p), nil
+	}
+	if len(p) <= remaining {
+		return b.buf.Write(p)
+	}
+	if _, err := b.buf.Write(p[:remaining]); err != nil {
+		return 0, err
+	}
+	b.Truncated = true
+	return len(p), nil
+}
+
+func (b *boundedBuffer) String() string { return b.buf.String() }
+func (b *boundedBuffer) Bytes() []byte  { return b.buf.Bytes() }
+
+var _ io.Writer = (*boundedBuffer)(nil)
+
 // Run invokes the plugin synchronously. Returns the parsed Output
 // plus runner metadata. Returns an error on:
 //   - Plugin.Command empty
@@ -88,15 +126,25 @@ func Run(ctx context.Context, p Plugin, facts map[string]any) (Result, error) {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, p.Command)
 	cmd.Stdin = bytes.NewReader(payload)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// bughunt-11 F4: bounded buffers so a runaway plugin can't
+	// exhaust memory.
+	stdout := &boundedBuffer{cap: maxPluginOutputBytes}
+	stderr := &boundedBuffer{cap: maxPluginOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
 		return Result{
 			Stderr:  stderr.String(),
 			Elapsed: time.Since(start),
 		}, fmt.Errorf("sync: plugin %q failed: %w", p.Name, err)
+	}
+
+	if stdout.Truncated {
+		return Result{
+			Stderr:  stderr.String(),
+			Elapsed: time.Since(start),
+		}, fmt.Errorf("sync: plugin %q stdout exceeded %d-byte cap; refusing to parse partial output", p.Name, maxPluginOutputBytes)
 	}
 
 	var out Output

@@ -15,6 +15,12 @@ func (a *GroundTruthAdapter) VerifyClaimForTest(in VerifyClaimInput) VerifyClaim
 	return a.verifyClaim(in)
 }
 
+// VerifyClaimCheckedForTest exposes verifyClaimChecked so tests can
+// exercise the bughunt-11 F6 input-size cap.
+func (a *GroundTruthAdapter) VerifyClaimCheckedForTest(in VerifyClaimInput) (VerifyClaimOutput, error) {
+	return a.verifyClaimChecked(in)
+}
+
 // ListFactsForTest exposes listFacts. Used by mcp_test.go.
 func (a *GroundTruthAdapter) ListFactsForTest(in ListFactsInput) ListFactsOutput {
 	return a.listFacts(in)

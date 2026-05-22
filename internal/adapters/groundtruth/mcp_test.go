@@ -109,6 +109,21 @@ func TestVerifyClaim_EmptyTextReturnsEmpty(t *testing.T) {
 	}
 }
 
+// TestVerifyClaim_RejectsOversizedInput covers bughunt-11 F6:
+// the MCP wrapper caps verify_claim input at 256 KiB so a runaway
+// client can't make Detect chew on multi-MB payloads.
+func TestVerifyClaim_RejectsOversizedInput(t *testing.T) {
+	a := mcpAdapter(t, "valid")
+	huge := strings.Repeat("x", 1<<19) // 512 KiB — well over the 256 KiB cap
+	_, err := a.VerifyClaimCheckedForTest(groundtruth.VerifyClaimInput{Text: huge})
+	if err == nil {
+		t.Fatal("expected oversize error")
+	}
+	if !strings.Contains(err.Error(), "cap") {
+		t.Errorf("want cap-exceeded error, got %v", err)
+	}
+}
+
 // ----- list_facts -----
 
 func TestListFacts_EmptyCategoryReturnsTopLevelKeys(t *testing.T) {
