@@ -7,6 +7,138 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v1.0.0 — generalized ground-truth toolkit
+
+**The big shift:** Leonard generalized from "code ground-truth" to
+**pluggable ground-truth**. The v0.52 behavior is now one adapter
+(`code`) among several. A new ground-truth adapter verifies prose
+claims against a per-project truth tree, with full hook
+plumbing, MCP tools, CLI surfaces, and a sync-plugin system.
+
+A self-logging discipline ties every truth-changing edit to a
+rationale entry in the decision log, so over time `leonard
+truth-story` renders the project's build narrative.
+
+**Zero regression for v0.52 projects.** The code adapter is
+auto-enabled when `go.mod` is present at root or `[post_edit.verify]`
+is configured. Existing trust files, decision logs, and claim
+ledgers continue to work identically.
+
+### Highlights
+
+#### Pluggable adapter system
+- `internal/adapters/Adapter` interface (`Init` / `Close` /
+  `PreEdit` / `PostEdit` / `SessionStart` / `Stop` / `RegisterTools`)
+- Adapter registry + factory pattern. Three adapters ship:
+  `code`, `ground-truth`, `self-logging`.
+- Decision aggregation: deny-beats-pass for PreEdit, additive for
+  the other three hooks.
+
+#### Ground-truth adapter
+- Five-file schema under `.leonard/ground-truth/`:
+  `facts.yaml`, `stories.md`, `do-not-claim.md`, `filters.yaml`,
+  `audit-log.md`.
+- Heuristic claim detector (regex patterns, 5 categories) with
+  optional LLM fallback (Ollama-style endpoint) in hybrid mode.
+- Pre-edit hard-deny on forbidden claims when
+  `leonard config trust ground-truth` is granted.
+- Path filters block forbidden Write paths;
+  content filters require disclosures.
+- Hot reload (polling-based, 2s interval) — saved truth files
+  take effect within seconds.
+- Post-edit writes structured findings to both JSON
+  `pending-audit.log` and markdown `audit-log.md`.
+- Stop hook emits per-session digest via SystemMessage.
+
+#### Self-logging adapter
+- Tiered policy (require / warn / skip) per file path.
+- Auto-draft entries in `.leonard/pending-decisions.log` on every
+  truth-file edit.
+- Single-use bypass tokens (5-minute TTL) via
+  `leonard truth-edit --trivial "reason" <path>` and
+  `leonard override --once --reason "..." <path>`.
+- Per-adapter trust marker at
+  `$XDG_CONFIG_HOME/leonard/trust/<hash>.<adapter>.trust`.
+
+#### CLI additions
+- `leonard init --adapter=code,ground-truth` — scaffold both
+  adapter trees
+- `leonard config trust [verifier|ground-truth]` — gate blocking
+  adapters
+- `leonard check <file>` — run all adapters against a file (read-only)
+- `leonard ground-truth lint` / `stats` — validate + report on the
+  truth tree
+- `leonard truth-edit --trivial` — single-use require-tier bypass
+- `leonard override --once` — single-use filter-rule bypass
+- `leonard truth-history <file>` — chronological per-file
+  decision-log narrative
+- `leonard truth-story` — full chronological narrative
+  (`--scope`, `--since`, `--format=markdown|json|plain`,
+  `--include-trivial`)
+- `leonard sync` / `sync list` / `sync <plugin>` — drive sync
+  plugins
+- `leonard sync github` (via shipped `leonard-sync-github` binary)
+  — refresh `facts.oss_contributions` against GitHub API
+
+#### MCP tools (5 new)
+- `verify_claim(text)` — heuristic + LLM claim detection
+- `list_facts(category?, include_private?)` — facts.yaml
+  navigation with sensitivity filtering
+- `get_story(name)` — canonical phrasings; errors on unknown
+- `get_truth_history(file_path)` — decision-log entries that
+  touched a file
+- `record_decision` extended with optional `truth_change` block
+
+#### Schema migration
+- v7 → v8: nullable `truth_change` TEXT column on `decisions`.
+  Backwards-compat: existing entries load with `TruthChange == nil`.
+
+#### Sync plugin system
+- JSON-stdin/JSON-stdout protocol
+  ([`docs/sync-plugins.md`](docs/sync-plugins.md))
+- Built-in `leonard-sync-github` binary (refreshes OSS PR
+  statuses via GitHub API; honors `GH_TOKEN`)
+- Atomic facts.yaml writes (temp file + rename); per-plugin
+  failures non-fatal
+
+### Breaking changes
+
+**None.** v0.52 projects upgrade without touching config. The
+ground-truth and self-logging adapters are opt-in via
+`leonard init --adapter=...` or `[[adapters]]` in `config.toml`.
+
+The `leonard verify <symbol>` CLI continues to work for symbol
+lookup. The new file-verification CLI is `leonard check <file>`
+to avoid clashing.
+
+### Documentation
+
+- [`docs/ROADMAP-v1-ground-truth.md`](docs/ROADMAP-v1-ground-truth.md)
+  — the full design rationale, phasing, and self-logging
+  amendment
+- [`docs/self-logging.md`](docs/self-logging.md) — discipline
+  reference
+- [`docs/adapters/`](docs/adapters/) — per-adapter reference
+- [`docs/schema/`](docs/schema/) — per-file schema docs
+- [`docs/cookbook/`](docs/cookbook/) — worked patterns
+- [`docs/sync-plugins.md`](docs/sync-plugins.md) — plugin protocol
+- [`examples/ground-truth/`](examples/ground-truth/) — three
+  worked example projects (SaaS, compliance, personal)
+
+### Test coverage
+
+~250 new tests across the v0.6 → v1.0 work. Every prior v0.52
+test still passes. `go test ./...` green across 16 packages.
+
+### Acknowledgments
+
+The five-file schema design and self-logging amendment were
+shaped through dogfooding on this very repo across the v0.6 →
+v1.0 development arc. Every PR in the v0.6/v0.7/v0.8/v0.9/v1.0
+stacks was committed under the discipline it documents.
+
+---
+
 ## v0.52.0 — trust file relocation + hook Close lifecycle (2 CRIT + 1 HIGH)
 
 Iteration 3 of the fix-loop found that v0.51's trust-gate was
