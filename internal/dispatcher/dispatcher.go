@@ -72,6 +72,14 @@ func LoadEnabled(ctx context.Context, projectRoot, dataDir string, stderr io.Wri
 		return firstErr
 	}
 
+	// Build a lookup so we can find a per-adapter Raw block by Type.
+	rawByType := make(map[string]map[string]any, len(cfg.Adapters))
+	for _, ac := range cfg.Adapters {
+		if ac.Raw != nil {
+			rawByType[ac.Type] = ac.Raw
+		}
+	}
+
 	for _, name := range enabled {
 		a, err := adapters.New(name)
 		if err != nil {
@@ -81,6 +89,7 @@ func LoadEnabled(ctx context.Context, projectRoot, dataDir string, stderr io.Wri
 		acfg := adapters.Config{
 			ProjectRoot: projectRoot,
 			Stderr:      stderr,
+			Raw:         rawByType[name],
 			Global:      cfg,
 		}
 		if err := a.Init(ctx, acfg); err != nil {

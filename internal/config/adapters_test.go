@@ -64,16 +64,6 @@ func TestEnabledAdapters_AutoDetectsGroundTruthFromDir(t *testing.T) {
 	}
 }
 
-func TestEnabledAdapters_AutoDetectsGroundTruthFromTruthDirField(t *testing.T) {
-	root := t.TempDir()
-	// truth_dir is set but the dir doesn't exist yet — still enable.
-	cfg := &config.Config{GroundTruth: config.GroundTruthConfig{TruthDir: "source-of-truth/"}}
-	got := cfg.EnabledAdapters(root)
-	if len(got) != 1 || got[0] != "ground-truth" {
-		t.Errorf("auto-detect from truth_dir field: want [ground-truth], got %v", got)
-	}
-}
-
 func TestEnabledAdapters_BothSignalsBothEnabled(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x\n"), 0o644); err != nil {

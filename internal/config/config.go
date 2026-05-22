@@ -36,23 +36,48 @@ type Config struct {
 	Hooks    HooksConfig     `toml:"hooks"`
 	PostEdit PostEditConfig  `toml:"post_edit"`
 	Adapters []AdapterConfig `toml:"adapters"`
-
-	// GroundTruth holds settings for the ground-truth adapter when
-	// it's enabled (either via an explicit [[adapters]] block of
-	// type "ground-truth" OR via auto-detection when truth_dir is
-	// set or .leonard/ground-truth/ exists). Decoded from
-	// [adapters.ground-truth].
-	GroundTruth GroundTruthConfig `toml:"adapters.ground-truth"`
 }
 
 // AdapterConfig is one [[adapters]] entry. v1.0 ships three adapter
 // types: "code", "ground-truth", "self-logging". The Type field is
-// the lookup key into the adapter registry; if no [[adapters]]
-// blocks are present, the dispatcher auto-detects (go.mod or
-// post_edit.verify → code; truth_dir set or .leonard/ground-truth/
-// exists → ground-truth).
+// the lookup key into the adapter registry. Additional TOML fields
+// inside the [[adapters]] block (e.g., truth_dir for ground-truth)
+// are captured in Raw via UnmarshalTOML so the dispatcher can hand
+// them to the adapter's Init verbatim.
+//
+// Example:
+//
+//	[[adapters]]
+//	type = "ground-truth"
+//	truth_dir = "source-of-truth/"
+//
+// truth_dir lands in Raw["truth_dir"] which the groundtruth adapter
+// reads in its decodeConfig path.
 type AdapterConfig struct {
-	Type string `toml:"type"`
+	Type string         `toml:"type"`
+	Raw  map[string]any `toml:"-"`
+}
+
+// UnmarshalTOML captures the full [[adapters]] block in Raw so the
+// dispatcher can pass per-adapter configuration through to Init.
+// Without a custom unmarshal, TOML's default would only populate
+// the typed Type field and drop everything else.
+func (a *AdapterConfig) UnmarshalTOML(data any) error {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return fmt.Errorf("adapter config: expected map, got %T", data)
+	}
+	if t, ok := m["type"].(string); ok {
+		a.Type = t
+	}
+	a.Raw = make(map[string]any, len(m))
+	for k, v := range m {
+		if k == "type" {
+			continue
+		}
+		a.Raw[k] = v
+	}
+	return nil
 }
 
 // EnabledAdapters returns the list of adapter type names the
@@ -62,8 +87,9 @@ type AdapterConfig struct {
 //
 //   - "code" when go.mod exists at projectRoot OR
 //     [post_edit.verify].command is set
-//   - "ground-truth" when [adapters.ground-truth].truth_dir is set
-//     OR .leonard/ground-truth/ exists
+//   - "ground-truth" when .leonard/ground-truth/ exists. Operators
+//     who want a non-default truth dir set it via an explicit
+//     [[adapters]] block.
 //
 // Self-logging is never auto-enabled; operators opt in via an
 // explicit [[adapters]] block (it's a discipline, not a default).
@@ -105,22 +131,11 @@ func (c *Config) EnabledAdapters(projectRoot string) []string {
 		enabled = append(enabled, "code")
 	}
 
-	// "ground-truth" — auto when the operator has set truth_dir OR
-	// the default truth dir exists on disk. Don't auto-enable when
-	// neither signal is present so projects that haven't opted into
-	// ground-truth don't pay the parse cost.
-	gtDir := c.GroundTruth.TruthDir
-	if gtDir == "" {
-		// Use the default location for the auto-detect probe.
-		gtDir = filepath.Join(".leonard", "ground-truth")
-	}
-	if _, err := os.Stat(filepath.Join(projectRoot, gtDir)); err == nil {
-		enabled = append(enabled, "ground-truth")
-	} else if c.GroundTruth.TruthDir != "" {
-		// Operator explicitly configured a truth_dir that doesn't
-		// exist (yet). Still enable — the adapter handles missing
-		// files gracefully and the operator presumably plans to
-		// populate it.
+	// "ground-truth" — auto when .leonard/ground-truth/ exists on
+	// disk. Operators who want a non-default truth dir set it via
+	// an explicit [[adapters]] block (this auto-detection path is
+	// for the default layout only).
+	if _, err := os.Stat(filepath.Join(projectRoot, ".leonard", "ground-truth")); err == nil {
 		enabled = append(enabled, "ground-truth")
 	}
 
@@ -204,6 +219,11 @@ func Load(path string) (Config, error) {
 	var c Config
 	if err := toml.Unmarshal(data, &c); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	// Normalize: empty slice → nil so round-trips against Default()
+	// compare equal under reflect.DeepEqual.
+	if len(c.Adapters) == 0 {
+		c.Adapters = nil
 	}
 	return c, nil
 }
