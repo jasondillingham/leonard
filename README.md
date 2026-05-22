@@ -10,6 +10,8 @@ A local-first, per-project ground-truth toolkit that helps Claude Code avoid hal
 
 **Status: v0.52.0 — stable.** Self-dogfooded across 46 minor releases with **six bug-hunt rounds and two focused security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
+**v1.0 in flight** — generalizing Leonard from "code ground-truth" to pluggable ground-truth (code adapter + new ground-truth adapter for prose/claims/facts), plus self-logging of truth changes. Design in [`docs/ROADMAP-v1-ground-truth.md`](./docs/ROADMAP-v1-ground-truth.md); phased work tracked under milestones [v0.6](https://github.com/jasondillingham/leonard/milestone/1)–[v1.0](https://github.com/jasondillingham/leonard/milestone/5).
+
 ```
 29 tree-sitter languages   +   4 production-dogfooded parsers   +   3 SFC preprocessors
 + 2 structured-file inspectors (Jupyter, OpenAPI)
