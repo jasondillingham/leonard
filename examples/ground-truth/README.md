@@ -1,0 +1,58 @@
+# Worked example projects
+
+Three self-contained ground-truth trees demonstrating Leonard's
+verification model across distinct domains. Each example is a
+complete `.leonard/ground-truth/` fixture you can copy into your
+own project as a starting point.
+
+## Examples
+
+| Directory | Domain | What it demonstrates |
+|---|---|---|
+| `saas-product/` | SaaS marketing + customer messaging | features, pricing tiers, capability gaps, customer NDA blocking |
+| `compliance/` | SOC 2 control narratives | implemented controls, regulatory-claim gating, audit-trail requirements |
+| `personal-artifacts/` | Résumés / cover letters / applications | employment history, skills, certifications-not-held, role-fit filters |
+
+Each example has its own `README.md` explaining the domain choices
+the fixture encodes.
+
+## Layout
+
+Each example ships its fixture under `truth-tree/` rather than under
+a `.leonard/` directory. The reason is mechanical: Leonard's own
+pre-edit guard refuses writes under any `.leonard/` path (operator
+trust boundary, bughunt-2 F1). Operators copy the `truth-tree/`
+contents into their project's `.leonard/ground-truth/` directly.
+
+## Using an example
+
+```
+# Copy the tree you want to start from:
+mkdir -p /path/to/your-project/.leonard/ground-truth
+cp -r examples/ground-truth/saas-product/truth-tree/* /path/to/your-project/.leonard/ground-truth/
+
+# Then customize for your real data:
+cd /path/to/your-project
+$EDITOR .leonard/ground-truth/facts.yaml
+$EDITOR .leonard/ground-truth/do-not-claim.md
+# ... etc
+
+# Init Leonard if you haven't:
+leonard init --adapter=ground-truth
+
+# Trust the adapter so it can block forbidden claims:
+leonard config trust ground-truth
+
+# Verify a draft artifact:
+leonard check path/to/your/draft.md
+```
+
+## What examples are NOT
+
+- **Real customer data.** All examples use fictional company /
+  customer / employee names. Replace before using in production.
+- **Complete.** Examples are deliberately compact (~10-20 facts,
+  ~5 rules) to be readable. Your real tree will be larger.
+- **Schema-rigid.** The schemas are flexible. Each example shows
+  ONE shape that works; your domain may want different
+  conventions.

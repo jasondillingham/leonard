@@ -1,0 +1,40 @@
+employment:
+  - employer: ExampleCo
+    role: Senior Backend Engineer
+    start: 2024-01-15
+    end: present
+    sensitivity: public
+  - employer: PriorCo
+    role: Software Engineer
+    start: 2020-06-01
+    end: 2023-12-31
+    sensitivity: public
+
+oss_contributions:
+  - repo: anthropic/sdk-go
+    number: 336
+    status: closed
+    last_verified: 2026-04-15
+    note: "Closed after Stainless duplicate"
+  - repo: 1Password/connect-sdk-go
+    number: 104
+    status: open
+    last_verified: 2026-04-15
+
+skills:
+  primary:
+    - Go
+    - Python
+    - PostgreSQL
+    - Linux administration
+  secondary:
+    - TypeScript
+    - Kubernetes
+    - Terraform
+
+certifications: []
+
+compensation:
+  floor_usd: 150000
+  preferred_usd: 175000
+  sensitivity: private

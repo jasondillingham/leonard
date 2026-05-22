@@ -1,0 +1,9 @@
+content_filters:
+  - content_pattern: "(?i)represents and warrants"
+    required: "See legal-routing.md — counsel must review before send"
+
+  - content_pattern: "(?i)indemnif"
+    required: "See legal-routing.md — counsel must review before send"
+
+  - content_pattern: "(?i)data processing agreement"
+    required: "Current DPA: see legal/dpa-2026.md"
