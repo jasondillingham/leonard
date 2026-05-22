@@ -172,5 +172,6 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newDoctorCmd(rt))
 	root.AddCommand(newMCPCmd())
 	root.AddCommand(newTruthEditCmd())
+	root.AddCommand(newOverrideCmd())
 	return root
 }
