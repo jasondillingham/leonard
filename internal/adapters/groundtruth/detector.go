@@ -208,12 +208,14 @@ func Detect(text string, facts *Facts, rules Rules) DetectionResult {
 	var out []Claim
 
 	// Forbidden hits come first because they should win regardless
-	// of which detection pattern would also have fired.
+	// of which detection pattern would also have fired. Uses fuzzy
+	// matching when the rule's FuzzThreshold is positive; threshold
+	// 0 falls through to the exact-string path.
 	for i, rule := range rules {
 		if rule.Text == "" {
 			continue
 		}
-		matches := findAllOccurrences(text, rule.Text)
+		matches := findFuzzyOccurrences(text, rule.Text, rule.FuzzThreshold)
 		for _, m := range matches {
 			out = append(out, Claim{
 				Text:      text[m.start:m.end],

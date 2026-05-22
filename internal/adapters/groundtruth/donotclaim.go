@@ -7,22 +7,18 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 )
 
-// Rule is one entry from do-not-claim.md. v0.6 captures the rule's
-// text, the section heading it lives under, and the line number for
-// later issues' error messages. The hook code that matches proposed
-// text against these rules lands in #23 (hard reject).
+// Rule is one entry from do-not-claim.md.
 type Rule struct {
 	// Category is the "## <heading>" the rule appears under
 	// (e.g., "Product capability gaps").
 	Category string
 
 	// Text is the forbidden claim text. Stripped of leading "- ❌ "
-	// markers and trimmed; matches still happen against this exact
-	// text in v0.6's exact-string matcher, and against fuzzy variants
-	// once #13 lands.
+	// markers, the optional {fuzz: ...} annotation, and trimmed.
 	Text string
 
 	// Reason is the explanation that follows the claim (separated
@@ -30,11 +26,23 @@ type Rule struct {
 	// rule citation on deny.
 	Reason string
 
+	// FuzzThreshold is the Levenshtein distance tolerated when
+	// matching this rule. 0 means exact match (case-insensitive).
+	// Set by an optional `{fuzz: N}` or `{fuzz: exact}` annotation
+	// at the end of the rule body in do-not-claim.md. The default
+	// (when no annotation is present) is DefaultFuzzThreshold.
+	FuzzThreshold int
+
 	// Path / Line locate the rule in do-not-claim.md for error
 	// messages. Line is 1-based.
 	Path string
 	Line int
 }
+
+// DefaultFuzzThreshold is the Levenshtein distance tolerated when a
+// rule does not specify {fuzz: ...}. Tuned via #24's corpus run; the
+// v0.7 number is conservative.
+const DefaultFuzzThreshold = 3
 
 // Rules is the parsed do-not-claim.md content.
 type Rules []Rule
@@ -152,19 +160,72 @@ func detectMarker(body string) (string, string, bool) {
 // NOT HIPAA-certified.` into Text and Reason. The separator is " — "
 // (em-dash), " -- " (double-hyphen), or " - " (en-dash / hyphen with
 // spaces). If the text is quoted, the quotes are stripped.
+//
+// An optional `{fuzz: N}` or `{fuzz: exact}` annotation may appear at
+// the very end of the body (after the reason, if any). Parsed
+// independently and stripped from the visible Text/Reason fields:
+//
+//   - ❌ "We are HIPAA-compliant" — Not certified. {fuzz: 5}
+//   - ❌ "Mobile app launching" {fuzz: exact}
+//
+// Unparseable annotations are silently ignored — the rule falls back
+// to DefaultFuzzThreshold so a typo doesn't break the rule entirely.
 func parseRuleBody(body string) Rule {
 	body = strings.TrimSpace(body)
+	body, fuzz := extractFuzzAnnotation(body)
+
+	rule := Rule{FuzzThreshold: fuzz}
 
 	// Look for a separator.
 	for _, sep := range []string{" — ", " -- ", " - "} {
 		if idx := strings.Index(body, sep); idx >= 0 {
-			return Rule{
-				Text:   unquote(strings.TrimSpace(body[:idx])),
-				Reason: strings.TrimSpace(body[idx+len(sep):]),
-			}
+			rule.Text = unquote(strings.TrimSpace(body[:idx]))
+			rule.Reason = strings.TrimSpace(body[idx+len(sep):])
+			return rule
 		}
 	}
-	return Rule{Text: unquote(body)}
+	rule.Text = unquote(body)
+	return rule
+}
+
+// extractFuzzAnnotation looks for `{fuzz: ...}` at the end of body.
+// Returns the body with the annotation stripped and the resolved
+// threshold (DefaultFuzzThreshold when no annotation present, 0 for
+// `exact`, or the parsed integer for `{fuzz: N}`). Unparseable
+// annotation strings are silently dropped — the rule falls back to
+// the default rather than losing the rule entirely.
+func extractFuzzAnnotation(body string) (string, int) {
+	body = strings.TrimSpace(body)
+	if !strings.HasSuffix(body, "}") {
+		return body, DefaultFuzzThreshold
+	}
+	open := strings.LastIndex(body, "{")
+	if open < 0 {
+		return body, DefaultFuzzThreshold
+	}
+	annotation := body[open+1 : len(body)-1]
+	rest := strings.TrimRight(body[:open], " ")
+
+	parts := strings.SplitN(annotation, ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) != "fuzz" {
+		// Not a fuzz annotation; leave the braces as part of the
+		// rule text. Defensive — operators may write {something}
+		// for other reasons.
+		return body, DefaultFuzzThreshold
+	}
+
+	val := strings.TrimSpace(parts[1])
+	if val == "exact" {
+		return rest, 0
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 0 {
+		// Unparseable threshold → fall back to default. Don't
+		// strip the annotation in this case so the operator sees
+		// their typo on a re-read.
+		return body, DefaultFuzzThreshold
+	}
+	return rest, n
 }
 
 func unquote(s string) string {
