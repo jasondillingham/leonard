@@ -1,4 +1,4 @@
-.PHONY: check test test-race vet build build-otel build-rust build-treesitter tidy clean install help
+.PHONY: check test test-race vet build build-otel build-rust build-treesitter tidy clean install help eval
 
 # Default target — what local development should run before a commit.
 check: vet test-race
@@ -17,6 +17,15 @@ test:
 # but `make vet` lets you confirm before staging.
 vet:
 	go vet ./...
+
+# Run the ground-truth FP corpus (#24) with verbose output so the
+# precision/recall numbers are visible. Use this after touching the
+# fuzzy matcher (#13) or the corpus rules to confirm we haven't
+# regressed. Numbers are logged via t.Logf; the test fails only when
+# precision drops below the v0.7 floor.
+eval:
+	go test -v -run TestForbiddenMatcher_FPCorpus ./internal/adapters/groundtruth/...
+	go test -v -run TestDetect_FalsePositiveRate ./internal/adapters/groundtruth/...
 
 # Build all three binaries to repo root for quick local smoke. The
 # canonical install target is `make install`, which puts them in
