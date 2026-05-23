@@ -64,6 +64,27 @@ func (a *GroundTruthAdapter) PostEdit(_ context.Context, p adapters.PostEditPayl
 		return adapters.PostEditResult{}, nil
 	}
 
+	// #89: truth-tree files (facts.yaml / stories.md / do-not-claim.md
+	// / filters.yaml) get a separate "tree edit" entry written to
+	// audit-log.md. Pre-#89 these edits left no trace in the audit
+	// log — the claim matcher is correctly exempted from them (#84)
+	// but the ledger should still record that the truth tree itself
+	// moved. Operator running `git diff` can see specifics; this
+	// captures who/when/what-file for the operator-facing markdown
+	// trail.
+	if isExemptFromMatcher(absPath, snap.projectRoot, snap.truthDir, snap.cfg.ExemptPaths) {
+		meta := truthTreeEditEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			SessionID: p.SessionID,
+			Tool:      p.Tool,
+			FilePath:  relativeOrAbs(snap.projectRoot, absPath),
+		}
+		if err := appendTruthTreeEdit(snap.truthDir, meta); err != nil {
+			fmt.Fprintf(snap.stderr, "leonard: ground-truth post-edit: append audit-log.md (tree edit): %v\n", err)
+		}
+		return adapters.PostEditResult{}, nil
+	}
+
 	if !matchesAnyGlob(absPath, snap.cfg.VerifyTargets) {
 		return adapters.PostEditResult{}, nil
 	}

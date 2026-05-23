@@ -69,6 +69,92 @@ func appendMarkdownAudit(truthDir string, entry pendingAuditEntry) error {
 	return nil
 }
 
+// truthTreeEditEntry is the metadata for a "the operator edited the
+// truth tree itself" audit-log entry (#89). Distinct from
+// pendingAuditEntry because there are no findings to log — the
+// edit itself is the event. Operator can `git diff` for specifics;
+// this captures who / when / what file.
+type truthTreeEditEntry struct {
+	Timestamp string
+	SessionID string
+	Tool      string
+	FilePath  string
+}
+
+// appendTruthTreeEdit writes a "tree edited" section to
+// <truthDir>/audit-log.md. Distinct from appendMarkdownAudit (which
+// only emits sections when there are findings). Both functions
+// share the file bootstrap logic — the file is created with the
+// same header on first write regardless of which function gets
+// there first.
+//
+// The section shape:
+//
+//	## YYYY-MM-DD — <rel-path> — tree edit
+//
+//	**Type:** truth-tree edit (operator-authored)
+//	**Tool:** Edit
+//	**Session:** <session-id>
+//	**Timestamp:** <RFC3339>
+//
+// Skips pending-audit.log entirely — these aren't claim findings,
+// and the Stop hook's per-session digest reads pending-audit.log
+// looking for findings. Putting tree-edit metadata there would
+// pollute the Stop summary with "you edited the tree N times" noise.
+func appendTruthTreeEdit(truthDir string, entry truthTreeEditEntry) error {
+	if truthDir == "" {
+		return errors.New("groundtruth: truthDir is empty")
+	}
+	if entry.FilePath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(truthDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", truthDir, err)
+	}
+	path := filepath.Join(truthDir, auditLogFileName)
+
+	if info, err := os.Stat(path); errors.Is(err, os.ErrNotExist) || (err == nil && info.Size() == 0) {
+		header := "# Audit log\n\nAppend-only ledger of claim verifications. Each section is one Edit/Write.\n\n"
+		if err := os.WriteFile(path, []byte(header), 0o644); err != nil {
+			return fmt.Errorf("write header to %s: %w", path, err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(renderTruthTreeEdit(entry)); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func renderTruthTreeEdit(entry truthTreeEditEntry) string {
+	day := entry.Timestamp
+	if t, err := time.Parse(time.RFC3339, entry.Timestamp); err == nil {
+		day = t.UTC().Format("2006-01-02")
+	}
+	tool := entry.Tool
+	if tool == "" {
+		tool = "(unknown)"
+	}
+	session := entry.SessionID
+	if session == "" {
+		session = "(unknown)"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "## %s — %s — tree edit\n\n", day, entry.FilePath)
+	b.WriteString("**Type:** truth-tree edit (operator-authored)  \n")
+	fmt.Fprintf(&b, "**Tool:** %s  \n", tool)
+	fmt.Fprintf(&b, "**Session:** %s  \n", session)
+	fmt.Fprintf(&b, "**Timestamp:** %s\n\n", entry.Timestamp)
+	return b.String()
+}
+
 // renderAuditMarkdown formats one entry as a markdown section. See
 // the package-level appendMarkdownAudit doc for the shape.
 func renderAuditMarkdown(entry pendingAuditEntry) string {
