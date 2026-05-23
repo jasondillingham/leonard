@@ -65,6 +65,14 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 		if !matchesAnyGlob(absPath, snap.cfg.VerifyTargets) {
 			return adapters.PreEditResult{Decision: adapters.Pass}, nil
 		}
+		// #84 / #8: files inside truth_dir, plus operator-
+		// configured exempt_paths globs, skip the matcher. The
+		// truth tree's own files contain the rule bodies as data
+		// — running the matcher against them creates a self-
+		// blocking loop on the operator's own rule content.
+		if isExemptFromMatcher(absPath, snap.projectRoot, snap.truthDir, snap.cfg.ExemptPaths) {
+			return adapters.PreEditResult{Decision: adapters.Pass}, nil
+		}
 	}
 
 	res := Detect(p.Content, snap.facts, snap.rules)
