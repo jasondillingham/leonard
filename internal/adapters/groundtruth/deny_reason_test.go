@@ -78,6 +78,104 @@ func TestDenyReason_IncludesRuleBody(t *testing.T) {
 	}
 }
 
+// TestDenyReason_IncludesLineLocation covers issue #86: when a
+// multi-line edit has a forbidden claim deep inside, the deny
+// message should include line + column info so the operator can
+// localize which entry needs rewriting (rather than re-doing the
+// whole multi-entry payload).
+func TestDenyReason_IncludesLineLocation(t *testing.T) {
+	ruleBody := `## Compliance
+
+- ❌ "HIPAA-compliant" — Not certified.
+`
+	a, root := denyReasonFixture(t, ruleBody)
+
+	// Four-entry payload; the third entry has the forbidden claim.
+	// Operator should see "line 7" (or thereabouts) in the deny so
+	// they know which entry to edit.
+	content := `## Watchlist update
+
+### Sophos
+Filed 2026-05-22. Pass.
+
+### MegaCorp
+Our platform is HIPAA-compliant for healthcare.
+
+### Underdog
+Filed 2026-05-22. Pass.
+`
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:     "Write",
+		FilePath: filepath.Join(root, "draft.md"),
+		Content:  content,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != adapters.Deny {
+		t.Fatalf("want Deny, got %v", out.Decision)
+	}
+	if !strings.Contains(out.Reason, "line ") {
+		t.Errorf("deny reason should include line number, got: %q", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "col ") {
+		t.Errorf("deny reason should include column, got: %q", out.Reason)
+	}
+}
+
+// TestDenyReason_MultiFindingHint covers issue #86's "1 of N" hint
+// — when there are multiple forbidden findings, the operator should
+// know that fixing this one will reveal another.
+func TestDenyReason_MultiFindingHint(t *testing.T) {
+	// Two rules. Content hits both. Operator should see "1 of 2".
+	ruleBody := `## Compliance
+
+- ❌ "HIPAA-compliant" — Not certified.
+
+## Capability
+
+- ❌ "mobile app" — Web only.
+`
+	a, root := denyReasonFixture(t, ruleBody)
+	content := "We have a mobile app and we are HIPAA-compliant."
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:     "Write",
+		FilePath: filepath.Join(root, "draft.md"),
+		Content:  content,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != adapters.Deny {
+		t.Fatalf("want Deny, got %v", out.Decision)
+	}
+	if !strings.Contains(out.Reason, "of 2 forbidden") {
+		t.Errorf("deny reason should include 'of N forbidden' hint, got: %q", out.Reason)
+	}
+}
+
+// TestDenyReason_SingleFindingHasNoMultiHint confirms the multi-
+// finding hint is suppressed when there's only one match. Keeps
+// the message terse for the common case.
+func TestDenyReason_SingleFindingHasNoMultiHint(t *testing.T) {
+	ruleBody := `## Compliance
+
+- ❌ "HIPAA-compliant" — Not certified.
+`
+	a, root := denyReasonFixture(t, ruleBody)
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:     "Write",
+		FilePath: filepath.Join(root, "draft.md"),
+		Content:  "We are HIPAA-compliant.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.Reason, "forbidden findings") {
+		t.Errorf("single-finding case should not include the multi-finding hint, got: %q", out.Reason)
+	}
+}
+
 // TestDenyReason_TruncatesLongRuleBody confirms the rule snippet is
 // capped at ruleSnippetMax (200 chars) with an ellipsis marker.
 func TestDenyReason_TruncatesLongRuleBody(t *testing.T) {
