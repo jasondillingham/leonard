@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/leonard-logo.png" alt="Leonard logo — auditor at a desk, holding glasses by one earhook, checking a ledger" width="320">
+</p>
+
 # Leonard
 
 [![CI](https://github.com/jasondillingham/leonard/actions/workflows/ci.yml/badge.svg)](https://github.com/jasondillingham/leonard/actions/workflows/ci.yml)
