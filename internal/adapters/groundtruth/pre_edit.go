@@ -3,6 +3,7 @@ package groundtruth
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jasondillingham/leonard/internal/adapters"
 	"github.com/jasondillingham/leonard/internal/config"
@@ -106,14 +107,46 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
 
-	reason := fmt.Sprintf("Forbidden claim %q matches rule %s in %s. Rewrite to avoid the claim or update the rule if it is wrong.",
-		hit.Text, hit.RulePath, "do-not-claim.md")
+	reason := buildDenyReason(hit)
 	return adapters.PreEditResult{
 		Decision:    adapters.Deny,
 		Reason:      reason,
 		AdapterName: Name,
 	}, nil
 }
+
+// buildDenyReason renders a deny message that includes both the
+// matched claim AND the source rule body (#88). Pre-fix messages
+// only carried the rule reference, which forced operators to open
+// do-not-claim.md and find the cited rule manually before they could
+// understand the block. Including the rule body inline gives Claude
+// (and the operator) enough context to choose a rewrite without a
+// context switch.
+//
+// The rule body is truncated to ruleSnippetMax chars to keep the
+// permissionDecisionReason field at a reasonable size. Most rules
+// are well under that limit; the cap is a safety belt for the
+// occasional verbose entry.
+func buildDenyReason(hit *Claim) string {
+	reason := strings.TrimSpace(hit.RuleReason)
+	if len(reason) > ruleSnippetMax {
+		reason = reason[:ruleSnippetMax-1] + "…"
+	}
+	if reason == "" {
+		// Defensive: rule has no reason after the em-dash. Fall
+		// back to the v0.7 shape with just the citation.
+		return fmt.Sprintf("Forbidden claim %q matches rule %s in do-not-claim.md. Rewrite to avoid the claim or update the rule if it is wrong.",
+			hit.Text, hit.RulePath)
+	}
+	return fmt.Sprintf("Forbidden claim %q matches rule %s in do-not-claim.md — %s. Rewrite to avoid the claim or update the rule if it is wrong.",
+		hit.Text, hit.RulePath, reason)
+}
+
+// ruleSnippetMax caps how much of the rule body we splice into the
+// deny reason. 200 chars handles most rules (typical do-not-claim
+// entries are short bullets) while keeping the wire-level reason
+// field reasonable.
+const ruleSnippetMax = 200
 
 // pathIsAbsolute is a tiny local helper to avoid a filepath import
 // in this file. The post_edit.go file already imports filepath for
