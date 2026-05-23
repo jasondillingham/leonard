@@ -51,6 +51,23 @@ type Config struct {
 	// ("I believe...", "I prefer...") get logged. Default
 	// ActionIgnore. Honored by #18.
 	OpinionHandling Action
+
+	// ExemptPaths is the operator-configurable allowlist of glob
+	// patterns relative to projectRoot whose contents are exempt
+	// from the do-not-claim matcher. Files INSIDE the truth tree
+	// (truth_dir) are exempt automatically — they contain the
+	// rules themselves and would otherwise trip the matcher on
+	// their own quoted phrases (#84). ExemptPaths covers other
+	// meta-files (project planning, dogfood logs, audit notes)
+	// that legitimately reference forbidden phrases as commentary
+	// rather than as claims (#8).
+	//
+	// Globs match against projectRoot-relative paths via
+	// filepath.Match. Examples:
+	//   - "leonard-dogfood.md"     (a specific file)
+	//   - "docs/audits/*.md"       (a directory of files)
+	//   - "**/notes.md"            (any file named notes.md)
+	ExemptPaths []string
 }
 
 // defaultConfig returns the zero-config defaults applied when an
@@ -100,6 +117,22 @@ func decodeConfig(raw map[string]any) (Config, error) {
 			out = append(out, s)
 		}
 		cfg.VerifyTargets = out
+	}
+
+	if v, ok := raw["exempt_paths"]; ok {
+		list, ok := v.([]any)
+		if !ok {
+			return cfg, fmt.Errorf("groundtruth: exempt_paths must be a list of strings, got %T", v)
+		}
+		out := make([]string, 0, len(list))
+		for i, e := range list {
+			s, ok := e.(string)
+			if !ok {
+				return cfg, fmt.Errorf("groundtruth: exempt_paths[%d] must be a string, got %T", i, e)
+			}
+			out = append(out, s)
+		}
+		cfg.ExemptPaths = out
 	}
 
 	for _, m := range []struct {
