@@ -54,6 +54,48 @@ Four hooks fire per Claude Code interaction:
   detection so a blocked path or missing disclosure makes the
   rest moot.
 
+#### What PreEdit inspects, by tool
+
+The `.claude/settings.local.json` matcher registers the ground-truth
+adapter for `Edit | Write | MultiEdit | NotebookEdit | Bash`. Each
+tool exposes a different shape of "what's about to change," and the
+adapter consumes different fields per tool:
+
+| Tool | Field inspected | Notes |
+|---|---|---|
+| `Edit` | `new_string` | Just the new content, not the surrounding file |
+| `Write` | `content` | Full file body |
+| `MultiEdit` | concatenated `edits[].new_string` | Joined newline-delimited so a forbidden claim in any single edit fires the guard |
+| `NotebookEdit` | `new_source` | Cell content |
+| `Bash` | `command` (the raw shell string) | NOT heredoc bodies, NOT piped stdin, NOT files written by the command |
+
+**For Bash specifically**: the matcher only sees the command string.
+That means:
+
+- `echo "FORBIDDEN CLAIM" > file.md` — guard sees the claim text in
+  the command string. Fires.
+- `python3 -c "open('file.md', 'w').write('FORBIDDEN CLAIM')"` —
+  guard sees the claim text in the command string. Fires.
+- `cat > file.md <<'EOF'` followed by claim text on subsequent lines
+  — the heredoc body isn't part of the `command` field as Claude
+  Code constructs it; the guard misses it.
+- `python3 transform.py | tee file.md` where transform.py emits the
+  claim text — guard sees `transform.py` but not the program's
+  output. Misses.
+
+The post-edit hook catches the FILE CONTENT regardless of which Bash
+shape produced it, so the audit log (`audit-log.md` +
+`pending-audit.log`) still captures findings even when the pre-edit
+guard missed them. The asymmetry: forbidden claims that go through
+opaque-to-Bash shapes (heredoc, piped stdin, script output) won't be
+BLOCKED but WILL be flagged for review.
+
+**Operator guidance**: when doing batch updates via Bash, prefer
+shapes that put the claim text on the command line (sed substitutions,
+literal `echo`/`printf` arguments) so the pre-edit guard can act on
+it. Or wrap the batch in a `leonard check <file>` loop afterward to
+catch what slipped through.
+
 ### PostEdit (#18, #29)
 - Reads the just-written file
 - Re-runs `Detect`
