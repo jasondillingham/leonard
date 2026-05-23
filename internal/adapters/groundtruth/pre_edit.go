@@ -107,7 +107,7 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
 
-	reason := buildDenyReason(hit)
+	reason := buildDenyReason(hit, p.Content, len(res.Claims))
 	return adapters.PreEditResult{
 		Decision:    adapters.Deny,
 		Reason:      reason,
@@ -115,31 +115,64 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 	}, nil
 }
 
-// buildDenyReason renders a deny message that includes both the
-// matched claim AND the source rule body (#88). Pre-fix messages
-// only carried the rule reference, which forced operators to open
-// do-not-claim.md and find the cited rule manually before they could
-// understand the block. Including the rule body inline gives Claude
-// (and the operator) enough context to choose a rewrite without a
-// context switch.
+// buildDenyReason renders a deny message that includes:
+//   - the matched claim text
+//   - the source rule body (#88 — operator doesn't need to open
+//     do-not-claim.md to understand the block)
+//   - byte offset + 1-based line number where the match starts
+//     (#86 — operator can localize the offending entry in a
+//     multi-entry insertion, e.g. when 4 watchlist entries get
+//     blocked because of one substring in one of them)
+//   - "this is N of M findings" hint when there are multiple
+//     forbidden hits in the same payload (#86 — the operator
+//     should know whether fixing this one will reveal another)
 //
 // The rule body is truncated to ruleSnippetMax chars to keep the
-// permissionDecisionReason field at a reasonable size. Most rules
-// are well under that limit; the cap is a safety belt for the
-// occasional verbose entry.
-func buildDenyReason(hit *Claim) string {
+// permissionDecisionReason field at a reasonable size.
+func buildDenyReason(hit *Claim, content string, totalForbidden int) string {
+	loc := locateInContent(content, hit.StartByte)
 	reason := strings.TrimSpace(hit.RuleReason)
 	if len(reason) > ruleSnippetMax {
 		reason = reason[:ruleSnippetMax-1] + "…"
 	}
-	if reason == "" {
-		// Defensive: rule has no reason after the em-dash. Fall
-		// back to the v0.7 shape with just the citation.
-		return fmt.Sprintf("Forbidden claim %q matches rule %s in do-not-claim.md. Rewrite to avoid the claim or update the rule if it is wrong.",
-			hit.Text, hit.RulePath)
+	tail := ""
+	if totalForbidden > 1 {
+		tail = fmt.Sprintf(" (1 of %d forbidden findings in this edit)", totalForbidden)
 	}
-	return fmt.Sprintf("Forbidden claim %q matches rule %s in do-not-claim.md — %s. Rewrite to avoid the claim or update the rule if it is wrong.",
-		hit.Text, hit.RulePath, reason)
+	if reason == "" {
+		return fmt.Sprintf("Forbidden claim %q at %s matches rule %s in do-not-claim.md.%s Rewrite to avoid the claim or update the rule if it is wrong.",
+			hit.Text, loc, hit.RulePath, tail)
+	}
+	return fmt.Sprintf("Forbidden claim %q at %s matches rule %s in do-not-claim.md — %s.%s Rewrite to avoid the claim or update the rule if it is wrong.",
+		hit.Text, loc, hit.RulePath, reason, tail)
+}
+
+// locateInContent renders the offset of a match into a "line N,
+// col M" string for operator readability. Uses 1-based line/col
+// indices (matching the convention every editor displays).
+//
+// When content is empty (e.g. some Bash invocations), returns just
+// the byte offset since line/col make no sense.
+func locateInContent(content string, byteOff int) string {
+	if content == "" {
+		return fmt.Sprintf("byte %d", byteOff)
+	}
+	if byteOff < 0 {
+		byteOff = 0
+	}
+	if byteOff > len(content) {
+		byteOff = len(content)
+	}
+	line, col := 1, 1
+	for i := 0; i < byteOff; i++ {
+		if content[i] == '\n' {
+			line++
+			col = 1
+		} else {
+			col++
+		}
+	}
+	return fmt.Sprintf("line %d col %d", line, col)
 }
 
 // ruleSnippetMax caps how much of the rule body we splice into the
