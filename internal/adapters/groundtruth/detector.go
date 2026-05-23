@@ -91,6 +91,12 @@ type Claim struct {
 	// RuleText is the verbatim forbidden text from do-not-claim.md.
 	RuleText string
 
+	// RuleReason is the operator-written explanation that follows
+	// the forbidden text after the em-dash separator. Surfaced in
+	// deny messages so the operator and the model see WHY the
+	// claim is forbidden, not just THAT it is (#88).
+	RuleReason string
+
 	// Note carries free-text commentary used by VerdictOpinion to
 	// explain why the span was treated as non-verifiable. Empty for
 	// other verdicts.
@@ -218,12 +224,13 @@ func Detect(text string, facts *Facts, rules Rules) DetectionResult {
 		matches := findFuzzyOccurrences(text, rule.Text, rule.FuzzThreshold)
 		for _, m := range matches {
 			out = append(out, Claim{
-				Text:      text[m.start:m.end],
-				Category:  "forbidden",
-				Verdict:   VerdictForbidden,
-				RulePath:  fmt.Sprintf("%s#%d", rule.Category, i+1),
-				RuleText:  rule.Text,
-				StartByte: m.start,
+				Text:       text[m.start:m.end],
+				Category:   "forbidden",
+				Verdict:    VerdictForbidden,
+				RulePath:   fmt.Sprintf("%s#%d", rule.Category, i+1),
+				RuleText:   rule.Text,
+				RuleReason: rule.Reason,
+				StartByte:  m.start,
 				EndByte:   m.end,
 			})
 		}
