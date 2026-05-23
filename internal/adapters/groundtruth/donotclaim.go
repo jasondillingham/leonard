@@ -39,10 +39,14 @@ type Rule struct {
 	Line int
 }
 
-// DefaultFuzzThreshold is the Levenshtein distance tolerated when a
-// rule does not specify {fuzz: ...}. Tuned via #24's corpus run; the
-// v0.7 number is conservative.
-const DefaultFuzzThreshold = 3
+// DefaultFuzzThreshold dropped from 3 to 1 in v0.53 (#85). The
+// looser 3-edit threshold over-matched: "Terraforming" matched the
+// "Terraform" rule (3 edits) because fuzzy expanded the window past
+// the needle's right boundary even with word-boundary anchoring on
+// the haystack edge. 1 catches typos ("Terraforn" → "Terraform")
+// without grabbing word stems. Operators who want looser matching
+// can opt in per-rule via {fuzz: N} annotation.
+const DefaultFuzzThreshold = 1
 
 // Rules is the parsed do-not-claim.md content.
 type Rules []Rule

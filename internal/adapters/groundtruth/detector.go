@@ -308,12 +308,57 @@ func findAllOccurrences(haystack, needle string) []span {
 			return out
 		}
 		start := from + i
-		out = append(out, span{start: start, end: start + len(needle)})
-		from = start + len(needle)
+		end := start + len(needle)
+		// #85: require word-boundary anchoring so a rule needle like
+		// "Terraform" doesn't match "Terraforming code" and "production
+		// Go" doesn't match "production Golang". Boundary check only
+		// fires on edges where the needle itself starts/ends with a
+		// word char — quoted-phrase needles that end in punctuation
+		// don't need anchoring on that side.
+		if !hasWordBoundaries(haystack, start, end, needle) {
+			from = start + 1 // advance past this spurious hit
+			continue
+		}
+		out = append(out, span{start: start, end: end})
+		from = end
 		if from >= len(haystack) {
 			return out
 		}
 	}
+}
+
+// hasWordBoundaries reports whether [start, end) inside haystack is
+// flanked by word boundaries. A "word boundary" exists when the
+// adjacent character is a non-word character (or the string edge)
+// AND the corresponding edge of the needle IS a word character.
+// Pure punctuation needles get no boundary requirement on their
+// punctuation edges, so a rule like "❌ \"foo bar\"" still matches.
+func hasWordBoundaries(haystack string, start, end int, needle string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	leftOK := !isWordByte(needle[0]) || start == 0 || !isWordByte(haystack[start-1])
+	rightOK := !isWordByte(needle[len(needle)-1]) || end >= len(haystack) || !isWordByte(haystack[end])
+	return leftOK && rightOK
+}
+
+// isWordByte mirrors regex \w semantics for ASCII. Forbidden-claim
+// rules are operator-authored in English; ASCII coverage handles the
+// universe of cases that have shown up in dogfood. Non-ASCII letters
+// fall through to "not a word char" which is the safer default for
+// boundary checks (more boundaries → fewer false matches).
+func isWordByte(b byte) bool {
+	switch {
+	case b >= 'A' && b <= 'Z':
+		return true
+	case b >= 'a' && b <= 'z':
+		return true
+	case b >= '0' && b <= '9':
+		return true
+	case b == '_':
+		return true
+	}
+	return false
 }
 
 func spanOverlapsAny(start, end int, claims []Claim) bool {

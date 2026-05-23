@@ -75,6 +75,14 @@ func findFuzzyOccurrences(haystack, needle string, threshold int) []span {
 			}
 			window := hLower[i : i+w]
 			if levenshtein(window, nLower, threshold) <= threshold {
+				// #85: same word-boundary rule as findAllOccurrences
+				// — fuzzy windows that extend past a word edge of
+				// the needle shouldn't claim a match. The needle's
+				// edges drive the requirement; punctuation-edged
+				// needles skip the check on that side.
+				if !hasWordBoundaries(haystack, i, i+w, needle) {
+					continue
+				}
 				fuzzy = append(fuzzy, span{start: i, end: i + w})
 				i += w
 				matched = true
