@@ -33,6 +33,14 @@ type Loaded struct {
 	// no file exists). Hooks read [hooks] tunables from here.
 	Config config.Config
 
+	// Verbose controls whether HandlePostEdit emits a systemMessage on
+	// every edit. When false (the default), clean runs are silent so
+	// per-edit status lines don't accumulate in the conversation
+	// surface. Failures (non-empty additionalContext) always surface
+	// regardless of this flag. Set to true via --verbose on the hook
+	// command when the operator wants to see every edit acknowledged.
+	Verbose bool
+
 	// Close releases all adapter state. Idempotent — safe to call
 	// multiple times.
 	Close func() error

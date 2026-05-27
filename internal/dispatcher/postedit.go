@@ -57,5 +57,11 @@ func (l *Loaded) HandlePostEdit(ctx context.Context, r io.Reader, w io.Writer) e
 			AdditionalContext: final.AdditionalContext,
 		}
 	}
+	// Suppress per-edit status lines on clean runs unless --verbose was
+	// passed. Failures (non-empty additionalContext) always surface so
+	// the operator sees vet failures and other actionable findings.
+	if !l.Verbose && final.AdditionalContext == "" {
+		resp.SuppressOutput = true
+	}
 	return json.NewEncoder(w).Encode(resp)
 }
