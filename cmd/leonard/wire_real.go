@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/jasondillingham/leonard/internal/config"
 	"github.com/jasondillingham/leonard/internal/index"
@@ -70,13 +71,28 @@ func (realRuntime) VerifySymbol(_ context.Context, dataDir, name, kind string) (
 		return nil, err
 	}
 	defer s.Close()
-	syms, err := s.FindSymbolsByName(name)
+
+	// The pre-edit deny message cites qualified names (e.g. "session.NewID").
+	// FindSymbolsByName queries the bare-name column, so split on the last dot
+	// and filter the results by QualifiedName to avoid false positives from
+	// identically-named symbols in other packages.
+	lookupName := name
+	qualifiedFilter := ""
+	if dot := strings.LastIndex(name, "."); dot >= 0 {
+		lookupName = name[dot+1:]
+		qualifiedFilter = name
+	}
+
+	syms, err := s.FindSymbolsByName(lookupName)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]SymbolMatch, 0, len(syms))
 	for _, sym := range syms {
 		if kind != "" && sym.Kind != kind {
+			continue
+		}
+		if qualifiedFilter != "" && sym.QualifiedName != qualifiedFilter {
 			continue
 		}
 		out = append(out, SymbolMatch{
@@ -286,7 +302,7 @@ func (realRuntime) Doctor(_ context.Context, projectRoot, dataDir string) (Docto
 		n := counts[f.Path]
 		symsByLang[f.Language] += n
 		rep.TotalSymbols += n
-		if n == 0 && f.SizeBytes > docFileSizeCeiling {
+		if n == 0 && f.SizeBytes > docFileSizeCeiling && !narrowCaptureLanguage(f.Language) {
 			rep.EmptyFiles = append(rep.EmptyFiles, f.Path)
 		}
 	}
@@ -314,6 +330,18 @@ func (realRuntime) Doctor(_ context.Context, projectRoot, dataDir string) (Docto
 	sort.Strings(rep.EmptyFiles)
 	sort.Strings(rep.StaleFiles)
 	return rep, nil
+}
+
+// narrowCaptureLanguage reports whether the extractor for lang only indexes
+// named definitions (e.g. shell function_definition nodes for bash, top-level
+// function bindings for nix). Imperative scripts in these languages legitimately
+// produce zero symbols, so a zero-symbol file is not evidence of a parse failure.
+func narrowCaptureLanguage(lang string) bool {
+	switch lang {
+	case "bash", "nix":
+		return true
+	}
+	return false
 }
 
 func sortedLangCounts(m map[string]int) []LanguageCount {

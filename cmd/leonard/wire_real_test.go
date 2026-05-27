@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jasondillingham/leonard/internal/config"
+	"github.com/jasondillingham/leonard/internal/store"
 )
 
 // TestRealRuntime_InitPreservesCustomConfig covers bughunt-2 cli F1.
@@ -46,6 +47,148 @@ func TestRealRuntime_InitPreservesCustomConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(after), "inject_decisions_at_session_start = 99") {
 		t.Errorf("custom value was overwritten by re-init.\nafter=%s", after)
+	}
+}
+
+// TestRealRuntime_VerifySymbol_QualifiedName covers issue #5: the pre-edit deny
+// message cites qualified names (e.g. "session.NewID") but FindSymbolsByName
+// queries the bare-name column, so `leonard verify session.NewID` previously
+// either found nothing or returned false positives from identically-named symbols
+// in other packages. VerifySymbol now splits on the last dot and filters.
+func TestRealRuntime_VerifySymbol_QualifiedName(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dataDir := filepath.Join(root, dataDirName)
+	rt := realRuntime{}
+	if err := rt.Init(context.Background(), root, dataDir); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	// Two files each exporting a symbol named "NewID" but in different packages.
+	for _, f := range []store.File{
+		{Path: "internal/session/session.go", Hash: "a", Language: "go", SizeBytes: 100},
+		{Path: "internal/other/other.go", Hash: "b", Language: "go", SizeBytes: 100},
+	} {
+		if err := s.UpsertFile(f); err != nil {
+			t.Fatalf("upsert %s: %v", f.Path, err)
+		}
+	}
+	if err := s.ReplaceSymbols("internal/session/session.go", []store.Symbol{
+		{Name: "NewID", QualifiedName: "session.NewID", Kind: "function", Exported: true},
+	}); err != nil {
+		t.Fatalf("replace symbols session: %v", err)
+	}
+	if err := s.ReplaceSymbols("internal/other/other.go", []store.Symbol{
+		{Name: "NewID", QualifiedName: "other.NewID", Kind: "function", Exported: true},
+	}); err != nil {
+		t.Fatalf("replace symbols other: %v", err)
+	}
+	s.Close()
+
+	ctx := context.Background()
+
+	// Qualified lookup: only the matching package is returned.
+	got, err := rt.VerifySymbol(ctx, dataDir, "session.NewID", "")
+	if err != nil {
+		t.Fatalf("verify session.NewID: %v", err)
+	}
+	if len(got) != 1 || got[0].QualifiedName != "session.NewID" {
+		t.Errorf("verify session.NewID: want 1 match with QualifiedName=session.NewID, got %v", got)
+	}
+
+	// Qualified lookup for the other package does not bleed through.
+	got, err = rt.VerifySymbol(ctx, dataDir, "other.NewID", "")
+	if err != nil {
+		t.Fatalf("verify other.NewID: %v", err)
+	}
+	if len(got) != 1 || got[0].QualifiedName != "other.NewID" {
+		t.Errorf("verify other.NewID: want 1 match with QualifiedName=other.NewID, got %v", got)
+	}
+
+	// A qualified name that matches no package returns nothing.
+	got, err = rt.VerifySymbol(ctx, dataDir, "missing.NewID", "")
+	if err != nil {
+		t.Fatalf("verify missing.NewID: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("verify missing.NewID: want 0 matches, got %v", got)
+	}
+
+	// Bare-name lookup still returns both symbols.
+	got, err = rt.VerifySymbol(ctx, dataDir, "NewID", "")
+	if err != nil {
+		t.Fatalf("verify NewID: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("verify NewID: want 2 matches, got %d: %v", len(got), got)
+	}
+}
+
+// TestRealRuntime_Doctor_BashExcludedFromParseSuspects covers issue #4: bash
+// scripts that contain no function definitions legitimately have zero extracted
+// symbols. Doctor was falsely flagging them as parse-failure suspects because the
+// size-based heuristic did not account for narrow-capture languages.
+func TestRealRuntime_Doctor_BashExcludedFromParseSuspects(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dataDir := filepath.Join(root, dataDirName)
+	rt := realRuntime{}
+	if err := rt.Init(context.Background(), root, dataDir); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+
+	// A bash script larger than docFileSizeCeiling (512 bytes) with no function
+	// definitions → zero symbols, should NOT appear in EmptyFiles.
+	// A Go file of the same size with no symbols → should appear in EmptyFiles.
+	bigSize := int64(1024)
+	for _, f := range []store.File{
+		{Path: "scripts/deploy.sh", Hash: "s", Language: "bash", SizeBytes: bigSize},
+		{Path: "internal/broken.go", Hash: "g", Language: "go", SizeBytes: bigSize},
+	} {
+		if err := s.UpsertFile(f); err != nil {
+			t.Fatalf("upsert %s: %v", f.Path, err)
+		}
+		// Create the actual file on disk so Doctor doesn't mark it stale.
+		abs := filepath.Join(root, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(abs, make([]byte, bigSize), 0o644); err != nil {
+			t.Fatalf("write %s: %v", abs, err)
+		}
+	}
+	s.Close()
+
+	rep, err := rt.Doctor(context.Background(), root, dataDir)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+
+	for _, p := range rep.EmptyFiles {
+		if p == "scripts/deploy.sh" {
+			t.Errorf("bash script incorrectly flagged as parse-failure suspect: %s", p)
+		}
+	}
+	found := false
+	for _, p := range rep.EmptyFiles {
+		if p == "internal/broken.go" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("zero-symbol Go file should appear in EmptyFiles, got %v", rep.EmptyFiles)
 	}
 }
 
