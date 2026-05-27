@@ -42,3 +42,6 @@ coverage.out
 /fix-*-brief.md
 /launch-readiness-*.md
 /resume-here.md
+
+# Local operator notes — not part of the public project.
+/DOGFOOD.md
