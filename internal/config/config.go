@@ -140,9 +140,24 @@ func (c *Config) EnabledAdapters(projectRoot string) []string {
 		enabled = append(enabled, "ground-truth")
 	}
 
-	if len(enabled) == 0 {
-		return []string{"code"}
+	// Always include "code" in auto-detection — it provides the
+	// fabrication guard and all 11 symbol-index MCP tools. Without
+	// an explicit [[adapters]] block the operator didn't deliberately
+	// opt out; silently dropping "code" when ground-truth is added to
+	// a non-Go project removes 11 tools with no warning. Only an
+	// explicit [[adapters]] block (where the operator listed exactly
+	// what they want) should be able to exclude "code".
+	hasCode := false
+	for _, s := range enabled {
+		if s == "code" {
+			hasCode = true
+			break
+		}
 	}
+	if !hasCode {
+		enabled = append([]string{"code"}, enabled...)
+	}
+
 	return enabled
 }
 

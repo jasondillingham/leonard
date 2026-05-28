@@ -57,10 +57,13 @@ func TestEnabledAdapters_AutoDetectsGroundTruthFromDir(t *testing.T) {
 	}
 	cfg := &config.Config{}
 	got := cfg.EnabledAdapters(root)
-	// No go.mod → only ground-truth detected; code is the fallback
-	// only when nothing else is enabled.
-	if len(got) != 1 || got[0] != "ground-truth" {
-		t.Errorf("auto-detect from gt dir: want [ground-truth], got %v", got)
+	// No go.mod, but ground-truth dir is present. Auto-detection always
+	// includes "code" even without go.mod (bughunt-12 F010: without an
+	// explicit [[adapters]] block, the operator didn't deliberately opt
+	// out of code — silently dropping 11 tools when gt dir appears is
+	// wrong). So both must be present.
+	if len(got) != 2 || got[0] != "code" || got[1] != "ground-truth" {
+		t.Errorf("auto-detect from gt dir: want [code ground-truth], got %v", got)
 	}
 }
 
