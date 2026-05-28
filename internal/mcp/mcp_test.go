@@ -469,6 +469,54 @@ func TestStoreErrorSurfaces(t *testing.T) {
 	}
 }
 
+// TestFindSymbolEmptyQueryRejected pins F009: find_symbol must reject an
+// empty query string rather than falling through to a "match everything" LIKE.
+func TestFindSymbolEmptyQueryRejected(t *testing.T) {
+	session := newSession(t, loadFixture(t))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "find_symbol",
+		Arguments: map[string]any{"query": ""},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError=true for empty query, got %+v", res)
+	}
+}
+
+// TestFindSymbolOversizedQueryRejected pins F007: find_symbol must return a
+// clean "query too long" error rather than letting the oversized LIKE pattern
+// reach SQLite's internal complexity limit.
+func TestFindSymbolOversizedQueryRejected(t *testing.T) {
+	session := newSession(t, loadFixture(t))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "find_symbol",
+		Arguments: map[string]any{"query": strings.Repeat("A", 4097)},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError=true for oversized query, got %+v", res)
+	}
+}
+
+// TestVerifySymbolOversizedNameRejected pins F007 for verify_symbol.
+func TestVerifySymbolOversizedNameRejected(t *testing.T) {
+	session := newSession(t, loadFixture(t))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "verify_symbol",
+		Arguments: map[string]any{"name": strings.Repeat("B", 4097)},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError=true for oversized name, got %+v", res)
+	}
+}
+
 func keys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

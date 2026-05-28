@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -128,6 +129,12 @@ func register(srv *mcp.Server, store SymbolStore) {
 // in the suggestions field when verify_symbol finds no exact match.
 const verifySymbolSuggestionsLimit = 5
 
+// maxSymbolQueryBytes caps find_symbol.query and verify_symbol.name.
+// 4 KiB is well above any realistic symbol name while staying far below
+// SQLite's LIKE/GLOB pattern-length limit (~50 KB), which would otherwise
+// surface as a raw "LIKE or GLOB pattern too complex" SQL error (F007).
+const maxSymbolQueryBytes = 4096
+
 // verifySymbol is the thin shim: name lookup + optional kind/language
 // filter + record-to-wire translation. On an exact miss it runs a fuzzy
 // query and returns up to verifySymbolSuggestionsLimit candidates in the
@@ -136,6 +143,9 @@ const verifySymbolSuggestionsLimit = 5
 func verifySymbol(ctx context.Context, store SymbolStore, in VerifySymbolInput) (VerifySymbolOutput, error) {
 	ctx, end := telemetry.Span(ctx, "leonard.mcp.verify_symbol")
 	defer end()
+	if len(in.Name) > maxSymbolQueryBytes {
+		return VerifySymbolOutput{}, fmt.Errorf("verify_symbol: name exceeds %d-byte cap (got %d bytes)", maxSymbolQueryBytes, len(in.Name))
+	}
 	syms, err := store.FindSymbolsByName(ctx, in.Name)
 	if err != nil {
 		return VerifySymbolOutput{}, err
@@ -157,6 +167,12 @@ func verifySymbol(ctx context.Context, store SymbolStore, in VerifySymbolInput) 
 func findSymbol(ctx context.Context, store SymbolStore, in FindSymbolInput) (FindSymbolOutput, error) {
 	ctx, end := telemetry.Span(ctx, "leonard.mcp.find_symbol")
 	defer end()
+	if in.Query == "" {
+		return FindSymbolOutput{}, fmt.Errorf("find_symbol: query must not be empty")
+	}
+	if len(in.Query) > maxSymbolQueryBytes {
+		return FindSymbolOutput{}, fmt.Errorf("find_symbol: query exceeds %d-byte cap (got %d bytes)", maxSymbolQueryBytes, len(in.Query))
+	}
 	syms, err := store.FindSymbolsByQuery(ctx, in.Query, in.Limit)
 	if err != nil {
 		return FindSymbolOutput{}, err
