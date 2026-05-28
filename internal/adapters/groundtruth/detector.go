@@ -182,11 +182,13 @@ var patterns = []patternEntry{
 		subjectGroup: 1,
 	},
 	{
-		// Date pattern matches YYYY-MM-DD anywhere or a bare 4-digit
-		// year. The bare-year form is intentionally last so a
-		// YYYY-MM-DD captures the longer span first via overlap-dedup.
+		// Date pattern matches YYYY-MM-DD anywhere or a bare calendar
+		// year (1900–2099). Bare-year is restricted to (?:19|20)\d{2}
+		// so phone-number fragments like "1389" don't fire. The
+		// YYYY-MM-DD form is listed first so the longer span wins via
+		// overlap-dedup.
 		category:     "date",
-		re:           regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}|\d{4})\b`),
+		re:           regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}|(?:19|20)\d{2})\b`),
 		subjectGroup: 1,
 	},
 }
@@ -254,6 +256,12 @@ func Detect(text string, facts *Facts, rules Rules) DetectionResult {
 				if ss >= 0 && se >= 0 {
 					subject = text[ss:se]
 				}
+			}
+			// Comma-formatted numbers ("9,319") must compare equal to
+			// the bare integer (9319) stored in facts.yaml. Strip
+			// thousands separators before the facts walk.
+			if p.category == "quantitative" {
+				subject = strings.ReplaceAll(subject, ",", "")
 			}
 
 			claim := Claim{

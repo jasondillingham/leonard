@@ -357,3 +357,60 @@ func TestDetect_BeforeInitReturnsEmpty(t *testing.T) {
 		}
 	}
 }
+
+// TestDetect_QuantitativeCommaFormatting verifies that a comma-formatted
+// number in prose ("9,319 messages") is resolved as Verified when the
+// matching integer (9319) exists in facts.yaml. Without comma
+// normalization the facts walk compares "9,319" against fmt.Sprint(9319)
+// = "9319" and produces a false Unverified.
+func TestDetect_QuantitativeCommaFormatting(t *testing.T) {
+	tmp := t.TempDir()
+	gtDir := filepath.Join(tmp, ".leonard", "ground-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for name, body := range map[string]string{
+		"facts.yaml":      "metrics:\n  message_count: 9319\n",
+		"stories.md":      "# Stories\n",
+		"do-not-claim.md": "# rules\n",
+		"filters.yaml":    "",
+	} {
+		if err := os.WriteFile(filepath.Join(gtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	a := groundtruth.New()
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	gta := a.(*groundtruth.GroundTruthAdapter)
+
+	got := gta.Detect("We processed 9,319 messages last month.")
+	var q *groundtruth.Claim
+	for i := range got.Claims {
+		if got.Claims[i].Category == "quantitative" {
+			q = &got.Claims[i]
+			break
+		}
+	}
+	if q == nil {
+		t.Fatalf("expected quantitative claim, got %+v", got.Claims)
+	}
+	if q.Verdict != groundtruth.VerdictVerified {
+		t.Errorf("comma-formatted number: want Verified, got %v (evidence=%q)", q.Verdict, q.EvidencePath)
+	}
+}
+
+// TestDetect_DatePatternIgnoresPhoneFragments verifies that a 4-digit
+// number that is NOT a plausible calendar year (1900-2099) does not
+// trigger a date claim. Phone numbers like "555-1389" previously matched
+// the bare \d{4} arm of the date pattern.
+func TestDetect_DatePatternIgnoresPhoneFragments(t *testing.T) {
+	got := groundtruth.Detect("Call me at 555-1389 tomorrow.", nil, nil)
+	for _, c := range got.Claims {
+		if c.Category == "date" && strings.Contains(c.Text, "1389") {
+			t.Errorf("phone fragment '1389' should not produce a date claim: %+v", c)
+		}
+	}
+}
