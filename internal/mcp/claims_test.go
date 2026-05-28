@@ -32,6 +32,7 @@ type claimRow struct {
 	claim        string
 	evidence     string
 	filePath     string
+	tool         string
 	verified     bool
 	recordedAt   int64
 	supersededBy *int64
@@ -55,6 +56,22 @@ func (m *memClaimStore) RecordClaim(_ context.Context, sessionID, claim, evidenc
 		recordedAt: time.Now().Unix(),
 	})
 	return m.nextID, nil
+}
+
+// recordHookClaim seeds a hook-generated claim (tool non-empty) with a fixed timestamp.
+func (m *memClaimStore) recordHookClaim(sessionID, claim, tool string, recordedAt int64) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	m.claims = append(m.claims, claimRow{
+		id:         m.nextID,
+		sessionID:  sessionID,
+		claim:      claim,
+		tool:       tool,
+		verified:   false,
+		recordedAt: recordedAt,
+	})
+	return m.nextID
 }
 
 // recordAt seeds a claim with a deterministic timestamp so ordering tests
@@ -106,6 +123,7 @@ func (m *memClaimStore) GetUnverifiedClaims(_ context.Context, sessionID string,
 			Claim:      c.claim,
 			Evidence:   c.evidence,
 			RecordedAt: c.recordedAt,
+			Tool:       c.tool,
 		}
 	}
 	return out, nil
@@ -259,6 +277,38 @@ func TestGetUnverifiedClaimsSessionFilter(t *testing.T) {
 	for _, c := range got {
 		if c.SessionID != "sess-1" {
 			t.Errorf("session filter leaked claim from %q", c.SessionID)
+		}
+	}
+}
+
+func TestGetUnverifiedClaims_SourceField(t *testing.T) {
+	st := newMemClaimStore()
+	now := time.Now().Unix()
+	// Hook-generated claim has a non-empty tool name → source should be "auto".
+	st.recordHookClaim("sess", "vet passed", "Edit", now-10)
+	// Operator-recorded claim has no tool → source should be "operator".
+	st.recordAt("sess", "tests pass", "evidence", false, now-5)
+
+	sess := newSession(t, st)
+	res := callTool(t, sess, "get_unverified_claims", map[string]any{})
+	got := decodeResult[leonardmcp.GetUnverifiedClaimsOutput](t, res).Claims
+	if len(got) != 2 {
+		t.Fatalf("want 2 claims, got %d", len(got))
+	}
+	byID := map[int64]leonardmcp.ClaimEntry{}
+	for _, c := range got {
+		byID[c.ID] = c
+	}
+	for _, c := range got {
+		switch c.Tool {
+		case "Edit":
+			if c.Source != "auto" {
+				t.Errorf("hook claim: want source=%q, got %q", "auto", c.Source)
+			}
+		case "":
+			if c.Source != "operator" {
+				t.Errorf("operator claim: want source=%q, got %q", "operator", c.Source)
+			}
 		}
 	}
 }

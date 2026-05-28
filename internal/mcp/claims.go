@@ -54,10 +54,14 @@ const (
 // Tool, IndexOK, VetOK, and VetErrorSummary are populated by the post-edit
 // hook (schema v3+); claims recorded via the record_claim MCP tool from a
 // model leave them empty.
+//
+// Source is "auto" for hook-generated claims (Tool is non-empty) and
+// "operator" for claims recorded via record_claim by the model or operator.
 type ClaimEntry struct {
 	ID              int64  `json:"id"`
 	SessionID       string `json:"session_id"`
 	Claim           string `json:"claim"`
+	Source          string `json:"source"` // "auto" | "operator"
 	FilePath        string `json:"file_path,omitempty"`
 	Tool            string `json:"tool,omitempty"`
 	IndexOK         *bool  `json:"index_ok,omitempty"`
@@ -120,10 +124,15 @@ func getUnverifiedClaims(ctx context.Context, cs ClaimStore, in GetUnverifiedCla
 	out := make([]ClaimEntry, 0, len(recs))
 	bytesEmitted := 0
 	for _, r := range recs {
+		source := "operator"
+		if r.Tool != "" {
+			source = "auto"
+		}
 		e := ClaimEntry{
 			ID:              r.ID,
 			SessionID:       r.SessionID,
 			Claim:           r.Claim,
+			Source:          source,
 			FilePath:        r.FilePath,
 			Tool:            r.Tool,
 			IndexOK:         r.IndexOK,
