@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/jasondillingham/leonard/internal/adapters"
 )
@@ -85,61 +83,34 @@ func readPendingAuditEntries(projectRoot, sessionID string) ([]pendingAuditEntry
 	return out, nil
 }
 
-// renderStopSummary builds the markdown digest. Empty input yields
-// a single line; populated input gets a sectioned summary with
-// rollup counts, per-file breakdown, and a pointer to
-// `leonard truth-story` for the full ledger.
+// renderStopSummary builds the session-end message. Empty input
+// yields a single "no claims flagged" line. Non-empty input yields
+// one compact line with counts and a pointer to list-stale-claims.
 func renderStopSummary(entries []pendingAuditEntry) string {
 	if len(entries) == 0 {
 		return "leonard ground-truth: no claims flagged this session.\n"
 	}
 
 	var (
-		totalFindings int
-		forbidden     int
-		unverified    int
-		filesSeen     = map[string]struct{}{}
+		forbidden  int
+		unverified int
+		filesSeen  = map[string]struct{}{}
 	)
-	// Per-file rollup: file → (forbidden, unverified)
-	perFile := map[string][2]int{}
 
 	for _, e := range entries {
 		filesSeen[e.FilePath] = struct{}{}
-		fc := perFile[e.FilePath]
 		for _, h := range e.Findings {
-			totalFindings++
 			switch h.Verdict {
 			case "forbidden":
 				forbidden++
-				fc[0]++
 			case "unverified":
 				unverified++
-				fc[1]++
 			}
 		}
-		perFile[e.FilePath] = fc
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "## Ground-truth session summary\n\n")
-	fmt.Fprintf(&b, "- **%d** finding(s) across **%d** file(s): %d forbidden, %d unverified.\n\n",
-		totalFindings, len(filesSeen), forbidden, unverified)
-
-	if len(perFile) > 0 {
-		b.WriteString("### By file\n\n")
-		// Sort for stable rendering.
-		paths := make([]string, 0, len(perFile))
-		for p := range perFile {
-			paths = append(paths, p)
-		}
-		sort.Strings(paths)
-		for _, p := range paths {
-			fc := perFile[p]
-			fmt.Fprintf(&b, "- `%s`: %d forbidden, %d unverified\n", p, fc[0], fc[1])
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString("Run `leonard truth-story` for the full ledger narrative; `leonard truth-history <file>` for per-file history.\n")
-	return b.String()
+	return fmt.Sprintf(
+		"Leonard: %d forbidden, %d unverified across %d file(s) this session. Run `leonard list-stale-claims` to review.\n",
+		forbidden, unverified, len(filesSeen),
+	)
 }

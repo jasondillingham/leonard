@@ -35,16 +35,15 @@ func TestStop_EmitsMarkdownSummary(t *testing.T) {
 		t.Fatal("Stop should emit a SystemMessage for sessions with findings")
 	}
 	for _, want := range []string{
-		"## Ground-truth session summary",
-		"finding(s)",
 		"forbidden",
-		"page.md",
-		"leonard truth-story",
-		"leonard truth-history",
+		"leonard list-stale-claims",
 	} {
 		if !strings.Contains(out.SystemMessage, want) {
 			t.Errorf("Stop summary missing %q in:\n%s", want, out.SystemMessage)
 		}
+	}
+	if strings.Contains(out.SystemMessage, "### By file") {
+		t.Errorf("Stop summary should not include per-file table:\n%s", out.SystemMessage)
 	}
 }
 
@@ -79,9 +78,9 @@ func TestStop_ScopesBySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	// Exactly 1 finding (from alpha session), not 2.
-	if !strings.Contains(out.SystemMessage, "**1** finding") {
-		t.Errorf("Stop should scope to session alpha (1 finding); got:\n%s", out.SystemMessage)
+	// Exactly 1 forbidden finding from alpha, not 2.
+	if !strings.Contains(out.SystemMessage, "1 forbidden") {
+		t.Errorf("Stop should scope to session alpha (1 forbidden); got:\n%s", out.SystemMessage)
 	}
 }
 
@@ -109,12 +108,11 @@ func TestStop_PerFileRollup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if !strings.Contains(out.SystemMessage, "### By file") {
-		t.Errorf("rollup section missing: %s", out.SystemMessage)
+	// Both files counted; no per-file table.
+	if strings.Contains(out.SystemMessage, "### By file") {
+		t.Errorf("Stop should not include per-file table:\n%s", out.SystemMessage)
 	}
-	for _, name := range []string{"a.md", "b.md"} {
-		if !strings.Contains(out.SystemMessage, name) {
-			t.Errorf("file %q missing from rollup: %s", name, out.SystemMessage)
-		}
+	if !strings.Contains(out.SystemMessage, "2 file") {
+		t.Errorf("expected 2 files in summary, got:\n%s", out.SystemMessage)
 	}
 }
