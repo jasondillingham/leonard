@@ -50,6 +50,7 @@ func TestVerdict_String(t *testing.T) {
 		{groundtruth.VerdictUnverified, "unverified"},
 		{groundtruth.VerdictForbidden, "forbidden"},
 		{groundtruth.VerdictOpinion, "opinion"},
+		{groundtruth.VerdictContradiction, "contradiction"},
 		{groundtruth.Verdict(99), "unknown"},
 	}
 	for _, c := range cases {
@@ -433,6 +434,70 @@ func TestDetect_DatePatternIgnoresPhoneFragments(t *testing.T) {
 	for _, c := range got.Claims {
 		if c.Category == "date" && strings.Contains(c.Text, "1389") {
 			t.Errorf("phone fragment '1389' should not produce a date claim: %+v", c)
+		}
+	}
+}
+
+// TestDetect_ContradictionFromFacts verifies the contradiction scan:
+//   - A number close to a facts.yaml value with a matching context word
+//     produces VerdictContradiction.
+//   - An exact match against a facts value does NOT produce a contradiction.
+//   - A close number with no context word match does NOT fire.
+func TestDetect_ContradictionFromFacts(t *testing.T) {
+	tmp := t.TempDir()
+	gtDir := filepath.Join(tmp, ".leonard", "ground-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for name, body := range map[string]string{
+		"facts.yaml":      "team:\n  engineers: 12\n",
+		"stories.md":      "# Stories\n",
+		"do-not-claim.md": "# rules\n",
+		"filters.yaml":    "",
+	} {
+		if err := os.WriteFile(filepath.Join(gtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	a := groundtruth.New()
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	gta := a.(*groundtruth.GroundTruthAdapter)
+
+	// OOM-close number + matching context word → contradiction.
+	got := gta.Detect("The team has 99 engineers across all offices.")
+	var contradiction *groundtruth.Claim
+	for i := range got.Claims {
+		if got.Claims[i].Verdict == groundtruth.VerdictContradiction {
+			contradiction = &got.Claims[i]
+			break
+		}
+	}
+	if contradiction == nil {
+		t.Fatalf("expected contradiction claim, got %+v", got.Claims)
+	}
+	if contradiction.EvidencePath != "team.engineers" {
+		t.Errorf("EvidencePath: want %q, got %q", "team.engineers", contradiction.EvidencePath)
+	}
+	if got.Summary.Contradiction < 1 {
+		t.Errorf("Summary.Contradiction: want >=1, got %d", got.Summary.Contradiction)
+	}
+
+	// Exact match → no contradiction (pattern scan may verify it normally).
+	got2 := gta.Detect("The team has 12 engineers across all offices.")
+	for _, c := range got2.Claims {
+		if c.Verdict == groundtruth.VerdictContradiction {
+			t.Errorf("exact match should not produce contradiction: %+v", c)
+		}
+	}
+
+	// OOM-close but no context word match → no contradiction.
+	got3 := gta.Detect("We use 99 libraries in our codebase.")
+	for _, c := range got3.Claims {
+		if c.Verdict == groundtruth.VerdictContradiction {
+			t.Errorf("context mismatch should not fire: %+v", c)
 		}
 	}
 }

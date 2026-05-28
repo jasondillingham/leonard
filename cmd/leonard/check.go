@@ -102,7 +102,7 @@ Flags:
 			switch {
 			case res.Summary.Forbidden > 0:
 				return &exitCode{code: 2}
-			case res.Summary.Unverified > 0:
+			case res.Summary.Unverified > 0 || res.Summary.Contradiction > 0:
 				return &exitCode{code: 1}
 			default:
 				return nil
@@ -132,8 +132,8 @@ func renderCheckResult(out io.Writer, path string, content []byte, res groundtru
 		fmt.Fprintf(out, "%s: clean (no findings)\n", path)
 		return
 	}
-	fmt.Fprintf(out, "%s: %d finding(s) — %d forbidden, %d unverified, %d verified, %d opinion\n",
-		path, res.Summary.Total, res.Summary.Forbidden, res.Summary.Unverified, res.Summary.Verified, res.Summary.Opinion)
+	fmt.Fprintf(out, "%s: %d finding(s) — %d forbidden, %d unverified, %d contradiction, %d verified, %d opinion\n",
+		path, res.Summary.Total, res.Summary.Forbidden, res.Summary.Unverified, res.Summary.Contradiction, res.Summary.Verified, res.Summary.Opinion)
 
 	// Sort claims by start byte for stable output.
 	claims := make([]groundtruth.Claim, len(res.Claims))
@@ -151,6 +151,8 @@ func renderCheckResult(out io.Writer, path string, content []byte, res groundtru
 			detail = fmt.Sprintf("evidence=%s", c.EvidencePath)
 		case groundtruth.VerdictOpinion:
 			detail = "preference/value statement"
+		case groundtruth.VerdictContradiction:
+			detail = fmt.Sprintf("facts=%s (expected %v)", c.EvidencePath, c.EvidenceValue)
 		}
 		line := byteToLine(content, c.StartByte)
 		fmt.Fprintf(out, "  [%s] %s — %q  (line %d)  %s\n",

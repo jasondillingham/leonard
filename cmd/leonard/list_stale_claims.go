@@ -69,7 +69,7 @@ Examples:
 					continue
 				}
 				res := gta.Detect(string(content))
-				if res.Summary.Unverified == 0 && res.Summary.Forbidden == 0 {
+				if res.Summary.Unverified == 0 && res.Summary.Forbidden == 0 && res.Summary.Contradiction == 0 {
 					continue
 				}
 
@@ -78,7 +78,7 @@ Examples:
 
 				if res.Summary.Forbidden > 0 && maxCode < 2 {
 					maxCode = 2
-				} else if res.Summary.Unverified > 0 && maxCode < 1 {
+				} else if (res.Summary.Unverified > 0 || res.Summary.Contradiction > 0) && maxCode < 1 {
 					maxCode = 1
 				}
 			}
