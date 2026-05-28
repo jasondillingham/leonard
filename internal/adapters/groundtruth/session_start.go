@@ -45,7 +45,7 @@ func (a *GroundTruthAdapter) SessionStart(_ context.Context, _ adapters.SessionS
 		return adapters.SessionStartResult{}, nil
 	}
 
-	targets, capped, err := walkMDFiles(root, ScanCap)
+	targets, capped, err := walkMDFiles(root, ScanCap, nil)
 	if err != nil || len(targets) == 0 {
 		if warnPrefix != "" {
 			return adapters.SessionStartResult{AdditionalContext: warnPrefix}, nil

@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	ignore "github.com/sabhiram/go-gitignore"
 )
 
 // FactLeaf is one resolved scalar from a facts.yaml key path. When the
@@ -44,20 +46,27 @@ func ResolveFactKey(facts *Facts, keyPath string) ([]FactLeaf, error) {
 type ImpactResult struct {
 	// Path is the absolute path to the file.
 	Path string
-	// FirstLine is the 1-based line number of the first occurrence.
+	// FirstLine is the 1-based line number of the first strong hit, or the
+	// first hit of any kind when there are no strong hits.
 	FirstLine int
 	// Hits is the total number of occurrences in the file.
 	Hits int
+	// StrongHits is the subset of Hits where the surrounding context contains
+	// a word matching a key-path segment, indicating the reference is likely
+	// discussing this specific fact rather than coincidentally sharing a value.
+	StrongHits int
 }
 
-// FindImpactedFiles walks .md files under projectRoot and returns those
-// that contain valueStr (word-boundary matched, case-insensitive). It
-// reuses walkMDFiles with ScanCap and the shared SkipDirs list.
-func FindImpactedFiles(projectRoot, valueStr string) ([]ImpactResult, error) {
+// FindImpactedFiles walks .md files under projectRoot and returns those that
+// contain valueStr (word-boundary matched, case-insensitive). keyPath is the
+// dotted facts key (e.g. "team.engineers") used to classify each hit as strong
+// (context mentions a key-path segment) or value-only. ig, when non-nil,
+// prunes paths that match .gitignore / .leonardignore rules.
+func FindImpactedFiles(projectRoot, valueStr, keyPath string, ig *ignore.GitIgnore) ([]ImpactResult, error) {
 	if valueStr == "" {
 		return nil, nil
 	}
-	targets, _, err := walkMDFiles(projectRoot, ScanCap)
+	targets, _, err := walkMDFiles(projectRoot, ScanCap, ig)
 	if err != nil {
 		return nil, err
 	}
@@ -67,15 +76,31 @@ func FindImpactedFiles(projectRoot, valueStr string) ([]ImpactResult, error) {
 		if readErr != nil {
 			continue
 		}
-		spans := findAllOccurrences(string(content), valueStr)
+		text := string(content)
+		spans := findAllOccurrences(text, valueStr)
 		if len(spans) == 0 {
 			continue
 		}
+		var strongHits int
+		firstStrongLine := 0
+		for _, s := range spans {
+			ctx := numberContext(text, s.start, s.end)
+			if contextMatchesFact(ctx, keyPath) {
+				strongHits++
+				if firstStrongLine == 0 {
+					firstStrongLine = byteOffsetToLine(content, s.start)
+				}
+			}
+		}
 		firstLine := byteOffsetToLine(content, spans[0].start)
+		if firstStrongLine > 0 {
+			firstLine = firstStrongLine
+		}
 		out = append(out, ImpactResult{
-			Path:      path,
-			FirstLine: firstLine,
-			Hits:      len(spans),
+			Path:       path,
+			FirstLine:  firstLine,
+			Hits:       len(spans),
+			StrongHits: strongHits,
 		})
 	}
 	return out, nil

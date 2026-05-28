@@ -4,6 +4,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	ignore "github.com/sabhiram/go-gitignore"
 )
 
 // ScanCap is the maximum number of .md files walkMDFiles collects
@@ -24,19 +26,26 @@ var SkipDirs = map[string]bool{
 	"out":          true,
 }
 
-// walkMDFiles returns up to cap .md files under root, skipping SkipDirs
-// and any directory whose name starts with ".". capped is true when the
-// walk was stopped early because cap was reached.
-func walkMDFiles(root string, cap int) (targets []string, capped bool, err error) {
+// walkMDFiles returns up to cap .md files under root, skipping SkipDirs,
+// hidden directories, and any path matched by ig (when non-nil). capped is
+// true when the walk was stopped early because cap was reached.
+func walkMDFiles(root string, cap int, ig *ignore.GitIgnore) (targets []string, capped bool, err error) {
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkerr error) error {
 		if walkerr != nil {
 			return nil
 		}
+		rel, _ := filepath.Rel(root, path)
 		if d.IsDir() {
 			name := d.Name()
 			if SkipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
 				return filepath.SkipDir
 			}
+			if ig != nil && ig.MatchesPath(rel) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if ig != nil && ig.MatchesPath(rel) {
 			return nil
 		}
 		if strings.ToLower(filepath.Ext(path)) == ".md" {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jasondillingham/leonard/internal/adapters"
 	"github.com/jasondillingham/leonard/internal/adapters/groundtruth"
+	"github.com/jasondillingham/leonard/internal/index"
 )
 
 func newFactsCmd() *cobra.Command {
@@ -149,14 +150,10 @@ Examples:
 				return &exitCode{code: 1}
 			}
 
+			ig, _ := index.LoadIgnore(projectRoot)
+
 			out := cmd.OutOrStdout()
 			root := projectRoot
-			if scope != "" {
-				// honour --scope by restricting root to the matched prefix
-				// (best-effort: we still use walkMDFiles internally, so
-				// pass projectRoot and filter results after the fact).
-				_ = scope
-			}
 
 			// Collect results per leaf value.
 			type entry struct {
@@ -165,7 +162,7 @@ Examples:
 			}
 			var entries []entry
 			for _, leaf := range leaves {
-				results, findErr := groundtruth.FindImpactedFiles(root, leaf.Value)
+				results, findErr := groundtruth.FindImpactedFiles(root, leaf.Value, leaf.Path, ig)
 				if findErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "facts impact: scan: %v\n", findErr)
 					continue
@@ -182,6 +179,15 @@ Examples:
 					}
 					results = filtered
 				}
+				// Sort: strong hits first, then alphabetically by path.
+				sort.Slice(results, func(i, j int) bool {
+					si := results[i].StrongHits > 0
+					sj := results[j].StrongHits > 0
+					if si != sj {
+						return si
+					}
+					return results[i].Path < results[j].Path
+				})
 				entries = append(entries, entry{leaf: leaf, results: results})
 			}
 
@@ -208,8 +214,12 @@ Examples:
 				fmt.Fprintf(out, "## %s = %q\n", e.leaf.Path, e.leaf.Value)
 				for _, r := range e.results {
 					rel, _ := filepath.Rel(projectRoot, r.Path)
-					fmt.Fprintf(out, "  %s:%d  (%d occurrence%s)\n",
-						rel, r.FirstLine, r.Hits, pluralize(r.Hits, "", "s"))
+					annotation := ""
+					if r.StrongHits == 0 {
+						annotation = " — value-only"
+					}
+					fmt.Fprintf(out, "  %s:%d  (%d occurrence%s)%s\n",
+						rel, r.FirstLine, r.Hits, pluralize(r.Hits, "", "s"), annotation)
 				}
 				fmt.Fprintln(out)
 			}
