@@ -1490,6 +1490,25 @@ func (s *Store) ResolveClaim(claimID int64, note string) error {
 // sessions. Superseded rows are hidden so stop-time output stays focused on
 // failures the next edit hasn't already resolved; use GetUnverifiedClaimsAll
 // to include the full history.
+// PurgeSupersededClaims deletes auto-generated claims (tool != '') that have
+// been superseded and whose recorded_at is older than olderThanUnix (unix
+// seconds). Returns the number of rows deleted. This is the intended cleanup
+// path for the hook-generated ledger which otherwise grows without bound.
+func (s *Store) PurgeSupersededClaims(olderThanUnix int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM claims
+		WHERE tool != ''
+		  AND superseded_by_claim_id IS NOT NULL
+		  AND recorded_at < ?`, olderThanUnix)
+	if err != nil {
+		return 0, fmt.Errorf("store: PurgeSupersededClaims: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: PurgeSupersededClaims rows: %w", err)
+	}
+	return n, nil
+}
+
 // GetClaim fetches a single claim by ID. Returns (zero, false, nil) when
 // no row exists so callers can distinguish "not found" from a real error.
 func (s *Store) GetClaim(id int64) (Claim, bool, error) {

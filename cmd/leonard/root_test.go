@@ -48,8 +48,11 @@ type fakeRuntime struct {
 	getUnverifiedOut   []ClaimRow
 	getUnverifiedErr   error
 
-	resolveClaimCalls []resolveClaimCall
-	resolveClaimErr   error
+	resolveClaimCalls      []resolveClaimCall
+	resolveClaimErr        error
+	purgeSupersededCalls   []int64
+	purgeSupersededOut     int64
+	purgeSupersededErr     error
 
 	doctorCalls []doctorCall
 	doctorOut   DoctorReport
@@ -150,6 +153,11 @@ func (f *fakeRuntime) GetUnverifiedClaims(_ context.Context, _, sessionID string
 func (f *fakeRuntime) ResolveClaim(_ context.Context, _ string, claimID int64, note string) error {
 	f.resolveClaimCalls = append(f.resolveClaimCalls, resolveClaimCall{claimID, note})
 	return f.resolveClaimErr
+}
+
+func (f *fakeRuntime) PurgeSupersededClaims(_ context.Context, _ string, olderThan int64) (int64, error) {
+	f.purgeSupersededCalls = append(f.purgeSupersededCalls, olderThan)
+	return f.purgeSupersededOut, f.purgeSupersededErr
 }
 
 func (f *fakeRuntime) Doctor(_ context.Context, root, data string) (DoctorReport, error) {

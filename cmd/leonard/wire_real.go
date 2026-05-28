@@ -362,6 +362,15 @@ func (realRuntime) ResolveClaim(_ context.Context, dataDir string, claimID int64
 	return s.ResolveClaim(claimID, note)
 }
 
+func (realRuntime) PurgeSupersededClaims(_ context.Context, dataDir string, olderThanUnix int64) (int64, error) {
+	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	return s.PurgeSupersededClaims(olderThanUnix)
+}
+
 func (realRuntime) GetUnverifiedClaims(_ context.Context, dataDir, sessionID string) ([]ClaimRow, error) {
 	s, err := store.Open(filepath.Join(dataDir, "leonard.db"))
 	if err != nil {

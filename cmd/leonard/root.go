@@ -67,6 +67,11 @@ type Runtime interface {
 	// claim's evidence.
 	ResolveClaim(ctx context.Context, dataDir string, claimID int64, note string) error
 
+	// PurgeSupersededClaims deletes hook-generated claims that have been
+	// superseded and are older than olderThanUnix (unix seconds). Returns
+	// the number of rows deleted.
+	PurgeSupersededClaims(ctx context.Context, dataDir string, olderThanUnix int64) (int64, error)
+
 	// Doctor inspects store + filesystem state and returns a health report.
 	// Used by `leonard doctor` — opens the store once and collects every
 	// data-point the command surfaces.

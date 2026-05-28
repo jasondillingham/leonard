@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -18,6 +19,7 @@ func newClaimsCmd(rt Runtime) *cobra.Command {
 	}
 	cmd.AddCommand(newClaimsUnverifiedCmd(rt))
 	cmd.AddCommand(newClaimsResolveCmd(rt))
+	cmd.AddCommand(newClaimsPurgeCmd(rt))
 	return cmd
 }
 
@@ -54,6 +56,47 @@ func newClaimsResolveCmd(rt Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&note, "note", "", "optional audit note appended to the claim's evidence")
+	return cmd
+}
+
+// newClaimsPurgeCmd implements `leonard claims purge [--age=Nd]`.
+// Deletes superseded hook-generated claims older than --age to keep the
+// ledger from growing without bound. Only auto-claims (tool != '') that
+// have already been superseded are removed — active and operator-recorded
+// claims are never touched.
+func newClaimsPurgeCmd(rt Runtime) *cobra.Command {
+	var ageDays int
+	cmd := &cobra.Command{
+		Use:   "purge",
+		Short: "Delete superseded hook-generated claims older than --age days.",
+		Long: `Removes hook-generated claims (auto-recorded by the post-edit
+verifier) that have already been superseded by a later run and are older
+than --age days. Active claims and operator-recorded claims are never
+deleted.
+
+Exit code:
+  0  purge complete (even if nothing was deleted)
+  >0 error`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dataDir, err := dataDirForCwd()
+			if err != nil {
+				return err
+			}
+			cutoff := time.Now().AddDate(0, 0, -ageDays).Unix()
+			n, err := rt.PurgeSupersededClaims(cmd.Context(), dataDir, cutoff)
+			if err != nil {
+				return fmt.Errorf("claims purge: %w", err)
+			}
+			if n == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "leonard: no superseded claims older than age threshold")
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "leonard: purged %d superseded auto-claim(s)\n", n)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&ageDays, "age", 30, "delete superseded auto-claims older than this many days")
 	return cmd
 }
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mkDataDir(t *testing.T) string {
@@ -209,6 +210,40 @@ func TestClaimsUnverified_EmptyHasFriendlyMessage(t *testing.T) {
 		t.Fatalf("claims unverified: %v", err)
 	}
 	if !strings.Contains(out, "no unverified claims") {
+		t.Errorf("expected friendly empty message: %q", out)
+	}
+}
+
+func TestClaimsPurge_DefaultAge(t *testing.T) {
+	mkDataDir(t)
+	rt := &fakeRuntime{purgeSupersededOut: 3}
+	out, err := runRoot(t, rt, "claims", "purge")
+	if err != nil {
+		t.Fatalf("claims purge: %v\nout=%s", err, out)
+	}
+	if !strings.Contains(out, "purged 3 superseded") {
+		t.Errorf("want purge count in output, got %q", out)
+	}
+	if len(rt.purgeSupersededCalls) != 1 {
+		t.Fatalf("want 1 purge call, got %d", len(rt.purgeSupersededCalls))
+	}
+	// Default --age is 30 days; cutoff should be ~30 days ago (unix seconds).
+	cutoff := rt.purgeSupersededCalls[0]
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30).Unix()
+	delta := thirtyDaysAgo - cutoff
+	if delta < -5 || delta > 5 {
+		t.Errorf("cutoff not ~30 days ago: want ~%d, got %d (delta=%d)", thirtyDaysAgo, cutoff, delta)
+	}
+}
+
+func TestClaimsPurge_NothingToDelete(t *testing.T) {
+	mkDataDir(t)
+	rt := &fakeRuntime{purgeSupersededOut: 0}
+	out, err := runRoot(t, rt, "claims", "purge")
+	if err != nil {
+		t.Fatalf("claims purge: %v", err)
+	}
+	if !strings.Contains(out, "no superseded claims") {
 		t.Errorf("expected friendly empty message: %q", out)
 	}
 }
