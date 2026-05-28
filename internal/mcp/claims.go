@@ -150,6 +150,57 @@ func getUnverifiedClaims(ctx context.Context, cs ClaimStore, in GetUnverifiedCla
 	return GetUnverifiedClaimsOutput{Claims: out}, nil
 }
 
+// GetClaimInput is the argument shape for get_claim.
+type GetClaimInput struct {
+	ClaimID int64 `json:"claim_id" jsonschema:"id of the claim to retrieve"`
+}
+
+// GetClaimOutput is the full claim record returned by get_claim, including
+// the evidence field that get_unverified_claims omits for payload reasons.
+type GetClaimOutput struct {
+	ID              int64  `json:"id"`
+	SessionID       string `json:"session_id"`
+	Claim           string `json:"claim"`
+	Evidence        string `json:"evidence"`
+	Source          string `json:"source"` // "auto" | "operator"
+	FilePath        string `json:"file_path,omitempty"`
+	Tool            string `json:"tool,omitempty"`
+	IndexOK         *bool  `json:"index_ok,omitempty"`
+	VetOK           *bool  `json:"vet_ok,omitempty"`
+	VetErrorSummary string `json:"vet_error_summary,omitempty"`
+	RecordedAt      int64  `json:"recorded_at"`
+}
+
+func getClaim(ctx context.Context, cs ClaimStore, in GetClaimInput) (GetClaimOutput, error) {
+	if in.ClaimID <= 0 {
+		return GetClaimOutput{}, errors.New("get_claim: claim_id is required")
+	}
+	rec, found, err := cs.GetClaim(ctx, in.ClaimID)
+	if err != nil {
+		return GetClaimOutput{}, fmt.Errorf("get_claim: %w", err)
+	}
+	if !found {
+		return GetClaimOutput{}, fmt.Errorf("get_claim: claim %d not found", in.ClaimID)
+	}
+	source := "operator"
+	if rec.Tool != "" {
+		source = "auto"
+	}
+	return GetClaimOutput{
+		ID:              rec.ID,
+		SessionID:       rec.SessionID,
+		Claim:           rec.Claim,
+		Evidence:        rec.Evidence,
+		Source:          source,
+		FilePath:        rec.FilePath,
+		Tool:            rec.Tool,
+		IndexOK:         rec.IndexOK,
+		VetOK:           rec.VetOK,
+		VetErrorSummary: rec.VetErrorSummary,
+		RecordedAt:      rec.RecordedAt,
+	}, nil
+}
+
 // registerClaimTools wires the two claim tools onto srv. Called from
 // register() only when the underlying store satisfies ClaimStore.
 func registerClaimTools(srv *mcp.Server, cs ClaimStore) {
@@ -166,11 +217,22 @@ func registerClaimTools(srv *mcp.Server, cs ClaimStore) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_unverified_claims",
-		Description: "Return claims still flagged as unverified, newest first. Optional session_id filter scopes the query to a single session; empty returns claims across all sessions. By default, prior failure claims that a later vet=ok run on the same file already resolved are hidden — pass include_superseded=true to see the full history. Evidence is omitted from the response to keep the payload small.",
+		Description: "Return claims still flagged as unverified, newest first. Optional session_id filter scopes the query to a single session; empty returns claims across all sessions. By default, prior failure claims that a later vet=ok run on the same file already resolved are hidden — pass include_superseded=true to see the full history. Evidence is omitted from the response to keep the payload small; use get_claim to fetch evidence for a specific id.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetUnverifiedClaimsInput) (*mcp.CallToolResult, GetUnverifiedClaimsOutput, error) {
 		out, err := getUnverifiedClaims(ctx, cs, in)
 		if err != nil {
 			return nil, GetUnverifiedClaimsOutput{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "get_claim",
+		Description: "Fetch a single claim by id, including the full evidence field that get_unverified_claims omits. Use this when you need to inspect the raw command output or proof associated with a specific unverified entry.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetClaimInput) (*mcp.CallToolResult, GetClaimOutput, error) {
+		out, err := getClaim(ctx, cs, in)
+		if err != nil {
+			return nil, GetClaimOutput{}, err
 		}
 		return nil, out, nil
 	})

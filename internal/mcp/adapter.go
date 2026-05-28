@@ -229,6 +229,28 @@ func (a *StoreAdapter) RecordClaim(ctx context.Context, sessionID, claim, eviden
 	})
 }
 
+func (a *StoreAdapter) GetClaim(ctx context.Context, id int64) (ClaimRecord, bool, error) {
+	if err := a.preflight(ctx); err != nil {
+		return ClaimRecord{}, false, err
+	}
+	c, found, err := a.S.GetClaim(id)
+	if err != nil || !found {
+		return ClaimRecord{}, found, err
+	}
+	return ClaimRecord{
+		ID:              c.ID,
+		SessionID:       c.SessionID,
+		Claim:           c.Claim,
+		Evidence:        c.Evidence,
+		RecordedAt:      c.RecordedAt,
+		FilePath:        c.FilePath,
+		Tool:            c.Tool,
+		IndexOK:         c.IndexOK,
+		VetOK:           c.VetOK,
+		VetErrorSummary: c.VetErrorSummary,
+	}, true, nil
+}
+
 func (a *StoreAdapter) GetUnverifiedClaims(ctx context.Context, sessionID string, includeSuperseded bool) ([]ClaimRecord, error) {
 	if err := a.preflight(ctx); err != nil {
 		return nil, err

@@ -1490,6 +1490,55 @@ func (s *Store) ResolveClaim(claimID int64, note string) error {
 // sessions. Superseded rows are hidden so stop-time output stays focused on
 // failures the next edit hasn't already resolved; use GetUnverifiedClaimsAll
 // to include the full history.
+// GetClaim fetches a single claim by ID. Returns (zero, false, nil) when
+// no row exists so callers can distinguish "not found" from a real error.
+func (s *Store) GetClaim(id int64) (Claim, bool, error) {
+	const q = `SELECT id, session_id, claim, evidence, verified, recorded_at,
+		file_path, superseded_by_claim_id, tool, index_ok, vet_ok, vet_error_summary
+		FROM claims WHERE id = ?`
+	var (
+		c          Claim
+		verified   int
+		filePath   sql.NullString
+		superseded sql.NullInt64
+		tool       sql.NullString
+		indexOK    sql.NullInt64
+		vetOK      sql.NullInt64
+		vetErrSum  sql.NullString
+	)
+	err := s.db.QueryRow(q, id).Scan(&c.ID, &c.SessionID, &c.Claim, &c.Evidence,
+		&verified, &c.RecordedAt, &filePath, &superseded, &tool, &indexOK, &vetOK, &vetErrSum)
+	if err == sql.ErrNoRows {
+		return Claim{}, false, nil
+	}
+	if err != nil {
+		return Claim{}, false, fmt.Errorf("store: GetClaim: %w", err)
+	}
+	c.Verified = verified != 0
+	if filePath.Valid {
+		c.FilePath = filePath.String
+	}
+	if superseded.Valid {
+		v := superseded.Int64
+		c.SupersededByClaimID = &v
+	}
+	if tool.Valid {
+		c.Tool = tool.String
+	}
+	if indexOK.Valid {
+		b := indexOK.Int64 != 0
+		c.IndexOK = &b
+	}
+	if vetOK.Valid {
+		b := vetOK.Int64 != 0
+		c.VetOK = &b
+	}
+	if vetErrSum.Valid {
+		c.VetErrorSummary = vetErrSum.String
+	}
+	return c, true, nil
+}
+
 func (s *Store) GetUnverifiedClaims(sessionID string) ([]Claim, error) {
 	return s.queryUnverifiedClaims(sessionID, false)
 }

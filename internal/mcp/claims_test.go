@@ -91,6 +91,24 @@ func (m *memClaimStore) recordAt(sessionID, claim, evidence string, verified boo
 	return m.nextID
 }
 
+func (m *memClaimStore) GetClaim(_ context.Context, id int64) (leonardmcp.ClaimRecord, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.claims {
+		if c.id == id {
+			return leonardmcp.ClaimRecord{
+				ID:         c.id,
+				SessionID:  c.sessionID,
+				Claim:      c.claim,
+				Evidence:   c.evidence,
+				RecordedAt: c.recordedAt,
+				Tool:       c.tool,
+			}, true, nil
+		}
+	}
+	return leonardmcp.ClaimRecord{}, false, nil
+}
+
 func (m *memClaimStore) GetUnverifiedClaims(_ context.Context, sessionID string, includeSuperseded bool) ([]leonardmcp.ClaimRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -127,6 +145,48 @@ func (m *memClaimStore) GetUnverifiedClaims(_ context.Context, sessionID string,
 		}
 	}
 	return out, nil
+}
+
+// ---- get_claim ----
+
+func TestGetClaim_ReturnsEvidence(t *testing.T) {
+	st := newMemClaimStore()
+	sess := newSession(t, st)
+
+	// Record a claim and get its id back.
+	rec := callTool(t, sess, "record_claim", map[string]any{
+		"claim":    "all tests pass",
+		"evidence": "go test ./... output: PASS",
+		"verified": false,
+	})
+	id := decodeResult[leonardmcp.RecordClaimOutput](t, rec).ClaimID
+
+	// get_claim should return the full record including evidence.
+	res := callTool(t, sess, "get_claim", map[string]any{"claim_id": id})
+	got := decodeResult[leonardmcp.GetClaimOutput](t, res)
+	if got.ID != id {
+		t.Errorf("id: want %d, got %d", id, got.ID)
+	}
+	if got.Evidence != "go test ./... output: PASS" {
+		t.Errorf("evidence: want %q, got %q", "go test ./... output: PASS", got.Evidence)
+	}
+	if got.Source != "operator" {
+		t.Errorf("source: want %q, got %q", "operator", got.Source)
+	}
+}
+
+func TestGetClaim_NotFound(t *testing.T) {
+	sess := newSession(t, newMemClaimStore())
+	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "get_claim",
+		Arguments: map[string]any{"claim_id": 9999},
+	})
+	if err != nil {
+		t.Fatalf("CallTool transport: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError for unknown claim id, got %+v", res)
+	}
 }
 
 // ---- tools/list ----

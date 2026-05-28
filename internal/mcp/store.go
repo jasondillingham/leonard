@@ -127,6 +127,9 @@ type ClaimRecord struct {
 // full surface; in-memory test fixtures pick and choose.
 type ClaimStore interface {
 	RecordClaim(ctx context.Context, sessionID, claim, evidence, filePath string, verified bool) (int64, error)
+	// GetClaim returns the claim with the given id. found is false (and err
+	// nil) when no row exists — callers must check found before using c.
+	GetClaim(ctx context.Context, id int64) (c ClaimRecord, found bool, err error)
 	// GetUnverifiedClaims returns claims still flagged as unverified. When
 	// includeSuperseded is false (the default for the get_unverified_claims
 	// tool), rows resolved by a later vet=ok run on the same file are
