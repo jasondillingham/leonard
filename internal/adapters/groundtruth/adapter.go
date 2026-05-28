@@ -3,6 +3,7 @@ package groundtruth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"sync"
@@ -38,6 +39,12 @@ type GroundTruthAdapter struct {
 	rules          Rules
 	auditLogExists bool
 
+	// initWarnings holds non-fatal parse errors from Init (malformed
+	// facts.yaml, stories.md, etc.). The adapter still loads with empty
+	// values for the affected files; warnings are surfaced via
+	// SessionStart's AdditionalContext so Claude Code sees them.
+	initWarnings []string
+
 	// watchStop / watchDone are the lifecycle channels for the
 	// hot-reload polling goroutine (#27). nil before Init starts
 	// the watcher; close(watchStop) signals shutdown and
@@ -57,12 +64,14 @@ func (a *GroundTruthAdapter) Name() string { return Name }
 // Init decodes adapter-specific config from cfg.Raw, resolves the
 // truth_dir against cfg.ProjectRoot, and parses every file present.
 // A completely missing ground-truth/ directory is acceptable — the
-// adapter loads with empty structures and the hook methods (once they
-// gain behavior in later issues) treat it as "nothing to verify."
+// adapter loads with empty structures and the hook methods treat it
+// as "nothing to verify."
 //
-// Errors are returned for malformed YAML / Markdown — operators need a
-// clear line-numbered message when a typo breaks the tree, not a
-// silent fall-through.
+// Parse errors in ground-truth files (malformed YAML, empty story
+// names, etc.) are non-fatal: the affected file loads as empty, a
+// warning is emitted to stderr, and the warning is stored for
+// SessionStart to surface via AdditionalContext. This prevents a
+// single typo in stories.md from silently dropping all MCP tools.
 func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error {
 	if cfg.ProjectRoot == "" {
 		return errors.New("ground-truth adapter: Init requires ProjectRoot")
@@ -84,21 +93,40 @@ func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error 
 		truthDir = filepath.Join(cfg.ProjectRoot, truthDir)
 	}
 
+	// Resolve stderr early so we can write warnings during loading.
+	errOut := cfg.Stderr
+	if errOut == nil {
+		errOut = io.Discard
+	}
+
+	// warnLoad calls the loader and, on error, warns to stderr and
+	// returns nil so the caller uses the zero value instead of failing.
+	var warnings []string
+	warnLoad := func(label string, loadErr error) bool {
+		if loadErr == nil {
+			return false
+		}
+		msg := fmt.Sprintf("ground-truth partial load: %s: %v — continuing with empty content", label, loadErr)
+		fmt.Fprintf(errOut, "leonard: %s\n", msg)
+		warnings = append(warnings, msg)
+		return true
+	}
+
 	facts, err := loadFacts(filepath.Join(truthDir, "facts.yaml"))
-	if err != nil {
-		return err
+	if warnLoad("facts.yaml", err) {
+		facts = &Facts{}
 	}
 	filters, err := loadFilters(filepath.Join(truthDir, "filters.yaml"))
-	if err != nil {
-		return err
+	if warnLoad("filters.yaml", err) {
+		filters = &Filters{}
 	}
 	stories, err := loadStories(filepath.Join(truthDir, "stories.md"))
-	if err != nil {
-		return err
+	if warnLoad("stories.md", err) {
+		stories = Stories{}
 	}
 	rules, err := loadRules(filepath.Join(truthDir, "do-not-claim.md"))
-	if err != nil {
-		return err
+	if warnLoad("do-not-claim.md", err) {
+		rules = Rules{}
 	}
 	hasAudit, err := auditLogPresent(filepath.Join(truthDir, "audit-log.md"))
 	if err != nil {
@@ -121,16 +149,14 @@ func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error 
 	a.mu.Lock()
 	a.projectRoot = canonRoot
 	a.truthDir = truthDir
-	a.stderr = cfg.Stderr
-	if a.stderr == nil {
-		a.stderr = io.Discard
-	}
+	a.stderr = errOut
 	a.cfg = parsed
 	a.facts = facts
 	a.filters = filters
 	a.stories = stories
 	a.rules = rules
 	a.auditLogExists = hasAudit
+	a.initWarnings = warnings
 	a.mu.Unlock()
 
 	// Start the hot-reload watcher (#27). The goroutine polls
@@ -158,6 +184,17 @@ func (a *GroundTruthAdapter) Close() error {
 		<-done
 	}
 	return nil
+}
+
+// InitWarnings returns non-fatal parse errors collected during Init
+// (e.g. malformed facts.yaml, empty story name). The adapter loaded
+// with empty content for each affected file. Callers such as
+// `leonard ground-truth lint` should treat a non-empty slice as a
+// lint failure.
+func (a *GroundTruthAdapter) InitWarnings() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.initWarnings
 }
 
 // Facts returns the parsed facts.yaml tree. Used by tests and by

@@ -52,13 +52,16 @@ func TestGroundTruthLint_MalformedYAML(t *testing.T) {
 	})
 	withCwd(t, root)
 	rt := &fakeRuntime{}
-	_, err := runRoot(t, rt, "ground-truth", "lint")
+	out, err := runRoot(t, rt, "ground-truth", "lint")
 	if err == nil {
 		t.Fatal("expected lint failure")
 	}
 	var ec *exitCode
 	if !errors.As(err, &ec) || ec.code != 1 {
 		t.Errorf("exit: want 1, got %v", err)
+	}
+	if !strings.Contains(out, "facts.yaml") {
+		t.Errorf("lint output should reference facts.yaml; got: %q", out)
 	}
 }
 

@@ -18,17 +18,38 @@ func (a *GroundTruthAdapter) SessionStart(_ context.Context, _ adapters.SessionS
 	facts := a.facts
 	rules := a.rules
 	stderr := a.stderr
+	warnings := a.initWarnings
 	a.mu.RUnlock()
 
 	if root == "" {
 		return adapters.SessionStartResult{}, nil
 	}
+
+	// Surface any partial-load warnings from Init prominently so the
+	// operator sees them in-context, not just on MCP stderr.
+	var warnPrefix string
+	if len(warnings) > 0 {
+		var b strings.Builder
+		b.WriteString("**Leonard ground-truth: files loaded with errors — fix to restore full coverage:**\n")
+		for _, w := range warnings {
+			fmt.Fprintf(&b, "- %s\n", w)
+		}
+		b.WriteString("\n")
+		warnPrefix = b.String()
+	}
+
 	if (facts == nil || facts.IsEmpty()) && len(rules) == 0 {
+		if warnPrefix != "" {
+			return adapters.SessionStartResult{AdditionalContext: warnPrefix}, nil
+		}
 		return adapters.SessionStartResult{}, nil
 	}
 
 	targets, capped, err := walkMDFiles(root, ScanCap)
 	if err != nil || len(targets) == 0 {
+		if warnPrefix != "" {
+			return adapters.SessionStartResult{AdditionalContext: warnPrefix}, nil
+		}
 		return adapters.SessionStartResult{}, nil
 	}
 	if capped {
@@ -50,7 +71,7 @@ func (a *GroundTruthAdapter) SessionStart(_ context.Context, _ adapters.SessionS
 	}
 
 	return adapters.SessionStartResult{
-		AdditionalContext: renderSessionStartSummary(len(targets), filesWithUnverified, filesWithForbidden),
+		AdditionalContext: warnPrefix + renderSessionStartSummary(len(targets), filesWithUnverified, filesWithForbidden),
 	}, nil
 }
 

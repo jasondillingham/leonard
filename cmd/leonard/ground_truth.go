@@ -57,6 +57,16 @@ exit 0 if the whole tree loads cleanly.`,
 			defer a.Close()
 			gta := a.(*groundtruth.GroundTruthAdapter)
 
+			// Partial-load warnings mean files had parse errors; lint
+			// should report these as failures even though Init continued.
+			if warns := gta.InitWarnings(); len(warns) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "leonard ground-truth lint: FAIL\n")
+				for _, w := range warns {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", w)
+				}
+				return &exitCode{code: 1}
+			}
+
 			fmt.Fprintln(cmd.OutOrStdout(), "leonard ground-truth lint: OK")
 			fmt.Fprintf(cmd.OutOrStdout(), "  facts:     %s\n", presence(!gta.Facts().IsEmpty()))
 			fmt.Fprintf(cmd.OutOrStdout(), "  stories:   %d entr%s\n",

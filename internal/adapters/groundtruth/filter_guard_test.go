@@ -330,13 +330,18 @@ func TestPathFilters_RejectsMalformedYAML(t *testing.T) {
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	var stderr bytes.Buffer
 	a := groundtruth.New()
-	err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp})
-	if err == nil {
-		t.Error("expected regex-compile error")
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp, Stderr: &stderr}); err != nil {
+		t.Fatalf("Init should not fail on malformed filters.yaml; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "path_pattern") {
-		t.Errorf("error should cite path_pattern: %v", err)
+	gta := a.(*groundtruth.GroundTruthAdapter)
+	warns := gta.InitWarnings()
+	if len(warns) == 0 {
+		t.Fatal("expected partial-load warning for malformed filters.yaml")
+	}
+	if !strings.Contains(warns[0], "path_pattern") && !strings.Contains(stderr.String(), "path_pattern") {
+		t.Errorf("warning should cite path_pattern; warns=%v stderr=%q", warns, stderr.String())
 	}
 }
 
