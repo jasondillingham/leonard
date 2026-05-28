@@ -208,5 +208,6 @@ func newRootCmd(rt Runtime) *cobra.Command {
 	root.AddCommand(newCheckCmd())
 	root.AddCommand(newListStaleClaimsCmd())
 	root.AddCommand(newGroundTruthCmd())
+	root.AddCommand(newFactsCmd())
 	return root
 }

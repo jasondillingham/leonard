@@ -3,25 +3,11 @@ package groundtruth
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/jasondillingham/leonard/internal/adapters"
 )
-
-const scanCap = 500
-
-var skipDirs = map[string]bool{
-	"node_modules": true,
-	"vendor":       true,
-	"dist":         true,
-	"build":        true,
-	"target":       true,
-	".next":        true,
-	"out":          true,
-}
 
 // SessionStart scans project .md files and emits a one-line summary of
 // claim findings so operators know Leonard ran and whether any files need
@@ -41,12 +27,12 @@ func (a *GroundTruthAdapter) SessionStart(_ context.Context, _ adapters.SessionS
 		return adapters.SessionStartResult{}, nil
 	}
 
-	targets, capped, err := walkMDFiles(root, scanCap)
+	targets, capped, err := walkMDFiles(root, ScanCap)
 	if err != nil || len(targets) == 0 {
 		return adapters.SessionStartResult{}, nil
 	}
 	if capped {
-		fmt.Fprintf(stderr, "leonard ground-truth: capped scan at %d .md files; use `leonard list-stale-claims --scope=…` for full coverage\n", scanCap)
+		fmt.Fprintf(stderr, "leonard ground-truth: capped scan at %d .md files; use `leonard list-stale-claims --scope=…` for full coverage\n", ScanCap)
 	}
 
 	var filesWithUnverified, filesWithForbidden int
@@ -81,28 +67,4 @@ func renderSessionStartSummary(total, unverified, forbidden int) string {
 	}
 	return fmt.Sprintf("Leonard: %d .md files — %s. Run `leonard list-stale-claims` or `leonard check <path>` to investigate.",
 		total, strings.Join(parts, ", "))
-}
-
-func walkMDFiles(root string, cap int) (targets []string, capped bool, err error) {
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkerr error) error {
-		if walkerr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if skipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.ToLower(filepath.Ext(path)) == ".md" {
-			targets = append(targets, path)
-			if len(targets) >= cap {
-				capped = true
-				return filepath.SkipAll
-			}
-		}
-		return nil
-	})
-	return targets, capped, err
 }

@@ -43,6 +43,12 @@ func loadFacts(path string) (*Facts, error) {
 	return &Facts{Path: path, Root: root}, nil
 }
 
+// LoadFacts is the exported wrapper around loadFacts for CLI commands
+// and tests that need to load facts.yaml directly without a full Init.
+func LoadFacts(path string) (*Facts, error) {
+	return loadFacts(path)
+}
+
 // IsEmpty reports whether the facts tree is unpopulated. Used by
 // hook code to short-circuit lookups when there's nothing to check
 // against. An explicit nil-receiver guard handles the "no facts.yaml
