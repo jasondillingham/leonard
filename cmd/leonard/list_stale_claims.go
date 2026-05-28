@@ -12,6 +12,7 @@ import (
 
 	"github.com/jasondillingham/leonard/internal/adapters"
 	"github.com/jasondillingham/leonard/internal/adapters/groundtruth"
+	"github.com/jasondillingham/leonard/internal/index"
 )
 
 func newListStaleClaimsCmd() *cobra.Command {
@@ -94,7 +95,8 @@ Examples:
 
 // collectTargets returns the list of files to scan. When scope is set it is
 // treated as a filepath.Glob pattern relative to projectRoot; when empty,
-// every .md file under projectRoot (excluding .leonard/ and .git/) is returned.
+// every .md file under projectRoot (excluding .leonard/, hidden dirs, and
+// paths matched by .gitignore / .leonardignore) is returned.
 func collectTargets(projectRoot, scope string) ([]string, error) {
 	if scope != "" {
 		pattern := filepath.Join(projectRoot, scope)
@@ -105,16 +107,31 @@ func collectTargets(projectRoot, scope string) ([]string, error) {
 		return matches, nil
 	}
 
+	ig, err := index.LoadIgnore(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("load ignore rules: %w", err)
+	}
+
 	var out []string
-	err := filepath.WalkDir(projectRoot, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(projectRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		rel, relErr := filepath.Rel(projectRoot, path)
+		if relErr != nil {
+			return relErr
 		}
 		if d.IsDir() {
 			name := d.Name()
 			if name == ".leonard" || name == ".git" || strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
+			if ig != nil && ig.MatchesPath(rel) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if ig != nil && ig.MatchesPath(rel) {
 			return nil
 		}
 		if strings.ToLower(filepath.Ext(path)) == ".md" {

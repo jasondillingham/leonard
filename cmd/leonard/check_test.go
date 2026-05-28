@@ -180,6 +180,43 @@ func TestListStaleClaims_ForbiddenExitsTwo(t *testing.T) {
 	}
 }
 
+// TestListStaleClaims_RespectsLeonardignore verifies that files matched by
+// .leonardignore are excluded from the default walk. This prevents operator-
+// internal directories (audit logs, red-team runlogs, etc.) from flooding
+// the results when listed in .leonardignore.
+func TestListStaleClaims_RespectsLeonardignore(t *testing.T) {
+	root, _ := checkFixture(t, "clean.md", "Ordinary text.", "## Compliance\n\n- ❌ \"HIPAA-compliant\" — Not certified.\n")
+	withCwd(t, root)
+
+	// Write a forbidden claim in audits/runlog.md.
+	if err := os.MkdirAll(filepath.Join(root, "audits"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "audits", "runlog.md"),
+		[]byte("Our platform is HIPAA-compliant for healthcare."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without .leonardignore: audits/ is scanned → exit 2.
+	rt := &fakeRuntime{}
+	_, err := runRoot(t, rt, "list-stale-claims")
+	var ec *exitCode
+	if !errors.As(err, &ec) || ec.code != 2 {
+		t.Fatalf("without .leonardignore: want exit 2 (forbidden found), got %v", err)
+	}
+
+	// Add .leonardignore excluding audits/.
+	if err := os.WriteFile(filepath.Join(root, ".leonardignore"), []byte("audits/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now the walk skips audits/ → exit 0 (only clean.md is scanned).
+	out, err := runRoot(t, rt, "list-stale-claims")
+	if err != nil {
+		t.Errorf("with .leonardignore: want exit 0, got %v\nout=%s", err, out)
+	}
+}
+
 // TestListStaleClaims_ScopeGlob restricts scanning to the matched files.
 func TestListStaleClaims_ScopeGlob(t *testing.T) {
 	// Write a forbidden claim only in subdir/bad.md; docs/safe.md is clean.

@@ -707,6 +707,15 @@ func hashBytes(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// LoadIgnore reads .gitignore and .leonardignore at root and compiles them
+// into a single gitignore-style matcher. Returns nil (no-op matcher) if
+// neither file exists or neither contains any non-empty lines. Exported so
+// commands that walk the project tree (check, list-stale-claims) can skip
+// the same paths the indexer skips.
+func LoadIgnore(root string) (*ignore.GitIgnore, error) {
+	return loadIgnore(root)
+}
+
 // loadIgnore reads .gitignore and .leonardignore at root and compiles them
 // into a single matcher. Returns nil (no-op matcher) if neither file exists.
 func loadIgnore(root string) (*ignore.GitIgnore, error) {
