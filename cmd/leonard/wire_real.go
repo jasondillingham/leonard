@@ -53,7 +53,7 @@ func (realRuntime) IndexAll(_ context.Context, projectRoot, dataDir string) (Ind
 	if err := idx.IndexAll(); err != nil {
 		return IndexResult{}, err
 	}
-	files, err := s.ListFiles("", "")
+	count, err := s.CountFiles()
 	if err != nil {
 		return IndexResult{}, err
 	}
@@ -62,7 +62,7 @@ func (realRuntime) IndexAll(_ context.Context, projectRoot, dataDir string) (Ind
 	for i, f := range rawFailures {
 		failures[i] = ParseFailure{Path: f.Path, Message: f.Message}
 	}
-	return IndexResult{FilesIndexed: len(files), ParseFailures: failures}, nil
+	return IndexResult{FilesIndexed: count, ParseFailures: failures}, nil
 }
 
 func (realRuntime) VerifySymbol(_ context.Context, dataDir, name, kind string) ([]SymbolMatch, error) {
@@ -245,7 +245,7 @@ func (realRuntime) Doctor(_ context.Context, projectRoot, dataDir string) (Docto
 	}
 	defer s.Close()
 
-	files, err := s.ListFiles("", "")
+	files, err := s.AllFiles()
 	if err != nil {
 		return DoctorReport{}, err
 	}

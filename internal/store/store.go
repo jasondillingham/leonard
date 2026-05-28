@@ -687,6 +687,44 @@ func (s *Store) ListFiles(pattern, lang string) ([]File, error) {
 	return out, nil
 }
 
+// AllFiles returns every file row in the store, ordered by path. Unlike
+// ListFiles, there is no row-count cap — this is intentionally uncapped for
+// internal bookkeeping (prune sweep, doctor, index count) where a partial
+// view would silently corrupt the result. Do NOT use for MCP/user-facing
+// queries where heap-pressure is a concern; use ListFiles with its LIMIT there.
+func (s *Store) AllFiles() ([]File, error) {
+	rows, err := s.db.Query(
+		`SELECT path, hash, language, size_bytes, indexed_at FROM files ORDER BY path`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: AllFiles: %w", err)
+	}
+	defer rows.Close()
+	var out []File
+	for rows.Next() {
+		var f File
+		if err := rows.Scan(&f.Path, &f.Hash, &f.Language, &f.SizeBytes, &f.IndexedAt); err != nil {
+			return nil, fmt.Errorf("store: AllFiles scan: %w", err)
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: AllFiles iter: %w", err)
+	}
+	return out, nil
+}
+
+// CountFiles returns the total number of file rows via SELECT COUNT(*).
+// Used for reporting (index output, doctor) where the capped ListFiles
+// would lie on any project with >MaxSymbolQueryRows files.
+func (s *Store) CountFiles() (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM files`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: CountFiles: %w", err)
+	}
+	return n, nil
+}
+
 // DeleteFile removes a single file row and (via FK CASCADE) its symbols.
 // Thin wrapper around DeleteFiles — see that method for the contract.
 //
