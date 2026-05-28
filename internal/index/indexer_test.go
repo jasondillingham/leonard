@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -688,5 +689,28 @@ func TestStoreKey_NormalizesNFCNFD(t *testing.T) {
 	keyNFD := idx.storeKey(nfd)
 	if keyNFC != keyNFD {
 		t.Errorf("NFC and NFD should produce the same storeKey:\n NFC: %q\n NFD: %q", keyNFC, keyNFD)
+	}
+}
+
+// TestStoreKey_CaseVariantsCollapsedOnDarwin covers F031/F032: on darwin
+// (APFS, case-insensitive) two path variants differing only in case refer
+// to the same on-disk file and must produce the same store key. On other
+// platforms case is significant and the keys must remain distinct.
+func TestStoreKey_CaseVariantsCollapsedOnDarwin(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	idx := New(nil, root)
+
+	lower := idx.storeKey(filepath.Join(root, "fixtures", "foo.go"))
+	upper := idx.storeKey(filepath.Join(root, "FIXTURES", "foo.go"))
+
+	if runtime.GOOS == "darwin" {
+		if lower != upper {
+			t.Errorf("darwin: case variants should collapse to the same key:\n lower: %q\n upper: %q", lower, upper)
+		}
+	} else {
+		if lower == upper {
+			t.Errorf("non-darwin: case variants should remain distinct: %q", lower)
+		}
 	}
 }

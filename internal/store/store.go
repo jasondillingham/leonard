@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -21,11 +22,17 @@ import (
 // Bughunt-6 store-eval F6: without this, a claim recorded with a
 // path Claude Code emitted in NFD form fails to match the file
 // row stored in NFC, breaking SupersedeClaimsForFile.
+// F031/F032: on darwin, also lowercase so paths differing only in
+// case (APFS is case-insensitive) still match the same claim row.
 func normalizeClaimPath(p string) string {
 	if p == "" {
 		return ""
 	}
-	return norm.NFC.String(filepath.ToSlash(p))
+	normalized := norm.NFC.String(filepath.ToSlash(p))
+	if runtime.GOOS == "darwin" {
+		return strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 // TruthChange is the optional provenance carried by decision-log

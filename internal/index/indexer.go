@@ -694,12 +694,29 @@ func (i *Indexer) indexAbs(path string) error {
 // userspace path string can arrive in either NFC or NFD; without this
 // normalization, indexing the same file twice (once via a tool emitting
 // NFC, once via NFD) created two rows with two complete symbol sets.
+//
+// F031/F032: on darwin, where APFS is case-insensitive but
+// case-preserving, two path variants differing only in case refer to
+// the same on-disk file. Lowercasing the key on darwin collapses
+// these variants to a single store row, preventing duplicate symbol
+// sets and double verify_symbol hits.
 func (i *Indexer) storeKey(abs string) string {
 	rel, err := filepath.Rel(i.Root, abs)
 	if err != nil {
-		return norm.NFC.String(filepath.ToSlash(abs))
+		return caseNormPath(norm.NFC.String(filepath.ToSlash(abs)))
 	}
-	return norm.NFC.String(filepath.ToSlash(rel))
+	return caseNormPath(norm.NFC.String(filepath.ToSlash(rel)))
+}
+
+// caseNormPath lowercases the path on darwin (APFS is case-insensitive)
+// so a file whose path arrives in different capitalizations always
+// produces the same store key. On other platforms the path is returned
+// unchanged (Linux ext4, Windows NTFS may be case-sensitive).
+func caseNormPath(p string) string {
+	if runtime.GOOS == "darwin" {
+		return strings.ToLower(p)
+	}
+	return p
 }
 
 func hashBytes(b []byte) string {
