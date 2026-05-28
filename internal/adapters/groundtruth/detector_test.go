@@ -278,9 +278,10 @@ func TestDetect_QuantitativeUnverified(t *testing.T) {
 
 func TestDetect_DateUnverified(t *testing.T) {
 	a := detectorTestAdapter(t)
-	// Date pattern fires on any 4-digit year or YYYY-MM-DD. 1999
-	// isn't in the facts tree, so Unverified.
-	got := a.Detect("That was back in 1999.")
+	// A bare year without a temporal preposition fires as Unverified
+	// when the year is absent from facts.yaml. "Founded 1999" has no
+	// temporal prep so the year is treated as a factual claim.
+	got := a.Detect("Founded 1999, the company grew quickly.")
 	hasDate := false
 	for _, c := range got.Claims {
 		if c.Category == "date" {
@@ -292,6 +293,27 @@ func TestDetect_DateUnverified(t *testing.T) {
 	}
 	if !hasDate {
 		t.Errorf("date claim missing: %+v", got.Claims)
+	}
+}
+
+// TestDetect_TemporalYearContextSuppressed verifies that bare years
+// preceded by temporal prepositions ("in", "since", "until", etc.) are
+// suppressed as temporal references rather than treated as verifiable
+// facts. This reduces unverified-claim noise in typical prose.
+func TestDetect_TemporalYearContextSuppressed(t *testing.T) {
+	a := detectorTestAdapter(t)
+	cases := []string{
+		"I started here in 2010 and stayed until 2015.",
+		"The project has been running since 2018.",
+		"We expect delivery by 2026.",
+	}
+	for _, text := range cases {
+		got := a.Detect(text)
+		for _, c := range got.Claims {
+			if c.Category == "date" && !strings.Contains(c.Text, "-") {
+				t.Errorf("bare year in temporal context should not produce a claim: %q → claim %q", text, c.Text)
+			}
+		}
 	}
 }
 

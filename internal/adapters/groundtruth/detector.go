@@ -177,8 +177,12 @@ var patterns = []patternEntry{
 		subjectGroup: 2,
 	},
 	{
+		// "years", "months", "days" dropped from units: temporal
+		// durations in prose ("13 years of experience", "took 6
+		// months") almost never appear as scalar facts in
+		// facts.yaml and produce a high unverified-claim noise rate.
 		category:     "quantitative",
-		re:           regexp.MustCompile(`(?i)\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*(messages|users|customers|requests|MB|GB|TB|%|years|months|days)\b`),
+		re:           regexp.MustCompile(`(?i)\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*(messages|users|customers|requests|MB|GB|TB|%)\b`),
 		subjectGroup: 1,
 	},
 	{
@@ -250,6 +254,20 @@ func Detect(text string, facts *Facts, rules Rules) DetectionResult {
 			}
 
 			matchText := text[start:end]
+
+			// F015: bare calendar years (no '-') in temporal
+			// context are references, not factual claims. Skip
+			// years preceded by temporal prepositions so "in
+			// 2010", "since 2015", "until 2026" don't flood the
+			// unverified-claims ledger. Full YYYY-MM-DD dates
+			// aren't affected — they carry enough specificity to
+			// be worth checking.
+			if p.category == "date" && !strings.Contains(matchText, "-") {
+				if isTemporalYearContext(text, start) {
+					continue
+				}
+			}
+
 			subject := matchText
 			if p.subjectGroup > 0 && len(idx) >= 2*(p.subjectGroup+1) {
 				ss, se := idx[2*p.subjectGroup], idx[2*p.subjectGroup+1]
@@ -365,6 +383,29 @@ func isWordByte(b byte) bool {
 		return true
 	case b == '_':
 		return true
+	}
+	return false
+}
+
+// temporalPreps are lowercase preposition+space strings that, when
+// immediately preceding a bare 4-digit year, indicate temporal context
+// ("in 2010", "since 2015") rather than a factual claim.
+var temporalPreps = []string{
+	"in ", "since ", "from ", "until ", "by ", "before ", "after ", "during ",
+}
+
+// isTemporalYearContext reports whether the character immediately before
+// position pos in text is part of a temporal preposition phrase. Used by
+// Detect to suppress bare-year date claims that are calendar references.
+func isTemporalYearContext(text string, pos int) bool {
+	if pos == 0 {
+		return false
+	}
+	prefix := strings.ToLower(text[:pos])
+	for _, prep := range temporalPreps {
+		if strings.HasSuffix(prefix, prep) {
+			return true
+		}
 	}
 	return false
 }
