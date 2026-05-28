@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jasondillingham/leonard/internal/config"
 )
 
 // dataDirName is the project-local directory where Leonard keeps its DB and
@@ -42,6 +46,16 @@ func newInitCmd(rt Runtime) *cobra.Command {
 			if info, err := os.Lstat(dataDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
 				return fmt.Errorf("init %s: %s is a symlink; refusing to initialize. Delete or replace it with a real directory first", root, dataDir)
 			}
+			// Capture whether config.toml is fresh so we can write
+			// [[adapters]] blocks after scaffolding when ground-truth
+			// is requested. We check before rt.Init because rt.Init
+			// may create the file with no adapter blocks.
+			cfgPath := filepath.Join(dataDir, config.Filename)
+			cfgFresh := false
+			if _, statErr := os.Stat(cfgPath); errors.Is(statErr, fs.ErrNotExist) {
+				cfgFresh = true
+			}
+
 			// Always run the SQLite store init when "code" is in
 			// the adapter set (the v0.52 default). Operators who
 			// only want the ground-truth adapter (--adapter=
@@ -67,6 +81,22 @@ func newInitCmd(rt Runtime) *cobra.Command {
 					fmt.Fprintf(cmd.OutOrStdout(), "leonard: ground-truth tree already present at %s\n", filepath.Join(dataDir, groundTruthDirName))
 				} else {
 					fmt.Fprintf(cmd.OutOrStdout(), "leonard: scaffolded ground-truth tree (%d file(s) created)\n", len(created))
+				}
+			}
+
+			// When config.toml was freshly created and ground-truth
+			// is in the adapter set, overwrite it with explicit
+			// [[adapters]] blocks so the operator gets a working
+			// config without having to hand-edit TOML.
+			if cfgFresh && adapters["ground-truth"] {
+				var types []string
+				if adapters["code"] {
+					types = append(types, "code")
+				}
+				types = append(types, "ground-truth")
+				cfg := config.DefaultWithAdapters(types...)
+				if err := config.Save(cfg, cfgPath); err != nil {
+					return fmt.Errorf("init %s: write config.toml: %w", root, err)
 				}
 			}
 			return nil

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -208,6 +209,20 @@ func Default() Config {
 	}
 }
 
+// DefaultWithAdapters returns Default() with [[adapters]] blocks for
+// each of the named adapter types. Used by `leonard init --adapter=...`
+// to write a config.toml that doesn't require manual TOML editing after
+// init.
+func DefaultWithAdapters(types ...string) Config {
+	c := Default()
+	for _, t := range types {
+		if t != "" {
+			c.Adapters = append(c.Adapters, AdapterConfig{Type: t})
+		}
+	}
+	return c
+}
+
 // Load reads and decodes config.toml at path. A missing file is reported via
 // fs.ErrNotExist (use errors.Is) so callers can distinguish "never inited"
 // from "config is malformed".
@@ -218,6 +233,13 @@ func Load(path string) (Config, error) {
 	}
 	var c Config
 	if err := toml.Unmarshal(data, &c); err != nil {
+		// A common mistake is writing `adapters = ["code","ground-truth"]`
+		// (TOML array of strings) when the correct shape is a TOML array
+		// of tables: `[[adapters]]\ntype = "code"`. Detect this and emit
+		// a hint so the operator doesn't have to decode the Go type error.
+		if isAdapterStringError(err) {
+			return Config{}, fmt.Errorf("decode %s: adapters must be a TOML array of tables, not strings — use:\n\n  [[adapters]]\n  type = \"code\"\n\n  [[adapters]]\n  type = \"ground-truth\"\n\n(original error: %w)", path, err)
+		}
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
 	}
 
@@ -271,6 +293,17 @@ func LoadOrDefault(path string) (Config, error) {
 		return Default(), nil
 	}
 	return c, err
+}
+
+// isAdapterStringError reports whether err looks like the toml library
+// error produced when config.toml contains `adapters = ["code","gt"]`
+// (an array of strings) instead of [[adapters]] table blocks.
+func isAdapterStringError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "Adapters") && strings.Contains(s, "cannot decode")
 }
 
 // Save encodes c to path, creating the parent directory if necessary.
