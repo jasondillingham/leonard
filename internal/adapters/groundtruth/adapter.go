@@ -224,11 +224,7 @@ func (a *GroundTruthAdapter) Detect(text string) DetectionResult {
 // .leonard/pending-audit.log when the just-written file produces
 // UNVERIFIED or FORBIDDEN findings.
 
-// SessionStart is a no-op in v0.6. Later issues may inject a
-// "loaded N facts / M rules" summary at session start.
-func (a *GroundTruthAdapter) SessionStart(_ context.Context, _ adapters.SessionStartPayload) (adapters.SessionStartResult, error) {
-	return adapters.SessionStartResult{}, nil
-}
+// SessionStart is implemented in session_start.go.
 
 // Stop is implemented in stop.go. v0.9 (#30): scans pending-audit.log
 // for this session and emits a markdown digest via SystemMessage.
