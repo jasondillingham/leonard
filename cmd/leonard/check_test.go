@@ -217,6 +217,78 @@ func TestListStaleClaims_RespectsLeonardignore(t *testing.T) {
 	}
 }
 
+// TestListStaleClaims_ScopeDoubleStarGlob verifies that ** in --scope
+// matches files recursively across directory boundaries.
+func TestListStaleClaims_ScopeDoubleStarGlob(t *testing.T) {
+	root := t.TempDir()
+	gtDir := filepath.Join(root, dataDirName, "ground-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"facts.yaml":      "tech_stack:\n  primary_language: Go\n",
+		"stories.md":      "# Stories\n",
+		"do-not-claim.md": "## Compliance\n\n- ❌ \"HIPAA-compliant\" — Not certified.\n",
+		"filters.yaml":    "",
+	} {
+		if err := os.WriteFile(filepath.Join(gtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Forbidden claim buried three levels deep.
+	nestedDir := filepath.Join(root, "docs", "section", "sub")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "bad.md"),
+		[]byte("Our platform is HIPAA-compliant for healthcare."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+
+	// Single-star scope should not descend into section/sub/.
+	out, err := runRoot(t, rt, "list-stale-claims", "--scope=docs/*.md")
+	var ec *exitCode
+	if errors.As(err, &ec) {
+		t.Errorf("docs/*.md should not find nested bad.md, got exit %d\nout=%s", ec.code, out)
+	}
+
+	// Double-star scope must find bad.md recursively.
+	_, err = runRoot(t, rt, "list-stale-claims", "--scope=docs/**/*.md")
+	if !errors.As(err, &ec) || ec.code != 2 {
+		t.Errorf("docs/**/*.md: want exit 2 for nested forbidden claim, got %v", err)
+	}
+}
+
+// TestListStaleClaims_ScopeNoMatch verifies that a scope matching no files
+// prints a diagnostic message and exits 0.
+func TestListStaleClaims_ScopeNoMatch(t *testing.T) {
+	root := t.TempDir()
+	gtDir := filepath.Join(root, dataDirName, "ground-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"facts.yaml": "", "stories.md": "", "do-not-claim.md": "", "filters.yaml": "",
+	} {
+		if err := os.WriteFile(filepath.Join(gtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+
+	out, err := runRoot(t, rt, "list-stale-claims", "--scope=nonexistent/**/*.md")
+	if err != nil {
+		t.Errorf("empty scope: want exit 0, got %v", err)
+	}
+	if !strings.Contains(out, "no files matched") {
+		t.Errorf("empty scope: want 'no files matched' message, got %q", out)
+	}
+}
+
 // TestListStaleClaims_ScopeGlob restricts scanning to the matched files.
 func TestListStaleClaims_ScopeGlob(t *testing.T) {
 	// Write a forbidden claim only in subdir/bad.md; docs/safe.md is clean.

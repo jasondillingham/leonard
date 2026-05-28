@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -60,6 +61,10 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("list-stale-claims: %w", err)
 			}
+			if len(targets) == 0 && scope != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "list-stale-claims: no files matched scope %q\n", scope)
+				return nil
+			}
 
 			maxCode := 0
 			for _, path := range targets {
@@ -94,13 +99,13 @@ Examples:
 }
 
 // collectTargets returns the list of files to scan. When scope is set it is
-// treated as a filepath.Glob pattern relative to projectRoot; when empty,
-// every .md file under projectRoot (excluding .leonard/, hidden dirs, and
-// paths matched by .gitignore / .leonardignore) is returned.
+// treated as a glob pattern relative to projectRoot (** is supported for
+// recursive matching); when empty, every .md file under projectRoot
+// (excluding .leonard/, hidden dirs, and paths matched by .gitignore /
+// .leonardignore) is returned.
 func collectTargets(projectRoot, scope string) ([]string, error) {
 	if scope != "" {
-		pattern := filepath.Join(projectRoot, scope)
-		matches, err := filepath.Glob(pattern)
+		matches, err := expandGlob(projectRoot, scope)
 		if err != nil {
 			return nil, fmt.Errorf("scope glob %q: %w", scope, err)
 		}
@@ -140,4 +145,60 @@ func collectTargets(projectRoot, scope string) ([]string, error) {
 		return nil
 	})
 	return out, err
+}
+
+// expandGlob resolves a scope glob relative to root. Patterns without **
+// use filepath.Glob; patterns with ** walk the tree and match each relative
+// path against a translated regexp so that ** crosses directory boundaries.
+func expandGlob(root, pattern string) ([]string, error) {
+	if !strings.Contains(pattern, "**") {
+		return filepath.Glob(filepath.Join(root, pattern))
+	}
+	re, err := scopeGlobToRE(pattern)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkerr error) error {
+		if walkerr != nil || d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		if re.MatchString(filepath.ToSlash(rel)) {
+			out = append(out, path)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// scopeGlobToRE translates a glob pattern with ** support into a regexp.
+// Rules: ** matches any sequence of characters including path separators,
+// * matches any sequence of non-separator characters, ? matches one
+// non-separator character.
+func scopeGlobToRE(pattern string) (*regexp.Regexp, error) {
+	var b strings.Builder
+	b.WriteByte('^')
+	i := 0
+	for i < len(pattern) {
+		switch {
+		case pattern[i] == '*' && i+1 < len(pattern) && pattern[i+1] == '*':
+			b.WriteString(`.*`)
+			i += 2
+			if i < len(pattern) && pattern[i] == '/' {
+				i++ // consume the slash following **
+			}
+		case pattern[i] == '*':
+			b.WriteString(`[^/]*`)
+			i++
+		case pattern[i] == '?':
+			b.WriteString(`[^/]`)
+			i++
+		default:
+			b.WriteString(regexp.QuoteMeta(string(pattern[i])))
+			i++
+		}
+	}
+	b.WriteByte('$')
+	return regexp.Compile(b.String())
 }
