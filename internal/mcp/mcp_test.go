@@ -173,6 +173,36 @@ func TestVerifySymbolMissing(t *testing.T) {
 	}
 }
 
+func TestVerifySymbolMissing_SuggestsAlternatives(t *testing.T) {
+	session := newSession(t, loadFixture(t))
+
+	// "greeter" is a case-shifted miss: FindSymbolsByName is case-sensitive so
+	// it finds nothing, but FindSymbolsByQuery (case-insensitive) finds Greeter.
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "verify_symbol",
+		Arguments: map[string]any{"name": "greeter"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	out := decodeResult[leonardmcp.VerifySymbolOutput](t, res)
+	if out.Exists {
+		t.Errorf("expected Exists=false for wrong-case name, got true")
+	}
+	if len(out.Suggestions) == 0 {
+		t.Fatalf("expected suggestions for near-miss 'greeter', got none")
+	}
+	found := false
+	for _, s := range out.Suggestions {
+		if s.QualifiedName == "main.Greeter" || s.QualifiedName == "main.Greet" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("suggestions should include Greeter or Greet, got %+v", out.Suggestions)
+	}
+}
+
 func TestVerifySymbolKindFilter(t *testing.T) {
 	session := newSession(t, loadFixture(t))
 

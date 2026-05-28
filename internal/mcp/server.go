@@ -124,8 +124,15 @@ func register(srv *mcp.Server, store SymbolStore) {
 	}
 }
 
+// verifySymbolSuggestionsLimit caps the number of fuzzy candidates returned
+// in the suggestions field when verify_symbol finds no exact match.
+const verifySymbolSuggestionsLimit = 5
+
 // verifySymbol is the thin shim: name lookup + optional kind/language
-// filter + record-to-wire translation.
+// filter + record-to-wire translation. On an exact miss it runs a fuzzy
+// query and returns up to verifySymbolSuggestionsLimit candidates in the
+// suggestions field so callers can correct a misspelling without a
+// separate find_symbol round-trip.
 func verifySymbol(ctx context.Context, store SymbolStore, in VerifySymbolInput) (VerifySymbolOutput, error) {
 	ctx, end := telemetry.Span(ctx, "leonard.mcp.verify_symbol")
 	defer end()
@@ -134,7 +141,17 @@ func verifySymbol(ctx context.Context, store SymbolStore, in VerifySymbolInput) 
 		return VerifySymbolOutput{}, err
 	}
 	matches := filterAndConvert(syms, in.Kind, in.Language, 0)
-	return VerifySymbolOutput{Exists: len(matches) > 0, Matches: matches}, nil
+	if len(matches) > 0 {
+		return VerifySymbolOutput{Exists: true, Matches: matches}, nil
+	}
+	// Exact miss — run a fuzzy query for "did you mean" suggestions.
+	fuzzy, ferr := store.FindSymbolsByQuery(ctx, in.Name, verifySymbolSuggestionsLimit)
+	if ferr != nil {
+		// Fuzzy failure is non-fatal; return the miss without suggestions.
+		return VerifySymbolOutput{Exists: false, Matches: matches}, nil
+	}
+	suggestions := filterAndConvert(fuzzy, in.Kind, in.Language, verifySymbolSuggestionsLimit)
+	return VerifySymbolOutput{Exists: false, Matches: matches, Suggestions: suggestions}, nil
 }
 
 func findSymbol(ctx context.Context, store SymbolStore, in FindSymbolInput) (FindSymbolOutput, error) {

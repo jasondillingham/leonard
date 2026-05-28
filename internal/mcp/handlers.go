@@ -28,10 +28,14 @@ type VerifySymbolInput struct {
 	Language string `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
 }
 
-// VerifySymbolOutput is the result of verify_symbol.
+// VerifySymbolOutput is the result of verify_symbol. On an exact miss
+// (exists=false, matches empty), suggestions is populated with up to
+// verifySymbolSuggestionsLimit fuzzy matches so callers can correct a
+// misspelling without a separate find_symbol round-trip.
 type VerifySymbolOutput struct {
-	Exists  bool          `json:"exists"`
-	Matches []SymbolMatch `json:"matches"`
+	Exists      bool          `json:"exists"`
+	Matches     []SymbolMatch `json:"matches"`
+	Suggestions []SymbolMatch `json:"suggestions,omitempty"`
 }
 
 // FindSymbolInput is the argument shape for find_symbol.
