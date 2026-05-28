@@ -3,7 +3,6 @@ package groundtruth_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,7 +181,10 @@ func TestInit_RulesParsedCorrectly(t *testing.T) {
 	}
 }
 
-func TestInit_MalformedYAMLProducesError(t *testing.T) {
+// TestInit_MalformedYAMLWarnsAndContinues verifies that a malformed
+// facts.yaml does not abort Init — the adapter loads with empty facts,
+// logs a warning to stderr, and stores the warning for SessionStart.
+func TestInit_MalformedYAMLWarnsAndContinues(t *testing.T) {
 	tmp := t.TempDir()
 	gtDir := filepath.Join(tmp, ".leonard", "ground-truth")
 	if err := os.MkdirAll(gtDir, 0o755); err != nil {
@@ -196,21 +198,22 @@ func TestInit_MalformedYAMLProducesError(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
+	var stderr bytes.Buffer
 	a := groundtruth.New()
-	err = a.Init(context.Background(), adapters.Config{ProjectRoot: tmp})
-	if err == nil {
-		t.Fatal("expected parse error for malformed facts.yaml")
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp, Stderr: &stderr}); err != nil {
+		t.Fatalf("Init should not fail on malformed facts.yaml; got: %v", err)
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "facts.yaml") {
-		t.Errorf("error should reference the source file: %v", err)
+	if !strings.Contains(stderr.String(), "facts.yaml") {
+		t.Errorf("stderr should reference facts.yaml; got: %q", stderr.String())
 	}
-	if !strings.Contains(msg, "line ") && !strings.Contains(msg, ":") {
-		t.Errorf("error should include a line reference: %v", err)
+	if !strings.Contains(stderr.String(), "partial load") {
+		t.Errorf("stderr should mention partial load; got: %q", stderr.String())
 	}
 }
 
-func TestInit_EmptyStoryNameProducesLineError(t *testing.T) {
+// TestInit_EmptyStoryNameWarnsAndContinues verifies that a malformed
+// stories.md (empty story name) does not abort Init.
+func TestInit_EmptyStoryNameWarnsAndContinues(t *testing.T) {
 	tmp := t.TempDir()
 	gtDir := filepath.Join(tmp, ".leonard", "ground-truth")
 	if err := os.MkdirAll(gtDir, 0o755); err != nil {
@@ -224,17 +227,19 @@ func TestInit_EmptyStoryNameProducesLineError(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
+	var stderr bytes.Buffer
 	a := groundtruth.New()
-	err = a.Init(context.Background(), adapters.Config{ProjectRoot: tmp})
-	if err == nil {
-		t.Fatal("expected parse error for empty story name")
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp, Stderr: &stderr}); err != nil {
+		t.Fatalf("Init should not fail on malformed stories.md; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), ":1:") {
-		t.Errorf("error should reference line 1: %v", err)
+	if !strings.Contains(stderr.String(), "stories.md") {
+		t.Errorf("stderr should reference stories.md; got: %q", stderr.String())
 	}
 }
 
-func TestInit_EmptyRuleTextProducesLineError(t *testing.T) {
+// TestInit_EmptyRuleTextWarnsAndContinues verifies that a malformed
+// do-not-claim.md does not abort Init.
+func TestInit_EmptyRuleTextWarnsAndContinues(t *testing.T) {
 	tmp := t.TempDir()
 	gtDir := filepath.Join(tmp, ".leonard", "ground-truth")
 	if err := os.MkdirAll(gtDir, 0o755); err != nil {
@@ -248,13 +253,52 @@ func TestInit_EmptyRuleTextProducesLineError(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
+	var stderr bytes.Buffer
 	a := groundtruth.New()
-	err = a.Init(context.Background(), adapters.Config{ProjectRoot: tmp})
-	if err == nil {
-		t.Fatal("expected parse error for empty rule text")
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp, Stderr: &stderr}); err != nil {
+		t.Fatalf("Init should not fail on malformed do-not-claim.md; got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "do-not-claim.md") {
-		t.Errorf("error should reference the source file: %v", err)
+	if !strings.Contains(stderr.String(), "do-not-claim.md") {
+		t.Errorf("stderr should reference do-not-claim.md; got: %q", stderr.String())
+	}
+}
+
+// TestInit_PartialLoadSurfacesWarningsAtSessionStart verifies that
+// init warnings appear in SessionStart's AdditionalContext.
+func TestInit_PartialLoadSurfacesWarningsAtSessionStart(t *testing.T) {
+	tmp := t.TempDir()
+	gtDir := filepath.Join(tmp, ".leonard", "ground-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write a valid rule so the adapter isn't entirely empty (which would
+	// suppress SessionStart output).
+	if err := os.WriteFile(filepath.Join(gtDir, "do-not-claim.md"), []byte("## Rules\n\n- ❌ \"forbidden phrase\" — test rule.\n"), 0o644); err != nil {
+		t.Fatalf("write do-not-claim.md: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join("testdata", "malformed_yaml", "facts.yaml"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gtDir, "facts.yaml"), src, 0o644); err != nil {
+		t.Fatalf("write facts.yaml: %v", err)
+	}
+
+	a := groundtruth.New()
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	res, err := a.(interface {
+		SessionStart(context.Context, adapters.SessionStartPayload) (adapters.SessionStartResult, error)
+	}).SessionStart(context.Background(), adapters.SessionStartPayload{})
+	if err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	if !strings.Contains(res.AdditionalContext, "partial load") {
+		t.Errorf("SessionStart AdditionalContext should mention partial load; got: %q", res.AdditionalContext)
+	}
+	if !strings.Contains(res.AdditionalContext, "facts.yaml") {
+		t.Errorf("SessionStart AdditionalContext should reference facts.yaml; got: %q", res.AdditionalContext)
 	}
 }
 
@@ -445,7 +489,7 @@ func TestInit_NilStderrUsesDiscard(t *testing.T) {
 
 // Confirm a malformed-YAML error path doesn't leak a non-nil result
 // (so callers can rely on err==nil ↔ result valid).
-func TestInit_ErrorPathLeavesAdapterUnusable(t *testing.T) {
+func TestInit_ParseErrorSurfacesViaInitWarnings(t *testing.T) {
 	tmp := t.TempDir()
 	gtDir := filepath.Join(tmp, ".leonard", "ground-truth")
 	if err := os.MkdirAll(gtDir, 0o755); err != nil {
@@ -459,11 +503,11 @@ func TestInit_ErrorPathLeavesAdapterUnusable(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	a := groundtruth.New()
-	err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp})
-	if err == nil {
-		t.Fatal("expected parse error")
+	if err := a.Init(context.Background(), adapters.Config{ProjectRoot: tmp}); err != nil {
+		t.Fatalf("Init should not fail; got: %v", err)
 	}
-	if !errors.Is(err, err) { // tautology — keeps the import live
-		t.Fatal("unreachable")
+	gta := a.(*groundtruth.GroundTruthAdapter)
+	if len(gta.InitWarnings()) == 0 {
+		t.Fatal("expected parse warning via InitWarnings()")
 	}
 }

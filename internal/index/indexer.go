@@ -391,7 +391,7 @@ func (i *Indexer) IndexAll() error {
 // each statement is its own transaction and triggers a FK cascade.
 // Batching turns the same work into milliseconds.
 func (i *Indexer) pruneStaleFiles() error {
-	files, err := i.Store.ListFiles("", "")
+	files, err := i.Store.AllFiles()
 	if err != nil {
 		return fmt.Errorf("prune: list files: %w", err)
 	}

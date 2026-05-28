@@ -46,7 +46,21 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 	if len(snap.rules) == 0 {
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
-	if p.Content == "" {
+
+	// Bash tool calls set Command instead of Content. When the command
+	// contains mutation patterns (>, >>, sed -i, tee) the forbidden-
+	// claim text appears in the command body itself (echo argument,
+	// heredoc, sed replacement string, etc.) and the detector should
+	// run against it. Read-only commands (no mutation pattern) pass
+	// without scanning — they can't write new content to files.
+	//
+	// Bughunt-12 F046: the prior early-return on empty Content fired
+	// before this branch, letting every Bash command bypass the guard.
+	textToScan := p.Content
+	if textToScan == "" && p.Tool == "Bash" && bashCommandMutates(p.Command) {
+		textToScan = p.Command
+	}
+	if textToScan == "" {
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
 
@@ -76,7 +90,7 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 		}
 	}
 
-	res := Detect(p.Content, snap.facts, snap.rules)
+	res := Detect(textToScan, snap.facts, snap.rules)
 	if res.Summary.Forbidden == 0 {
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
@@ -107,12 +121,39 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
 
-	reason := buildDenyReason(hit, p.Content, len(res.Claims))
+	reason := buildDenyReason(hit, textToScan, len(res.Claims))
 	return adapters.PreEditResult{
 		Decision:    adapters.Deny,
 		Reason:      reason,
 		AdapterName: Name,
 	}, nil
+}
+
+// bashCommandMutates reports whether a Bash command string contains
+// shell constructs that write new content to files: redirection
+// operators (> or >>), in-place sed (-i flag), or tee. mv is excluded
+// because it renames rather than writes, so the command text cannot
+// contain new forbidden content destined for the target file.
+//
+// Commands without mutation patterns are read-only and pass without
+// scanning — they can't write new content to files.
+//
+// Bughunt-12 F046: used by PreEdit to gate the Bash command scan.
+func bashCommandMutates(command string) bool {
+	if command == "" {
+		return false
+	}
+	if strings.Contains(command, ">") {
+		return true
+	}
+	lower := strings.ToLower(command)
+	if strings.Contains(lower, "sed") && strings.Contains(lower, "-i") {
+		return true
+	}
+	if strings.Contains(lower, "tee ") || strings.Contains(lower, "|tee") {
+		return true
+	}
+	return false
 }
 
 // buildDenyReason renders a deny message that includes:

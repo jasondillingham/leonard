@@ -2,6 +2,7 @@ package index
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -384,6 +385,63 @@ func TestIndexAll_PrunesDeletedFiles(t *testing.T) {
 	// The surviving file's symbol is still there.
 	if syms, _ := fx.store.FindSymbolsByName("Stay"); len(syms) != 1 {
 		t.Errorf("Stay should survive prune; got %d rows", len(syms))
+	}
+}
+
+// TestIndexAll_PrunesDeletedFilePastSortCap is a regression test for
+// bughunt-12 F020: pruneStaleFiles used Store.ListFiles which caps at
+// MaxSymbolQueryRows (1000). Files whose sort position > 1000 were never
+// checked and accumulated as orphan rows — verify_symbol then returned
+// exists=true for symbols whose source had been deleted. This test
+// generates 1001 files so the alphabetically-last one ("zzz_target.go")
+// lands past the cap, deletes it, and asserts it is pruned.
+func TestIndexAll_PrunesDeletedFilePastSortCap(t *testing.T) {
+	t.Parallel()
+
+	// Build a fixture with 1000 filler files + 1 target that sorts last.
+	files := make(map[string]string, 1001)
+	for i := range 1000 {
+		name := fmt.Sprintf("bulk%04d.go", i)
+		files[name] = fmt.Sprintf("package bulk\nfunc BulkPrune%04d() {}\n", i)
+	}
+	const targetFile = "zzz_target.go"
+	files[targetFile] = "package zzz\nfunc ZzzTarget() {}\n"
+
+	fx := newFixture(t, files)
+	idx := New(fx.store, fx.root)
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("first IndexAll: %v", err)
+	}
+
+	count, err := fx.store.CountFiles()
+	if err != nil {
+		t.Fatalf("CountFiles: %v", err)
+	}
+	if count != 1001 {
+		t.Fatalf("expected 1001 files after first index, got %d", count)
+	}
+	if syms, _ := fx.store.FindSymbolsByName("ZzzTarget"); len(syms) != 1 {
+		t.Fatalf("ZzzTarget should be indexed; got %d rows", len(syms))
+	}
+
+	// Delete the target file (alphabetically last, sort position > 1000).
+	if err := os.Remove(filepath.Join(fx.root, targetFile)); err != nil {
+		t.Fatalf("remove %s: %v", targetFile, err)
+	}
+	if err := idx.IndexAll(); err != nil {
+		t.Fatalf("second IndexAll: %v", err)
+	}
+
+	// The file row must be gone — not silently kept because it was past the cap.
+	count, err = fx.store.CountFiles()
+	if err != nil {
+		t.Fatalf("CountFiles: %v", err)
+	}
+	if count != 1000 {
+		t.Fatalf("expected 1000 files after delete+reindex, got %d (stale row not pruned)", count)
+	}
+	if syms, _ := fx.store.FindSymbolsByName("ZzzTarget"); len(syms) != 0 {
+		t.Errorf("ZzzTarget should be pruned after delete; got %d rows", len(syms))
 	}
 }
 
