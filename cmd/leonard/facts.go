@@ -38,7 +38,8 @@ func newFactsDiffCmd() *cobra.Command {
 		Use:   "diff",
 		Short: "Show git history of facts.yaml with timestamps.",
 		Long: `Shows uncommitted changes to facts.yaml followed by recent commit
-history. Requires git; exits 0 with a notice when unavailable.
+history. Requires git; exits 1 when git is unavailable or facts.yaml
+is not tracked.
 
 Examples:
   leonard facts diff
@@ -66,7 +67,7 @@ Examples:
 			if gitErr != nil {
 				fmt.Fprintf(out, "git not available or facts.yaml is not tracked: %v\n", gitErr)
 				fmt.Fprintf(out, "facts.yaml path: %s\n", factsAbs)
-				return nil
+				return &exitCode{code: 1}
 			}
 			if strings.TrimSpace(unstaged) != "" {
 				fmt.Fprintf(out, "## Uncommitted changes\n\n")

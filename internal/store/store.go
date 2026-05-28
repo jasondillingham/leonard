@@ -614,12 +614,20 @@ func (s *Store) FindSymbolsByName(name string) ([]Symbol, error) {
 }
 
 // FindSymbolsByQuery does a case-sensitive substring search across
-// name and qualified_name, capped at limit. limit <= 0 defaults to
-// 50; limit > MaxSymbolQueryRows clamps down (security review #3 F3:
-// the user-supplied limit was previously passed verbatim, so a
-// `find_symbol(limit=10000000)` call could materialize every match).
+// name and qualified_name, capped at limit. limit == 0 means
+// "unlimited" (uses MaxSymbolQueryRows); limit < 0 uses 50 as a
+// legacy default; limit > MaxSymbolQueryRows clamps down (security
+// review #3 F3: the user-supplied limit was previously passed
+// verbatim, so a `find_symbol(limit=10000000)` call could materialize
+// every match).
+//
+// The MCP tool description documents limit=0 as "unlimited" — this
+// matches that contract. The MCP filterAndConvert layer then trims
+// the result to MaxSymbolResults (500) before returning to the caller.
 func (s *Store) FindSymbolsByQuery(q string, limit int) ([]Symbol, error) {
-	if limit <= 0 {
+	if limit == 0 {
+		limit = MaxSymbolQueryRows
+	} else if limit < 0 {
 		limit = 50
 	}
 	if limit > MaxSymbolQueryRows {

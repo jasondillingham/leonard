@@ -109,6 +109,22 @@ func TestVerifyClaim_EmptyTextReturnsEmpty(t *testing.T) {
 	}
 }
 
+// TestVerifyClaim_RejectsAtCapInput covers bughunt-12 F019: the prior
+// cap check used strict > so a payload of exactly maxVerifyClaimBytes
+// bypassed the guard and was handed to the expensive fuzzy scanner,
+// hanging the server. At-cap must be rejected cleanly.
+func TestVerifyClaim_RejectsAtCapInput(t *testing.T) {
+	a := mcpAdapter(t, "valid")
+	atCap := strings.Repeat("x", groundtruth.MaxVerifyClaimBytesForTest)
+	_, err := a.VerifyClaimCheckedForTest(groundtruth.VerifyClaimInput{Text: atCap})
+	if err == nil {
+		t.Fatal("expected at-cap to be rejected")
+	}
+	if !strings.Contains(err.Error(), "cap") {
+		t.Errorf("want cap-exceeded error, got %v", err)
+	}
+}
+
 // TestVerifyClaim_RejectsOversizedInput covers bughunt-11 F6:
 // the MCP wrapper caps verify_claim input at 256 KiB so a runaway
 // client can't make Detect chew on multi-MB payloads.

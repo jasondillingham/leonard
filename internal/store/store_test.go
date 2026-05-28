@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -287,6 +288,39 @@ func TestFindSymbolsByQuery(t *testing.T) {
 				t.Fatalf("names=%v want %v", names, tc.wantNames)
 			}
 		})
+	}
+}
+
+// TestFindSymbolsByQuery_ZeroLimitIsUnlimited covers bughunt-12 F005:
+// limit=0 is documented as "unlimited" but the prior implementation
+// floored it to 50. With 60 symbols in the store, limit=0 must return
+// all 60 (up to MaxSymbolQueryRows), not just 50.
+func TestFindSymbolsByQuery_ZeroLimitIsUnlimited(t *testing.T) {
+	s, _ := newTestStore(t)
+	if err := s.UpsertFile(File{Path: "a.go", Hash: "h", Language: "go", IndexedAt: 1}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+	const n = 60
+	syms := make([]Symbol, n)
+	for i := range syms {
+		syms[i] = Symbol{
+			Name:          fmt.Sprintf("ManySym%04d", i),
+			QualifiedName: fmt.Sprintf("pkg.ManySym%04d", i),
+			Kind:          "function",
+			StartLine:     i*2 + 1,
+			EndLine:       i*2 + 2,
+			Exported:      true,
+		}
+	}
+	if err := s.ReplaceSymbols("a.go", syms); err != nil {
+		t.Fatalf("ReplaceSymbols: %v", err)
+	}
+	got, err := s.FindSymbolsByQuery("ManySym", 0)
+	if err != nil {
+		t.Fatalf("FindSymbolsByQuery limit=0: %v", err)
+	}
+	if len(got) != n {
+		t.Errorf("limit=0 (unlimited): want %d symbols, got %d", n, len(got))
 	}
 }
 

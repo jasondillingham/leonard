@@ -109,7 +109,7 @@ type VerifyClaimSummary struct {
 // is kept cap-free so internal callers (Detect-equivalent paths)
 // don't accidentally inherit the wire-level limit.
 func (a *GroundTruthAdapter) verifyClaimChecked(in VerifyClaimInput) (VerifyClaimOutput, error) {
-	if len(in.Text) > maxVerifyClaimBytes {
+	if len(in.Text) >= maxVerifyClaimBytes {
 		return VerifyClaimOutput{}, fmt.Errorf("verify_claim: input text exceeds %d-byte cap (got %d bytes)", maxVerifyClaimBytes, len(in.Text))
 	}
 	return a.verifyClaim(in), nil

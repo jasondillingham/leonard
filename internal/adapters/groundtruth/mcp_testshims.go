@@ -10,6 +10,10 @@ package groundtruth
 // Each wrapper exists to test ONE handler — there is no surface
 // exposed beyond what tests need.
 
+// MaxVerifyClaimBytesForTest exposes maxVerifyClaimBytes so tests can
+// exercise the exact at-cap boundary (bughunt-12 F019).
+const MaxVerifyClaimBytesForTest = maxVerifyClaimBytes
+
 // VerifyClaimForTest exposes verifyClaim. Used by mcp_test.go.
 func (a *GroundTruthAdapter) VerifyClaimForTest(in VerifyClaimInput) VerifyClaimOutput {
 	return a.verifyClaim(in)
