@@ -527,6 +527,9 @@ func ResolveSafe(root, claimed string) (string, bool) {
 	if root == "" || claimed == "" {
 		return "", false
 	}
+	if strings.ContainsAny(root, "\x00\n\r") || strings.ContainsAny(claimed, "\x00\n\r") {
+		return "", false
+	}
 	abs := claimed
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(root, abs)

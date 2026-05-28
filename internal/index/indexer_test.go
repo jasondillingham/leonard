@@ -570,6 +570,33 @@ func TestResolveSafe_RejectsPathEscapes(t *testing.T) {
 	}
 }
 
+// TestResolveSafe_RejectsControlBytes pins the bughunt-12 F033 fix:
+// NUL, newline, and CR bytes in the claimed path must be rejected before
+// filepath.Clean gets a chance to interpret them as path separators or
+// let them propagate into DB rows / systemMessage strings.
+func TestResolveSafe_RejectsControlBytes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cases := []struct {
+		name    string
+		claimed string
+	}{
+		{"nul byte", "fixtures/foo\x00bar.go"},
+		{"newline byte", "fixtures/\nbar.go"},
+		{"carriage return", "fixtures/\rbar.go"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, ok := ResolveSafe(root, tc.claimed)
+			if ok {
+				t.Errorf("ResolveSafe accepted path with control byte: %q", tc.claimed)
+			}
+		})
+	}
+}
+
 // TestResolveSafe_RejectsSymlinkEscape covers the security-1 F3
 // case: a symlink INSIDE the project root that points OUTSIDE
 // (lexical path looks fine, resolved path doesn't).
