@@ -190,8 +190,10 @@ func TestHandlePostEdit_VetPasses(t *testing.T) {
 	if !resp.Continue {
 		t.Error("Continue should be true")
 	}
-	if !strings.Contains(resp.SystemMessage, "go vet ok") {
-		t.Errorf("system message = %q", resp.SystemMessage)
+	// Green run must NOT emit a systemMessage (bughunt-12 F042: per-edit
+	// "vet ok" noise clutters the session surface on every clean edit).
+	if resp.SystemMessage != "" {
+		t.Errorf("clean run should not emit systemMessage, got %q", resp.SystemMessage)
 	}
 	// Green run must NOT inject context — a noisy "everything fine" on every
 	// edit would drown out the failure-path signal that actually matters.

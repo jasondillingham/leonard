@@ -575,16 +575,19 @@ func buildEvidence(filePath string, indexErr error, vet VetResult, cap int) stri
 	return out
 }
 
+// summaryMessage returns the operator-facing systemMessage for a post-edit
+// run. Returns "" on clean runs (vet passed or didn't run, no index error)
+// so the session surface stays quiet unless there's something to act on.
+// The stop hook surfaces a session-level digest; per-edit noise on every
+// clean file is counterproductive.
 func summaryMessage(filePath string, vet VetResult, indexErr error) string {
 	switch {
 	case indexErr != nil:
 		return fmt.Sprintf("leonard: re-index of %s failed: %v", filePath, indexErr)
-	case !vet.Ran:
-		return fmt.Sprintf("leonard: re-indexed %s (%s skipped, no go.mod)", filePath, vet.Verb)
-	case vet.Passed:
-		return fmt.Sprintf("leonard: re-indexed %s, %s ok", filePath, vet.Verb)
-	default:
+	case vet.Ran && !vet.Passed:
 		return fmt.Sprintf("leonard: re-indexed %s, %s reported issues — claim recorded as unverified", filePath, vet.Verb)
+	default:
+		return ""
 	}
 }
 
