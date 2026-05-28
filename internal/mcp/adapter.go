@@ -173,6 +173,7 @@ func decisionToRecord(d store.Decision) DecisionRecord {
 		Choice:         d.Choice,
 		Reasoning:      d.Reasoning,
 		RecordedAt:     d.RecordedAt,
+		SupersededBy:   d.SupersededBy,
 		RelatedFiles:   d.RelatedFiles,
 		RelatedSymbols: d.RelatedSymbols,
 	}

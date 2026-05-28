@@ -49,7 +49,11 @@ func newDecisionsListCmd(rt Runtime) *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "leonard: %d decision(s)\n", len(rows))
 			for _, r := range rows {
-				fmt.Fprintf(out, "  #%d  %s  %s → %s\n", r.ID, formatUnixTime(r.RecordedAt), r.Topic, r.Choice)
+				marker := ""
+				if r.SupersededBy != nil {
+					marker = fmt.Sprintf("  [superseded→#%d]", *r.SupersededBy)
+				}
+				fmt.Fprintf(out, "  #%d  %s  %s → %s%s\n", r.ID, formatUnixTime(r.RecordedAt), r.Topic, r.Choice, marker)
 				if reason := firstLine(r.Reasoning); reason != "" {
 					fmt.Fprintf(out, "      %s\n", reason)
 				}

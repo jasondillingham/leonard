@@ -109,11 +109,12 @@ type LanguageCount struct {
 // DecisionRow is the small DTO the decisions subcommand prints. Mirrors
 // store.Decision, declared locally so cmd/leonard stays decoupled.
 type DecisionRow struct {
-	ID         int64
-	Topic      string
-	Choice     string
-	Reasoning  string
-	RecordedAt int64
+	ID           int64
+	Topic        string
+	Choice       string
+	Reasoning    string
+	RecordedAt   int64
+	SupersededBy *int64 // non-nil when this decision has been replaced by another
 }
 
 // TruthHistoryRow carries a decision plus its TruthChange block for

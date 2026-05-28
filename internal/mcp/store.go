@@ -49,6 +49,7 @@ type DecisionRecord struct {
 	Choice         string
 	Reasoning      string
 	RecordedAt     int64
+	SupersededBy   *int64 // non-nil when this decision has been replaced by another
 	RelatedFiles   []string
 	RelatedSymbols []string
 	TruthChange    *TruthChangeRecord

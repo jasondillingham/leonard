@@ -142,7 +142,7 @@ func (realRuntime) GetDecisions(_ context.Context, dataDir, topic string, since 
 	}
 	out := make([]DecisionRow, len(rows))
 	for i, d := range rows {
-		out[i] = DecisionRow{ID: d.ID, Topic: d.Topic, Choice: d.Choice, Reasoning: d.Reasoning, RecordedAt: d.RecordedAt}
+		out[i] = DecisionRow{ID: d.ID, Topic: d.Topic, Choice: d.Choice, Reasoning: d.Reasoning, RecordedAt: d.RecordedAt, SupersededBy: d.SupersededBy}
 	}
 	return out, nil
 }

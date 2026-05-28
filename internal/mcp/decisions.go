@@ -39,11 +39,14 @@ type GetDecisionsInput struct {
 // DecisionEntry is the wire-format decision returned by get_decisions and
 // embedded in StaleDecisionEntry. Related arrays are omitted from the JSON
 // when empty so callers that didn't supply refs still get the legacy shape.
+// superseded_by is non-null when this decision has been replaced; callers
+// should treat superseded entries as historical record, not active guidance.
 type DecisionEntry struct {
 	ID             int64    `json:"id"`
 	Topic          string   `json:"topic"`
 	Choice         string   `json:"choice"`
 	Reasoning      string   `json:"reasoning"`
+	SupersededBy   *int64   `json:"superseded_by,omitempty"`
 	RelatedFiles   []string `json:"related_files,omitempty"`
 	RelatedSymbols []string `json:"related_symbols,omitempty"`
 	RecordedAt     int64    `json:"recorded_at"`
@@ -178,6 +181,7 @@ func decisionRecordToEntry(r DecisionRecord) DecisionEntry {
 		Topic:          r.Topic,
 		Choice:         r.Choice,
 		Reasoning:      r.Reasoning,
+		SupersededBy:   r.SupersededBy,
 		RelatedFiles:   r.RelatedFiles,
 		RelatedSymbols: r.RelatedSymbols,
 		RecordedAt:     r.RecordedAt,

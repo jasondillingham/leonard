@@ -105,6 +105,7 @@ func (m *memDecisionStore) GetDecisions(_ context.Context, topic string, since i
 			Choice:         d.choice,
 			Reasoning:      d.reasoning,
 			RecordedAt:     d.recordedAt,
+			SupersededBy:   d.supersededBy,
 			RelatedFiles:   d.relatedFiles,
 			RelatedSymbols: d.relatedSymbols,
 		}
@@ -392,6 +393,17 @@ func TestSupersedeDecision(t *testing.T) {
 	}
 	if got[0].ID != newID || got[0].Choice != "valkey" {
 		t.Errorf("expected new decision first, got %+v", got[0])
+	}
+	// New decision is active — no superseded_by.
+	if got[0].SupersededBy != nil {
+		t.Errorf("new decision should not have superseded_by, got %v", *got[0].SupersededBy)
+	}
+	// Old decision must carry superseded_by pointing at the new one.
+	if got[1].ID != origID {
+		t.Errorf("expected original decision second, got id=%d", got[1].ID)
+	}
+	if got[1].SupersededBy == nil || *got[1].SupersededBy != newID {
+		t.Errorf("original decision: want superseded_by=%d, got %v", newID, got[1].SupersededBy)
 	}
 }
 
