@@ -256,3 +256,58 @@ func TestPreEdit_BashCommandStillChecked(t *testing.T) {
 		t.Errorf("Bash with forbidden text: want Deny, got %v", out.Decision)
 	}
 }
+
+// TestPreEdit_BashRedirectionDeniesWhenContentEmpty covers bughunt-12
+// F046: the real Bash tool payload sets Command only (Content is empty).
+// The prior guard short-circuited on empty Content before scanning,
+// letting `echo "forbidden" > file.txt` bypass every ground-truth rule.
+func TestPreEdit_BashRedirectionDeniesWhenContentEmpty(t *testing.T) {
+	a, tmp, _ := preEditFixture(t)
+	grantTrust(t, tmp)
+
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:    "Bash",
+		Command: `echo "ExampleSaaS supports HIPAA-compliant workflows" > page.md`,
+		// Content intentionally empty — mirrors the real Bash tool payload.
+	})
+	if err != nil {
+		t.Fatalf("PreEdit: %v", err)
+	}
+	if out.Decision != adapters.Deny {
+		t.Errorf("Bash redirection with forbidden text: want Deny, got %v (reason=%q)", out.Decision, out.Reason)
+	}
+}
+
+func TestPreEdit_BashSedMutationDeniesWhenContentEmpty(t *testing.T) {
+	a, tmp, _ := preEditFixture(t)
+	grantTrust(t, tmp)
+
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:    "Bash",
+		Command: `sed -i 's/old text/ExampleSaaS supports HIPAA-compliant workflows/' page.md`,
+	})
+	if err != nil {
+		t.Fatalf("PreEdit: %v", err)
+	}
+	if out.Decision != adapters.Deny {
+		t.Errorf("Bash sed -i with forbidden text: want Deny, got %v (reason=%q)", out.Decision, out.Reason)
+	}
+}
+
+func TestPreEdit_BashReadOnlyCommandPasses(t *testing.T) {
+	a, tmp, _ := preEditFixture(t)
+	grantTrust(t, tmp)
+
+	// cat / grep / ls — no redirection, no mutation: should pass even
+	// if the command text contains a forbidden phrase.
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:    "Bash",
+		Command: `grep "HIPAA" page.md`,
+	})
+	if err != nil {
+		t.Fatalf("PreEdit: %v", err)
+	}
+	if out.Decision != adapters.Pass {
+		t.Errorf("read-only Bash: want Pass, got %v", out.Decision)
+	}
+}
