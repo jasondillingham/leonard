@@ -162,6 +162,61 @@ func TestParseRuleBody_ExactKeepsTextClean(t *testing.T) {
 	}
 }
 
+// TestFindFuzzyOccurrences_GrowsIntoWordIsRejected covers F016: a fuzzy
+// window that grows one char to the right must not extend into a longer
+// word. Rule "Scrum master" should not match "Scrum mastery" because 'y'
+// is still a word character at the needle's right-edge boundary.
+func TestFindFuzzyOccurrences_GrowsIntoWordIsRejected(t *testing.T) {
+	hay := "We practice Scrum mastery in our team."
+	got := findFuzzyOccurrences(hay, "Scrum master", 1)
+	for _, s := range got {
+		window := hay[s.start:s.end]
+		if len(window) > len("Scrum master") && window[len("Scrum master"):] == "y" {
+			t.Errorf("grown window should not match inside word 'mastery': got %q", window)
+		}
+	}
+}
+
+// TestFindFuzzyOccurrences_GenuineTypoStillMatches confirms that a real
+// typo (one missing char, not an in-word extension) still fires at threshold 1.
+func TestFindFuzzyOccurrences_GenuineTypoStillMatches(t *testing.T) {
+	hay := "We use Scrum mastr practices here."
+	got := findFuzzyOccurrences(hay, "Scrum master", 1)
+	if len(got) == 0 {
+		t.Errorf("genuine typo 'Scrum mastr' should match 'Scrum master' at threshold 1")
+	}
+}
+
+// TestFindFuzzyOccurrences_NumericNearMissRejected covers F014: a
+// 1-edit change that swaps a digit is a different numeric fact, not a
+// paraphrase. Rule "52 releases" must NOT match "53 releases".
+func TestFindFuzzyOccurrences_NumericNearMissRejected(t *testing.T) {
+	cases := []struct {
+		hay    string
+		needle string
+	}{
+		{"The project has 53 releases this year.", "52 releases"},
+		{"We served 57 releases.", "52 releases"},
+	}
+	for _, c := range cases {
+		got := findFuzzyOccurrences(c.hay, c.needle, 1)
+		if len(got) != 0 {
+			t.Errorf("numeric near-miss: %q should not match rule %q, got spans %+v", c.hay, c.needle, got)
+		}
+	}
+}
+
+// TestFindFuzzyOccurrences_TypoInNonNumericPartAllowed confirms that a
+// typo in the non-digit portion of a rule still matches when the digits
+// are the same.
+func TestFindFuzzyOccurrences_TypoInNonNumericPartAllowed(t *testing.T) {
+	hay := "This project has 52 releses in the repo."
+	got := findFuzzyOccurrences(hay, "52 releases", 1)
+	if len(got) == 0 {
+		t.Errorf("typo '52 releses' should match '52 releases' at threshold 1")
+	}
+}
+
 func TestOrderedWindowSizes_TargetFirst(t *testing.T) {
 	got := orderedWindowSizes(10, 7, 13)
 	if got[0] != 10 {

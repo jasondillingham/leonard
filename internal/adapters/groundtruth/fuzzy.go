@@ -83,6 +83,27 @@ func findFuzzyOccurrences(haystack, needle string, threshold int) []span {
 				if !hasWordBoundaries(haystack, i, i+w, needle) {
 					continue
 				}
+				// F016: when the window grew beyond the needle's
+				// length (one-insertion match), the first extra
+				// character at the right edge must not be a word
+				// char while the needle itself ends on a word char.
+				// Without this check, "Scrum mastery" (w=13)
+				// matches rule "Scrum master" (nLen=12) because
+				// hasWordBoundaries looks at haystack[end] = ' '
+				// (space after "mastery") instead of the 'y' that
+				// extends the match into the longer word.
+				if w > nLen && isWordByte(needle[nLen-1]) {
+					if edgePos := i + nLen; edgePos < hLen && isWordByte(haystack[edgePos]) {
+						continue
+					}
+				}
+				// F014: reject numeric near-misses. A 1-edit
+				// change that modifies a digit (e.g. "53 releases"
+				// vs rule "52 releases") is a semantically
+				// different fact, not a paraphrase.
+				if containsNumericChange(window, nLower) {
+					continue
+				}
 				fuzzy = append(fuzzy, span{start: i, end: i + w})
 				i += w
 				matched = true
@@ -232,4 +253,46 @@ func levenshtein(a, b string, cap int) int {
 		prev, curr = curr, prev
 	}
 	return prev[lb]
+}
+
+// containsNumericChange reports whether the digit sequences in window
+// differ from those in needle. When the only Levenshtein edit modifies a
+// digit character (e.g. "53 releases" vs rule "52 releases"), the match is
+// a numeric near-miss — a semantically different fact, not a typo — and the
+// fuzzy pass should reject it.
+func containsNumericChange(window, needle string) bool {
+	needleRuns := digitRuns(needle)
+	if len(needleRuns) == 0 {
+		return false
+	}
+	windowRuns := digitRuns(window)
+	if len(needleRuns) != len(windowRuns) {
+		return true
+	}
+	for i := range needleRuns {
+		if needleRuns[i] != windowRuns[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// digitRuns returns the contiguous digit substrings of s in order.
+func digitRuns(s string) []string {
+	var out []string
+	start := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			if start < 0 {
+				start = i
+			}
+		} else if start >= 0 {
+			out = append(out, s[start:i])
+			start = -1
+		}
+	}
+	if start >= 0 {
+		out = append(out, s[start:])
+	}
+	return out
 }
