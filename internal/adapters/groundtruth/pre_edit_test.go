@@ -261,6 +261,42 @@ func TestPreEdit_BashCommandStillChecked(t *testing.T) {
 // F046: the real Bash tool payload sets Command only (Content is empty).
 // The prior guard short-circuited on empty Content before scanning,
 // letting `echo "forbidden" > file.txt` bypass every ground-truth rule.
+// TestPreEdit_OverrideTokenBypassesForbiddenClaim covers bughunt-12
+// F047: `leonard override --once` issued a token but the forbidden-
+// claim guard never called consumeOverrideToken, so every override
+// was silently ignored and the edit was still denied.
+func TestPreEdit_OverrideTokenBypassesForbiddenClaim(t *testing.T) {
+	a, tmp, _ := preEditFixture(t)
+	grantTrust(t, tmp)
+
+	rel := "page.md"
+	writeOverrideToken(t, tmp, rel, "quoting this for a do-not-claim update")
+
+	out, err := a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:     "Write",
+		FilePath: filepath.Join(tmp, rel),
+		Content:  "ExampleSaaS supports HIPAA-compliant workflows.",
+	})
+	if err != nil {
+		t.Fatalf("PreEdit: %v", err)
+	}
+	if out.Decision != adapters.Pass {
+		t.Errorf("override token: want Pass, got %v (reason=%q)", out.Decision, out.Reason)
+	}
+	// Token is single-use — second call must deny again.
+	out, err = a.PreEdit(context.Background(), adapters.PreEditPayload{
+		Tool:     "Write",
+		FilePath: filepath.Join(tmp, rel),
+		Content:  "ExampleSaaS supports HIPAA-compliant workflows.",
+	})
+	if err != nil {
+		t.Fatalf("PreEdit 2nd: %v", err)
+	}
+	if out.Decision != adapters.Deny {
+		t.Errorf("single-use override: 2nd call want Deny, got %v", out.Decision)
+	}
+}
+
 func TestPreEdit_BashRedirectionDeniesWhenContentEmpty(t *testing.T) {
 	a, tmp, _ := preEditFixture(t)
 	grantTrust(t, tmp)

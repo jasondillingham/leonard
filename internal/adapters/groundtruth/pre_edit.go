@@ -121,6 +121,21 @@ func (a *GroundTruthAdapter) PreEdit(_ context.Context, p adapters.PreEditPayloa
 		return adapters.PreEditResult{Decision: adapters.Pass}, nil
 	}
 
+	// Override token: a `leonard override --once` token issued for this
+	// specific file bypasses the forbidden-claim deny. The token is keyed
+	// on the project-relative path. Bash commands (no FilePath) can't
+	// use this escape hatch — they'd need to be rewritten instead.
+	if p.FilePath != "" {
+		rel := relForFilters(snap.projectRoot, p.FilePath)
+		if consumeOverrideToken(snap.projectRoot, rel) {
+			fmt.Fprintf(snap.stderr,
+				"leonard: ground-truth: forbidden-claim guard bypassed for %s via `leonard override --once`\n",
+				rel,
+			)
+			return adapters.PreEditResult{Decision: adapters.Pass}, nil
+		}
+	}
+
 	reason := buildDenyReason(hit, textToScan, len(res.Claims))
 	return adapters.PreEditResult{
 		Decision:    adapters.Deny,
