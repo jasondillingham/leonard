@@ -49,8 +49,14 @@ var errOversize = errors.New("oversize line discarded")
 // stderr. The new implementation uses a custom line reader that can
 // truly resync past an oversize line (by reading-and-discarding until
 // the next newline).
-func newJSONLineFilter(src io.Reader, errOut io.Writer) io.ReadCloser {
-	return &filteringReader{src: newLineReader(src, maxLineBytes), errOut: errOut}
+// newJSONLineFilter wraps src in an io.ReadCloser that emits only valid
+// JSON-RPC 2.0 lines. out is the stdout writer used to send JSON-RPC error
+// frames back to the client when a recognisable-but-rejected frame arrives
+// (batch → -32600, trailing-data → -32700). nil is safe and suppresses the
+// response (preserving the original silent-drop behaviour for tests that
+// don't wire a writer).
+func newJSONLineFilter(src io.Reader, errOut io.Writer, out io.Writer) io.ReadCloser {
+	return &filteringReader{src: newLineReader(src, maxLineBytes), errOut: errOut, out: out}
 }
 
 // filteringReader implements io.ReadCloser over a lineReader of the
@@ -60,6 +66,7 @@ type filteringReader struct {
 	src    *lineReader
 	buf    []byte
 	errOut io.Writer
+	out    io.Writer // stdout; may be nil
 }
 
 // Read drains any buffered line bytes first, then pulls upstream lines
@@ -78,11 +85,12 @@ func (r *filteringReader) Read(p []byte) (int, error) {
 			}
 			return 0, err
 		}
-		if len(bytes.TrimSpace(line)) == 0 {
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
 			continue
 		}
-		if !looksLikeJSONRPC(line) {
-			fmt.Fprintf(r.errOut, "leonard-mcp: dropped non-JSON-RPC line on stdin: %.80q\n", line)
+		if !looksLikeJSONRPC(trimmed) {
+			r.rejectFrame(trimmed)
 			continue
 		}
 		r.buf = append(r.buf, line...)
@@ -91,6 +99,27 @@ func (r *filteringReader) Read(p []byte) (int, error) {
 	n := copy(p, r.buf)
 	r.buf = r.buf[n:]
 	return n, nil
+}
+
+// rejectFrame logs the dropped line and, when an output writer is wired,
+// emits a JSON-RPC error frame to the client so it doesn't hang waiting
+// for a response that will never arrive.
+//
+// Codes assigned per JSON-RPC 2.0:
+//   - -32600 invalid request — batch/array frames (MCP transport forbids batches)
+//   - -32700 parse error     — everything else (trailing data, non-JSON noise)
+func (r *filteringReader) rejectFrame(line []byte) {
+	code := -32700
+	msg := "parse error: malformed or non-JSON-RPC input"
+	if len(line) > 0 && line[0] == '[' {
+		code = -32600
+		msg = "invalid request: batch requests not supported (MCP 2025-06-18 transport requires single messages)"
+	}
+	fmt.Fprintf(r.errOut, "leonard-mcp: dropped non-JSON-RPC line on stdin: %.80q\n", line)
+	if r.out != nil {
+		errJSON, _ := json.Marshal(msg)
+		fmt.Fprintf(r.out, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":%d,\"message\":%s}}\n", code, errJSON)
+	}
 }
 
 func (r *filteringReader) Close() error { return nil }

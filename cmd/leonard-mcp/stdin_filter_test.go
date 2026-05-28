@@ -70,7 +70,7 @@ func TestJSONLineFilter_DropsNonRPCLines(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var errOut bytes.Buffer
-			r := newJSONLineFilter(strings.NewReader(tc.in), &errOut)
+			r := newJSONLineFilter(strings.NewReader(tc.in), &errOut, nil)
 			got, err := io.ReadAll(r)
 			if err != nil {
 				t.Fatalf("ReadAll: %v", err)
@@ -154,7 +154,7 @@ func TestJSONLineFilter_OversizeLineResyncs(t *testing.T) {
 	good2 := `{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"
 
 	var errOut bytes.Buffer
-	r := newJSONLineFilter(strings.NewReader(good1+huge+good2), &errOut)
+	r := newJSONLineFilter(strings.NewReader(good1+huge+good2), &errOut, nil)
 	got, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
@@ -168,6 +168,53 @@ func TestJSONLineFilter_OversizeLineResyncs(t *testing.T) {
 	}
 }
 
+// TestJSONLineFilter_BatchFrameRespondsWithError pins F025: an array-shaped
+// JSON-RPC batch frame must produce a -32600 error response on stdout rather
+// than a silent drop, so the client doesn't hang waiting for N responses.
+func TestJSONLineFilter_BatchFrameRespondsWithError(t *testing.T) {
+	t.Parallel()
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]` + "\n"
+	var errOut, out bytes.Buffer
+	r := newJSONLineFilter(strings.NewReader(batch), &errOut, &out)
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no forwarded bytes for batch, got %q", got)
+	}
+	resp := out.String()
+	if !strings.Contains(resp, `"code":-32600`) {
+		t.Errorf("expected -32600 in stdout error frame, got: %q", resp)
+	}
+	if !strings.Contains(resp, `"id":null`) {
+		t.Errorf("expected null id in error frame, got: %q", resp)
+	}
+}
+
+// TestJSONLineFilter_ConcatenatedFrameRespondsWithError pins F030: two JSON
+// objects on one line (no newline separator) must produce a -32700 parse
+// error rather than a silent drop.
+func TestJSONLineFilter_ConcatenatedFrameRespondsWithError(t *testing.T) {
+	t.Parallel()
+	frame1 := `{"jsonrpc":"2.0","id":600,"method":"tools/list"}`
+	frame2 := `{"jsonrpc":"2.0","id":601,"method":"tools/list"}`
+	concat := frame1 + frame2 + "\n"
+	var errOut, out bytes.Buffer
+	r := newJSONLineFilter(strings.NewReader(concat), &errOut, &out)
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no forwarded bytes for concatenated frames, got %q", got)
+	}
+	resp := out.String()
+	if !strings.Contains(resp, `"code":-32700`) {
+		t.Errorf("expected -32700 in stdout error frame, got: %q", resp)
+	}
+}
+
 // TestJSONLineFilter_OversizeAtEOF covers the edge case of a stream
 // that ends mid-oversize-line without a final newline. The reader
 // should still report the oversize-drop and then return EOF cleanly
@@ -176,7 +223,7 @@ func TestJSONLineFilter_OversizeAtEOF(t *testing.T) {
 	t.Parallel()
 	huge := strings.Repeat("A", 20<<20) // NO trailing newline
 	var errOut bytes.Buffer
-	r := newJSONLineFilter(strings.NewReader(huge), &errOut)
+	r := newJSONLineFilter(strings.NewReader(huge), &errOut, nil)
 	got, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)

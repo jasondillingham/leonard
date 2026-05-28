@@ -88,7 +88,7 @@ func run() error {
 	// non-JSON line from a misbehaving parent process doesn't crash
 	// the server. Bughunt-2 mcp F1 defense, kept from v0.52.
 	transport := &mcp.IOTransport{
-		Reader: newJSONLineFilter(os.Stdin, os.Stderr),
+		Reader: newJSONLineFilter(os.Stdin, os.Stderr, os.Stdout),
 		Writer: nopWriteCloser{os.Stdout},
 	}
 	return translateExitErr(srv.Run(ctx, transport))
