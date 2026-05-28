@@ -134,3 +134,102 @@ func TestCheck_MissingFile(t *testing.T) {
 		t.Error("expected error for missing file")
 	}
 }
+
+// TestCheck_ShowsLineNumber verifies that plain output reports "line N"
+// rather than raw byte offsets for claims.
+func TestCheck_ShowsLineNumber(t *testing.T) {
+	content := "Introduction.\n\nWe have 50,000 users on the platform.\n"
+	root, target := checkFixture(t, "blog.md", content, "# rules\n")
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+	out, _ := runRoot(t, rt, "check", target)
+	if !strings.Contains(out, "line ") {
+		t.Errorf("output should contain 'line N'; got:\n%s", out)
+	}
+	if strings.Contains(out, "bytes ") {
+		t.Errorf("output should not contain raw byte offsets; got:\n%s", out)
+	}
+	// The claim is on line 3 (after two preceding lines).
+	if !strings.Contains(out, "line 3") {
+		t.Errorf("expected claim on line 3; got:\n%s", out)
+	}
+}
+
+// TestListStaleClaims_CleanProject exits 0 and produces no findings.
+func TestListStaleClaims_CleanProject(t *testing.T) {
+	root, _ := checkFixture(t, "safe.md", "This is ordinary prose.", "# rules\n")
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+	out, err := runRoot(t, rt, "list-stale-claims")
+	if err != nil {
+		t.Fatalf("list-stale-claims: %v\nout=%s", err, out)
+	}
+}
+
+// TestListStaleClaims_ForbiddenExitsTwo detects a forbidden claim across files.
+func TestListStaleClaims_ForbiddenExitsTwo(t *testing.T) {
+	root, _ := checkFixture(t, "marketing.md",
+		"Our platform is HIPAA-compliant for healthcare.",
+		"## Compliance\n\n- ❌ \"HIPAA-compliant\" — Not certified.\n")
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+	_, err := runRoot(t, rt, "list-stale-claims")
+	var ec *exitCode
+	if !errors.As(err, &ec) || ec.code != 2 {
+		t.Errorf("want exit 2, got %v", err)
+	}
+}
+
+// TestListStaleClaims_ScopeGlob restricts scanning to the matched files.
+func TestListStaleClaims_ScopeGlob(t *testing.T) {
+	// Write a forbidden claim only in subdir/bad.md; docs/safe.md is clean.
+	root := t.TempDir()
+	gtDir := filepath.Join(root, dataDirName, "ground-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"facts.yaml":      "tech_stack:\n  primary_language: Go\n",
+		"stories.md":      "# Stories\n",
+		"do-not-claim.md": "## Compliance\n\n- ❌ \"HIPAA-compliant\" — Not certified.\n",
+		"filters.yaml":    "",
+	} {
+		if err := os.WriteFile(filepath.Join(gtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "subdir", "bad.md"),
+		[]byte("Our platform is HIPAA-compliant for healthcare."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "safe.md"),
+		[]byte("Ordinary text."), 0o644); err != nil {
+		if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		// docs/ may not exist; ignore — we only care that subdir/bad.md is found
+	}
+
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+
+	// Scoping to docs/*.md should skip subdir/bad.md → clean exit.
+	out, err := runRoot(t, rt, "list-stale-claims", "--scope=docs/*.md")
+	if err != nil {
+		// docs/*.md may match nothing — that's a clean exit too.
+		var ec *exitCode
+		if errors.As(err, &ec) {
+			t.Errorf("scoped to docs/ should be clean, got exit %d\nout=%s", ec.code, out)
+		}
+	}
+
+	// Scoping to subdir/*.md should find the forbidden claim.
+	_, err = runRoot(t, rt, "list-stale-claims", "--scope=subdir/*.md")
+	var ec *exitCode
+	if !errors.As(err, &ec) || ec.code != 2 {
+		t.Errorf("subdir scope: want exit 2, got %v", err)
+	}
+}

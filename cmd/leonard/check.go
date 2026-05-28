@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,7 +97,7 @@ Flags:
 			gta := a.(*groundtruth.GroundTruthAdapter)
 
 			res := gta.Detect(string(content))
-			renderCheckResult(cmd.OutOrStdout(), absTarget, res, format)
+			renderCheckResult(cmd.OutOrStdout(), absTarget, content, res, format)
 
 			switch {
 			case res.Summary.Forbidden > 0:
@@ -113,7 +114,7 @@ Flags:
 	return cmd
 }
 
-func renderCheckResult(out io.Writer, path string, res groundtruth.DetectionResult, format string) {
+func renderCheckResult(out io.Writer, path string, content []byte, res groundtruth.DetectionResult, format string) {
 	if format == "json" {
 		// Reuse the verify_claim wire shape so jq pipelines are
 		// portable across MCP and CLI surfaces.
@@ -151,14 +152,26 @@ func renderCheckResult(out io.Writer, path string, res groundtruth.DetectionResu
 		case groundtruth.VerdictOpinion:
 			detail = "preference/value statement"
 		}
-		fmt.Fprintf(out, "  [%s] %s — %q  (bytes %d-%d)  %s\n",
+		line := byteToLine(content, c.StartByte)
+		fmt.Fprintf(out, "  [%s] %s — %q  (line %d)  %s\n",
 			strings.ToUpper(c.Verdict.String()),
 			c.Category,
 			truncate(c.Text, 80),
-			c.StartByte, c.EndByte,
+			line,
 			detail,
 		)
 	}
+}
+
+// byteToLine returns the 1-based line number for the given byte offset in src.
+func byteToLine(src []byte, offset int) int {
+	if offset <= 0 || len(src) == 0 {
+		return 1
+	}
+	if offset > len(src) {
+		offset = len(src)
+	}
+	return 1 + bytes.Count(src[:offset], []byte{'\n'})
 }
 
 // claimsToWire mirrors the verify_claim MCP tool's wire schema so
