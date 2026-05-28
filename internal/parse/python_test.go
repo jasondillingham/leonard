@@ -404,3 +404,26 @@ func TestExtractPython_MissingInterpreterReturnsUnavailable(t *testing.T) {
 		t.Errorf("expected ErrPythonUnavailable, got %v", err)
 	}
 }
+
+// TestExtractPython_UTF8BOM verifies that a file whose first three bytes are
+// the UTF-8 BOM (EF BB BF / U+FEFF) is parsed without error. CPython executes
+// BOM-prefixed files cleanly, but ast.parse() rejects them with a SyntaxError
+// unless the BOM is stripped first.
+func TestExtractPython_UTF8BOM(t *testing.T) {
+	t.Parallel()
+	const bom = "\xef\xbb\xbf"
+	src := bom + "BOM_VAR = 1\n"
+	syms, err := ExtractPython("bom.py", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractPython rejected BOM-prefixed file: %v", err)
+	}
+	found := false
+	for _, s := range syms {
+		if s.Name == "BOM_VAR" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("BOM_VAR not extracted from BOM-prefixed file; got %v", syms)
+	}
+}

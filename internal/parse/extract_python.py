@@ -175,7 +175,11 @@ def extract(src: str, prefix: str) -> list:
 
 def main() -> int:
     prefix = sys.argv[1] if len(sys.argv) > 1 else ""
-    src = sys.stdin.read()
+    # Read raw bytes and decode with utf-8-sig so a UTF-8 BOM at the
+    # start of the file is stripped before ast.parse() sees it.
+    # sys.stdin.read() leaves the BOM as U+FEFF, which ast.parse()
+    # rejects even though CPython executes the file cleanly.
+    src = sys.stdin.buffer.read().decode("utf-8-sig")
     try:
         syms = extract(src, prefix)
     except SyntaxError as e:
