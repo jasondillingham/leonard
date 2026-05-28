@@ -72,6 +72,16 @@ func TestFactsImpact_NoReferences(t *testing.T) {
 	}
 }
 
+func TestFactsImpact_EmptyKeyRejected(t *testing.T) {
+	root := factsFixture(t, "tech_stack:\n  primary_language: Go\n", nil)
+	withCwd(t, root)
+	rt := &fakeRuntime{}
+	_, err := runRoot(t, rt, "facts", "impact", "")
+	if err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("expected empty-key error, got: %v", err)
+	}
+}
+
 func TestFactsImpact_MissingKeyExitsOne(t *testing.T) {
 	root := factsFixture(t, "tech_stack:\n  primary_language: Go\n", nil)
 	withCwd(t, root)

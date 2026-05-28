@@ -122,6 +122,9 @@ Examples:
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keyPath := args[0]
+			if keyPath == "" {
+				return fmt.Errorf("facts impact: key path must not be empty")
+			}
 
 			dataDir, err := dataDirForCwd()
 			if err != nil {
