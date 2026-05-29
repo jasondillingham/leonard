@@ -469,6 +469,25 @@ func TestStoreErrorSurfaces(t *testing.T) {
 	}
 }
 
+// TestFindSymbolInt64MaxLimitClamped pins F006: INT64-max limit must not
+// cause a float64-precision-mangled "overflows into Go struct field" error
+// with a stray "}" at the end. safeLimit clamps the value to maxSafeLimit
+// and the call succeeds (returning however many symbols match).
+func TestFindSymbolInt64MaxLimitClamped(t *testing.T) {
+	session := newSession(t, loadFixture(t))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "find_symbol",
+		Arguments: map[string]any{"query": "Greet", "limit": 9223372036854775807},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	// Must NOT produce an error — the oversized limit is clamped, not rejected.
+	if res != nil && res.IsError {
+		t.Errorf("expected success with clamped limit, got IsError=true: %+v", res)
+	}
+}
+
 // TestFindSymbolEmptyQueryRejected pins F009: find_symbol must reject an
 // empty query string rather than falling through to a "match everything" LIKE.
 func TestFindSymbolEmptyQueryRejected(t *testing.T) {

@@ -1,7 +1,50 @@
 package mcp
 
+import (
+	"encoding/json"
+	"math"
+)
+
 // Tool input/output payloads for the v1 MCP surface. Field names and JSON
 // tags match the schemas declared in DESIGN.md §4.3 / phase-1-brief.md.
+
+// safeLimit is an int that parses JSON integers without the float64
+// precision loss that Go's json.Unmarshal applies to plain int fields.
+// Any value > maxSafeLimit is clamped; negative values become 0.
+// This prevents two failure modes (F006):
+//
+//   - INT64-max input causes "overflows into Go struct field" error whose
+//     message embeds the next JSON character (a stray "}").
+//   - Values like 9223372036854775807 get rounded to 9223372036854776000
+//     by float64, making the error message show a different number than
+//     the caller sent.
+//
+// Declared as an alias of int so JSON-schema generators still emit
+// {"type":"integer"} for fields that carry this type.
+type safeLimit int
+
+const maxSafeLimit = math.MaxInt32 // 2^31-1; all realistic limit values fit
+
+func (l *safeLimit) UnmarshalJSON(b []byte) error {
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	v, err := n.Int64()
+	if err != nil {
+		// Value is non-integer or overflows int64 — clamp to max.
+		*l = maxSafeLimit
+		return nil
+	}
+	if v < 0 {
+		v = 0
+	}
+	if v > maxSafeLimit {
+		v = maxSafeLimit
+	}
+	*l = safeLimit(v)
+	return nil
+}
 
 // SymbolMatch is the wire-format symbol returned by verify_symbol and
 // find_symbol. Note the deliberate flattening of store.Symbol's StartLine
@@ -40,10 +83,10 @@ type VerifySymbolOutput struct {
 
 // FindSymbolInput is the argument shape for find_symbol.
 type FindSymbolInput struct {
-	Query    string `json:"query" jsonschema:"substring matched against symbol name and qualified name (case-insensitive); must not be empty; maximum 4096 bytes"`
-	Kind     string `json:"kind,omitempty" jsonschema:"optional kind filter: function|method|type|const|var|interface"`
-	Language string `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"maximum number of matches to return (0 = unlimited)"`
+	Query    string    `json:"query" jsonschema:"substring matched against symbol name and qualified name (case-insensitive); must not be empty; maximum 4096 bytes"`
+	Kind     string    `json:"kind,omitempty" jsonschema:"optional kind filter: function|method|type|const|var|interface"`
+	Language string    `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
+	Limit    safeLimit `json:"limit,omitempty" jsonschema:"maximum number of matches to return (0 = unlimited)"`
 }
 
 // FindSymbolOutput wraps the matches array. MCP requires structured tool
@@ -54,9 +97,9 @@ type FindSymbolOutput struct {
 
 // ListFilesInput is the argument shape for list_files.
 type ListFilesInput struct {
-	Pattern  string `json:"pattern,omitempty" jsonschema:"optional glob matched against file path (SQLite GLOB: * matches any sequence incl. /, ? matches one char, [abc] character classes; no ** recursion, malformed patterns silently match zero rows)"`
-	Language string `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"max files to return (default 200, capped at 1000). 0 = use default."`
+	Pattern  string    `json:"pattern,omitempty" jsonschema:"optional glob matched against file path (SQLite GLOB: * matches any sequence incl. /, ? matches one char, [abc] character classes; no ** recursion, malformed patterns silently match zero rows)"`
+	Language string    `json:"language,omitempty" jsonschema:"optional language filter (e.g. go, python, typescript)"`
+	Limit    safeLimit `json:"limit,omitempty" jsonschema:"max files to return (default 200, capped at 1000). 0 = use default."`
 }
 
 // ListFilesOutput wraps the files array (see FindSymbolOutput note).

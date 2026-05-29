@@ -173,11 +173,11 @@ func findSymbol(ctx context.Context, store SymbolStore, in FindSymbolInput) (Fin
 	if len(in.Query) > maxSymbolQueryBytes {
 		return FindSymbolOutput{}, fmt.Errorf("find_symbol: query exceeds %d-byte cap (got %d bytes)", maxSymbolQueryBytes, len(in.Query))
 	}
-	syms, err := store.FindSymbolsByQuery(ctx, in.Query, in.Limit)
+	syms, err := store.FindSymbolsByQuery(ctx, in.Query, int(in.Limit))
 	if err != nil {
 		return FindSymbolOutput{}, err
 	}
-	return FindSymbolOutput{Matches: filterAndConvert(syms, in.Kind, in.Language, in.Limit)}, nil
+	return FindSymbolOutput{Matches: filterAndConvert(syms, in.Kind, in.Language, int(in.Limit))}, nil
 }
 
 // listFilesDefaultLimit + listFilesMaxLimit cap the response size.
@@ -191,7 +191,7 @@ const (
 func listFiles(ctx context.Context, store SymbolStore, in ListFilesInput) (ListFilesOutput, error) {
 	ctx, end := telemetry.Span(ctx, "leonard.mcp.list_files")
 	defer end()
-	limit := in.Limit
+	limit := int(in.Limit)
 	if limit <= 0 {
 		limit = listFilesDefaultLimit
 	}
