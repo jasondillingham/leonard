@@ -63,7 +63,7 @@ func newDecisionsListCmd(rt Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&topic, "topic", "", "exact-match topic filter")
 	cmd.Flags().Int64Var(&since, "since", 0, "unix-seconds lower bound on recorded_at")
-	cmd.Flags().IntVar(&limit, "limit", 0, "max rows to return (0 = MCP default, currently 20)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "cap the number of rows returned (0 = use default, currently 50)")
 	return cmd
 }
 
@@ -126,7 +126,7 @@ func newDecisionsStaleCmd(rt Runtime) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().IntVar(&limit, "limit", 0, "max rows to return (0 = MCP default, currently 50)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "cap the number of rows returned (0 = use default, currently 200)")
 	return cmd
 }
 
