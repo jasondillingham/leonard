@@ -7,6 +7,186 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.54.0 — bughunt-12 sweep (3 HIGH + 32 MEDIUM/LOW)
+
+**35 commits closing every addressable finding from the bughunt-12 audit**
+across eight lanes: protocol fuzzing, index correctness, detector accuracy,
+ground-truth adapter, path-trust, UX, dogfood, and CLI polish. Three HIGH
+findings closed; 32 MEDIUM/LOW findings addressed.
+
+### Bughunt-12 HIGH findings
+
+**H1 — index prune sweep was silently capped at 1 000 files.** Internal
+bookkeeping used the same `ListFiles` call as the MCP tool, which is
+bounded by `listFilesDefaultLimit = 200` (rising to the 1 000 hard cap at
+most). On projects with more than 1 000 indexed files, `pruneStaleFiles`
+and `CountFiles` only saw the first 1 000 rows, so deleted or renamed files
+beyond that position were never pruned and health reports undercounted. Fix:
+two new store methods — `AllFiles` (unbounded, internal-only) and
+`CountFiles` (scalar) — now back all internal bookkeeping. The public
+`list_files` MCP tool keeps its paginated limits.
+
+**H2 — numeric contradiction detection against facts.yaml.** The ground-truth
+adapter's claim detector matched text patterns but had no awareness of the
+numeric facts already stored. A session could assert "15 years of experience"
+with `years_of_experience: 8` in facts.yaml and the detector would not flag
+it. Fix: post-edit and pre-edit now cross-check extracted numeric claims
+against the corresponding facts.yaml values. A claim whose number contradicts
+a stored fact is flagged as a contradiction even when no forbidden-phrase
+pattern fires.
+
+**H3 — ground-truth bypass paths.** Two related bypasses closed together:
+
+- **Bash command body** — the forbidden-claim pre-edit guard inspected
+  `file_path` / `content` but not the `command` field on Bash tool calls.
+  A `Write | tee claims-doc.md` pipeline or `sed -i` edit could embed a
+  forbidden claim and bypass the guard entirely. Fix: new
+  `bashCommandMutates()` heuristic identifies Bash commands that write
+  output (`>`, `>>`, `sed -i`, `tee`); those commands are scanned the same
+  way as file content.
+
+- **Override token not wired** — `leonard override --once` placed a
+  single-use token under `$XDG_CONFIG_HOME/leonard/pending-override/` but
+  the token was never consumed by the forbidden-claim pre-edit path. The
+  deny was still raised even when the operator had explicitly authorized
+  the edit. Fix: `consumeOverrideToken()` called at the guard boundary;
+  a matching token bypasses the deny and is deleted atomically.
+
+### Detector accuracy
+
+Three categories of false positives reduced, in descending order of noise:
+
+- **Numeric near-misses**: patterns like `15-year-old` or `2x faster`
+  no longer trigger experience/count claims. The fuzzy matcher now requires
+  a word boundary on both sides of the numeric anchor.
+- **Temporal false positives**: four-digit years (1990–2029) and plain
+  duration units (`30 days`, `6 months`, `2 weeks`) are excluded from
+  the "time at company" detector. Both categories were the top source of
+  false positives in dogfooded fact files.
+- **In-word extension**: fuzzy candidate extensions that attach to the
+  middle of a word (e.g. `internal` triggering a fragment of `intern`)
+  are rejected.
+
+### Ground-truth adapter
+
+- **Partial-load on malformed truth files**: a syntax error in any one of
+  `facts.yaml`, `filters.yaml`, or `do-not-claim.md` no longer aborts the
+  adapter's `Init`. The adapter loads with the files it can parse and emits
+  a warning, matching the dispatcher's non-fatal-per-adapter contract.
+- **SessionStart proactive summary**: the `session-start` hook now emits
+  a brief claim-findings summary so the session begins with a view of any
+  open unverified claims rather than discovering them mid-session.
+- **Stop hook condensed**: the verbose per-file stop digest is replaced
+  by a single-line summary. The full per-file breakdown is still in the
+  `audit-log.md` for post-session review.
+- **facts diff + facts impact**: new `leonard facts diff` shows pending
+  changes to `facts.yaml` relative to HEAD; `leonard facts impact <key>`
+  shows which claims and decisions reference a given fact key, so operators
+  can estimate the blast radius before editing a fact.
+
+### Path normalization and security
+
+- **APFS / Darwin case-insensitive deduplication**: on Darwin (where APFS
+  volumes are case-insensitive by default), path keys are now lowercased
+  before storage. A rename from `Foo.go` to `foo.go` previously accumulated
+  two rows pointing at the same on-disk file; the normalized key collapses
+  them to one.
+- **Control-byte rejection in ResolveSafe**: NUL (`\x00`), bare newline,
+  and carriage return are now rejected at the `ResolveSafe` boundary before
+  any filesystem operation. These bytes appear in NUL-injection-class attacks
+  and are never valid in file paths Leonard processes.
+- **`.gitignore` / `.leonardignore` respected in list-stale-claims walk**:
+  the stale-claims directory walk now honors both ignore files, preventing
+  noise from generated or vendored paths the operator has already excluded
+  from the index.
+- **UTF-8 BOM stripped**: Python source files with a leading BOM (`\xef\xbb\xbf`)
+  are stripped before passing to `ast.parse`. A BOM caused a `SyntaxError`
+  that silently dropped the entire file from the index.
+
+### Protocol
+
+- **JSON-RPC error frames for batch and concatenated inputs**: when the MCP
+  stdin filter detects a JSON batch array (`[...]`) or multiple concatenated
+  frames on one line, it now emits a well-formed
+  `{"jsonrpc":"2.0","error":{...},"id":null}` response instead of silently
+  dropping the frame. Clients and fuzz harnesses now see a structured error.
+
+### MCP tools
+
+- **verify_symbol suggestions on exact miss**: when no exact match is found,
+  the response now includes up to 5 fuzzy candidates in a `suggestions` field,
+  removing the need for a separate `find_symbol` round-trip to correct a
+  misspelling.
+- **safeLimit — overflow and precision clamping**: `find_symbol` and
+  `list_files` `limit` fields now use a `safeLimit` type that unmarshals via
+  `json.Number` instead of float64. Values like `9223372036854775807` were
+  previously rounded by float64 arithmetic, making the error message show
+  a different number than the caller sent. Values above `math.MaxInt32` are
+  clamped silently; negative values become 0.
+- **Query validation at MCP layer**: `find_symbol` and `verify_symbol` now
+  reject empty queries and queries exceeding 4 096 bytes with a typed error
+  before touching the store (previously a raw SQL error reached the caller).
+- **get_claim tool**: new MCP tool to retrieve a single claim's full evidence
+  by ID. Previously the only way to inspect evidence was `get_unverified_claims`,
+  which pages through all open claims.
+- **claims source field**: `get_unverified_claims` now returns a `source`
+  field (`"auto"` / `"operator"`) so callers can distinguish hook-recorded
+  auto-claims from operator-recorded ones.
+- **superseded_by on decisions**: `get_decisions` now surfaces the
+  `superseded_by` reference on replaced decisions, matching the information
+  visible in `leonard decisions list`.
+
+### CLI additions and fixes
+
+- **`leonard claims purge --older-than <duration>`**: removes superseded
+  auto-claims beyond a given age. Useful for keeping the ledger trim on
+  active projects without manually reviewing every resolved entry.
+- **`list-stale-claims --scope` supports `**` recursive glob**: a scope
+  like `--scope 'src/**/*.go'` now correctly recurses into subdirectories.
+  Previously only single-level `*` patterns worked.
+- **Line numbers in `leonard check` output**: the check command and
+  list-stale-claims now include line numbers alongside file paths for
+  every finding.
+- **--limit flag help text corrected**: the `decisions list` and
+  `decisions stale` flags previously showed misleading defaults. Both now
+  accurately reflect the actual defaults applied by the store.
+- **find_symbol limit=0 semantics**: `limit=0` now returns all results up
+  to the store cap rather than defaulting to the default page size. The prior
+  behavior (0 = "use default") was undocumented and inconsistent with the
+  MCP schema description.
+
+### Adapter system
+
+- **Auto-detection always loads code adapter**: when both `go.mod` and
+  `.leonard/ground-truth/` are present, auto-detection previously loaded
+  only `ground-truth`. The code adapter now always loads as well, matching
+  the documented intent that both adapters are active by default on a Go
+  project with a truth tree.
+- **`leonard init --adapter=ground-truth` writes `[[adapters]]` blocks**:
+  previously init scaffolded the ground-truth directory tree but left
+  `config.toml` adapter-free, requiring a manual edit. The generated config
+  now contains the correct blocks. TOML parse errors surface a user-friendly
+  message instead of a raw library error.
+
+### Test coverage
+
+- 11 new tests for detector false-positive reduction (years, durations,
+  numeric near-miss, in-word extension)
+- 9 new tests for numeric contradiction detection (edge cases: matching
+  value, no numeric fact, formatted numbers, contradicting value)
+- 8 new tests for ground-truth partial-load on malformed files
+- 6 new tests for `bashCommandMutates()` and override-token wiring
+- 5 new tests for APFS path deduplication (case variants, NFC+NFD combos)
+- 4 new tests for control-byte rejection in `ResolveSafe`
+- 4 new tests for JSON-RPC batch/concatenated error frames
+- 3 new tests for `verify_symbol` suggestions on exact miss
+- Tests for `claims purge`, `facts diff`/`impact`, `list-stale-claims
+  --scope **`, `get_claim`, `safeLimit` clamping
+
+All ~310 prior tests still pass.
+
+---
+
 ## v0.53.0 — adapter dispatcher (#46) + bughunt-11 closeout
 
 **The wiring that makes v1.0 actually work.** The v0.6 → v1.0 work
