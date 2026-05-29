@@ -24,7 +24,7 @@ import (
 )
 
 // version is overridable at build time via -ldflags "-X main.version=...".
-var version = "0.53.0"
+var version = "0.54.0"
 
 func main() {
 	// Bughunt-5 launch-readiness B4: `leonard-mcp --version` used to
