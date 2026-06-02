@@ -620,8 +620,10 @@ func (s *Store) FindSymbolsByName(name string) ([]Symbol, error) {
 	return scanSymbols(rows)
 }
 
-// FindSymbolsByQuery does a case-sensitive substring search across
-// name and qualified_name, capped at limit. limit == 0 means
+// FindSymbolsByQuery does a case-insensitive (ASCII) substring search
+// across name and qualified_name, capped at limit. Case-insensitivity
+// is SQLite LIKE's default for ASCII and matches the find_symbol tool's
+// documented "case-insensitive" contract. limit == 0 means
 // "unlimited" (uses MaxSymbolQueryRows); limit < 0 uses 50 as a
 // legacy default; limit > MaxSymbolQueryRows clamps down (security
 // review #3 F3: the user-supplied limit was previously passed
