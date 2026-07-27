@@ -20,8 +20,8 @@ import (
 // adapters.AggregatePostEdit semantics).
 func (l *Loaded) HandlePostEdit(ctx context.Context, r io.Reader, w io.Writer) error {
 	var env hooks.PostToolUsePayload
-	if err := json.NewDecoder(r).Decode(&env); err != nil {
-		return fmt.Errorf("dispatcher post-edit: decode envelope: %w", err)
+	if err := decodeEnvelope(r, &env); err != nil {
+		return fmt.Errorf("dispatcher post-edit: %w", err)
 	}
 
 	payload := adapters.PostEditPayload{

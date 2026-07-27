@@ -163,15 +163,6 @@ func decodePreToolUsePayload(r io.Reader) (PreToolUsePayload, error) {
 }
 
 func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload) (PreEditResponse, error) {
-	// Bughunt-4 caps F5/F6: reject oversize snippets and over-count
-	// MultiEdit BEFORE invoking the fabrication guard. The previous
-	// capSnippets/truncate behavior silently dropped the offending
-	// snippets, which let a fabricated reference at e.g. MultiEdit
-	// position 150 sneak past the cap. Wrapping in ErrDecode maps
-	// to exit-code 2 so Claude sees a clear "edit rejected" signal.
-	if err := validateToolInputSizes(p.ToolName, p.ToolInput); err != nil {
-		return PreEditResponse{}, err
-	}
 	// Security review #2 F1 (CRITICAL): reject Edit/Write/MultiEdit
 	// against ANY path under `.leonard/`. The pre-v0.46 guard only
 	// inspected `.go` files, so Claude could freely Write
@@ -183,6 +174,15 @@ func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload
 	// their project, the user edits config.toml. Claude has no
 	// legitimate reason to touch it. This check is the trust-
 	// boundary line.
+	//
+	// This guard runs BEFORE validateToolInputSizes. When the size
+	// check ran first, an oversize payload returned ErrDecode before
+	// the path was ever inspected — and the dispatcher turned that
+	// error into a pass, so padding a Write to `.leonard/config.toml`
+	// past MaxSnippetBytes allowed the very edit this guard exists to
+	// deny. The guard reads only path/command fields (already bounded
+	// by MaxHookPayloadBytes at the decode boundary), so running it
+	// first costs nothing and cannot be skipped by payload size.
 	candidatePaths := candidateEditPaths(p.ToolInput)
 	for _, cp := range candidatePaths {
 		// Two-layer check (security review #3 F1 + F2). The lexical
@@ -201,6 +201,15 @@ func decidePreEdit(ctx context.Context, opts PreEditOptions, p PreToolUsePayload
 		if p.ToolName == "Bash" && bashTouchesLeonardDir(cp) {
 			return blockLeonardSelfEdit(cp), nil
 		}
+	}
+	// Bughunt-4 caps F5/F6: reject oversize snippets and over-count
+	// MultiEdit BEFORE invoking the fabrication guard. The previous
+	// capSnippets/truncate behavior silently dropped the offending
+	// snippets, which let a fabricated reference at e.g. MultiEdit
+	// position 150 sneak past the cap. Wrapping in ErrDecode maps
+	// to exit-code 2 so Claude sees a clear "edit rejected" signal.
+	if err := validateToolInputSizes(p.ToolName, p.ToolInput); err != nil {
+		return PreEditResponse{}, err
 	}
 	snippets, targeted := snippetsForTool(p.ToolName, p.ToolInput)
 	if !targeted {

@@ -20,8 +20,8 @@ import (
 // internal/hooks.shouldInjectForSource gate.
 func (l *Loaded) HandleSessionStart(ctx context.Context, r io.Reader, w io.Writer) error {
 	var env hooks.SessionStartPayload
-	if err := json.NewDecoder(r).Decode(&env); err != nil {
-		return fmt.Errorf("dispatcher session-start: decode envelope: %w", err)
+	if err := decodeEnvelope(r, &env); err != nil {
+		return fmt.Errorf("dispatcher session-start: %w", err)
 	}
 
 	if env.Source == "compact" || env.Source == "clear" {
@@ -60,8 +60,8 @@ func (l *Loaded) HandleSessionStart(ctx context.Context, r io.Reader, w io.Write
 // adapters.AggregateStop), and writes a StopResponse.
 func (l *Loaded) HandleStop(ctx context.Context, r io.Reader, w io.Writer) error {
 	var env hooks.StopPayload
-	if err := json.NewDecoder(r).Decode(&env); err != nil {
-		return fmt.Errorf("dispatcher stop: decode envelope: %w", err)
+	if err := decodeEnvelope(r, &env); err != nil {
+		return fmt.Errorf("dispatcher stop: %w", err)
 	}
 
 	payload := adapters.StopPayload{

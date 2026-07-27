@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -23,8 +24,8 @@ import (
 // ground-truth + self-logging adapters on top.
 func (l *Loaded) HandlePreEdit(ctx context.Context, r io.Reader, w io.Writer) error {
 	var env hooks.PreToolUsePayload
-	if err := json.NewDecoder(r).Decode(&env); err != nil {
-		return fmt.Errorf("dispatcher pre-edit: decode envelope: %w", err)
+	if err := decodeEnvelope(r, &env); err != nil {
+		return fmt.Errorf("dispatcher pre-edit: %w", err)
 	}
 
 	payload := adapters.PreEditPayload{
@@ -40,7 +41,31 @@ func (l *Loaded) HandlePreEdit(ctx context.Context, r io.Reader, w io.Writer) er
 	for _, a := range l.Adapters {
 		res, err := a.PreEdit(ctx, payload)
 		if err != nil {
-			// Per-adapter failures don't deny the edit; log and
+			// hooks.ErrDecode is not an adapter malfunction — it is a
+			// deliberate rejection of the payload itself (oversize
+			// snippet, over-count MultiEdit, unparseable envelope).
+			// internal/hooks maps it to exit 2 precisely so the edit is
+			// blocked. Treating it like a soft failure inverted that:
+			// an oversize Write to `.leonard/config.toml` returned
+			// ErrDecode, fell through to `continue`, produced zero
+			// results, and aggregated to Pass — allowing the edit the
+			// guard exists to deny. Fail closed instead.
+			if errors.Is(err, hooks.ErrDecode) {
+				// The detail goes to stderr (operator-facing), not into
+				// Reason. Reason is rendered to the model inside a
+				// Leonard-branded block, and a decode error can quote a
+				// fragment of the rejected payload back into it —
+				// letting payload bytes masquerade as Leonard's own
+				// ground-truth voice.
+				fmt.Fprintf(stderrOf(a), "leonard dispatcher: %s rejected pre-edit payload: %v\n", a.Name(), err)
+				results = append(results, adapters.PreEditResult{
+					Decision:    adapters.Deny,
+					Reason:      fmt.Sprintf("leonard pre-edit: the %s adapter rejected this payload as malformed or oversize. Check the hook's stderr for the specific limit.", a.Name()),
+					AdapterName: a.Name(),
+				})
+				continue
+			}
+			// Other per-adapter failures don't deny the edit; log and
 			// move on so a malformed truth file (for example)
 			// doesn't block all edits.
 			fmt.Fprintf(stderrOf(a), "leonard dispatcher: %s pre-edit error: %v\n", a.Name(), err)
