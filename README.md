@@ -12,7 +12,7 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status: v0.54.0 — stable.** Self-dogfooded across 60 releases with **twelve bug-hunt rounds and five security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
+**Status: v0.55.0 — stable.** Self-dogfooded across 60 releases with **twelve bug-hunt rounds and five security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
 **v1.0 in flight** — generalizing Leonard from "code ground-truth" to pluggable ground-truth (code adapter + new ground-truth adapter for prose/claims/facts), plus self-logging of truth changes. Design in [`docs/ROADMAP-v1-ground-truth.md`](./docs/ROADMAP-v1-ground-truth.md); phased work tracked under milestones [v0.6](https://github.com/jasondillingham/leonard/milestone/1)–[v1.0](https://github.com/jasondillingham/leonard/milestone/5).
 

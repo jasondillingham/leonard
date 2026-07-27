@@ -19,9 +19,9 @@
 # itself a Phase 1 finding — see docs/track-b/phase-1-dogfood-ground-truth.md.
 
 leonard:
-  version: "0.54.0"
+  version: "0.55.0"
   schema_version: 9
   bughunt_rounds: 12
   security_reviews: 5
   treesitter_grammars: 29
-  released_versions: 60
+  released_versions: 61
