@@ -86,7 +86,7 @@ type TruthChange struct {
 
 // schemaVersion is the current schema version applied by migrate. Bump this
 // whenever a new migration is appended to migrations below.
-const schemaVersion = 8
+const schemaVersion = 9
 
 // File describes an indexed source file.
 type File struct {
@@ -164,6 +164,33 @@ type Claim struct {
 	IndexOK             *bool
 	VetOK               *bool
 	VetErrorSummary     string
+
+	// LastChecked is when the claim's verification was last confirmed
+	// still to hold. nil means it has never been re-checked since
+	// RecordClaim, in which case staleness ages from RecordedAt.
+	LastChecked *int64
+
+	// CheckTTLSeconds is how long a verification stays fresh. nil means
+	// the claim never expires, which is the behavior of every claim
+	// recorded before schema v9 and remains the default.
+	CheckTTLSeconds *int64
+}
+
+// IsStale reports whether a verified claim's check has expired as of
+// now (unix seconds). Unverified claims are never stale — they are
+// unverified, which is a different and separately-reported state.
+//
+// Kept in one place so the Go predicate and the SQL in staleClauses
+// cannot drift apart.
+func (c Claim) IsStale(now int64) bool {
+	if !c.Verified || c.CheckTTLSeconds == nil {
+		return false
+	}
+	from := c.RecordedAt
+	if c.LastChecked != nil {
+		from = *c.LastChecked
+	}
+	return from+*c.CheckTTLSeconds < now
 }
 
 // Store is the SQLite-backed Leonard data layer. The zero value is not usable;
@@ -244,6 +271,7 @@ var migrations = []func(*sql.Tx) error{
 	migrateV6,
 	migrateV7,
 	migrateV8,
+	migrateV9,
 }
 
 func (s *Store) migrate() error {
@@ -486,6 +514,35 @@ func migrateV7(tx *sql.Tx) error {
 func migrateV8(tx *sql.Tx) error {
 	if _, err := tx.Exec(`ALTER TABLE decisions ADD COLUMN truth_change TEXT`); err != nil {
 		return fmt.Errorf("alter decisions add truth_change: %w", err)
+	}
+	return nil
+}
+
+// migrateV9 adds re-check metadata so a verification can expire.
+//
+// Pre-v9 the `verified` flag was written once at record time and never
+// revisited. Supersession fired only from a later edit to the same file
+// (SupersedeClaimsForFile) or a later clean run
+// (SupersedeOutstandingFailures) — never from the underlying truth
+// changing. A claim verified in May therefore still reported as
+// verified in July even if what it asserted had stopped being true,
+// because the schema answered "was this checked?" rather than "is this
+// still true?".
+//
+// Both columns are nullable and every existing row gets NULL.
+// check_ttl_seconds IS NULL means "never expires", so the migration is
+// behavior-preserving for the entire existing ledger: opting a claim
+// into expiry is explicit.
+func migrateV9(tx *sql.Tx) error {
+	stmts := []string{
+		`ALTER TABLE claims ADD COLUMN last_checked INTEGER`,
+		`ALTER TABLE claims ADD COLUMN check_ttl_seconds INTEGER`,
+		`CREATE INDEX idx_claims_last_checked ON claims(last_checked)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("exec %q: %w", firstLine(stmt), err)
+		}
 	}
 	return nil
 }
@@ -1433,13 +1490,19 @@ func (s *Store) RecordClaim(c Claim) (int64, error) {
 		c.RecordedAt = time.Now().Unix()
 	}
 	c.FilePath = normalizeClaimPath(c.FilePath)
+	// last_checked / check_ttl_seconds are written through so a caller
+	// that sets them on the struct gets what it asked for. Both default
+	// to nil -> NULL -> never expires, which is the pre-v9 behavior and
+	// remains the default for every caller that ignores them.
 	res, err := s.db.Exec(`INSERT INTO claims(
 		session_id, claim, evidence, verified, recorded_at,
-		file_path, tool, index_ok, vet_ok, vet_error_summary
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		file_path, tool, index_ok, vet_ok, vet_error_summary,
+		last_checked, check_ttl_seconds
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.SessionID, c.Claim, c.Evidence, boolToInt(c.Verified), c.RecordedAt,
 		nullableString(c.FilePath), nullableString(c.Tool),
-		nullableBool(c.IndexOK), nullableBool(c.VetOK), nullableString(c.VetErrorSummary))
+		nullableBool(c.IndexOK), nullableBool(c.VetOK), nullableString(c.VetErrorSummary),
+		nullableInt64(c.LastChecked), nullableInt64(c.CheckTTLSeconds))
 	if err != nil {
 		return 0, fmt.Errorf("store: RecordClaim: %w", err)
 	}
@@ -1578,12 +1641,22 @@ func (s *Store) PurgeSupersededClaims(olderThanUnix int64) (int64, error) {
 	return n, nil
 }
 
-// GetClaim fetches a single claim by ID. Returns (zero, false, nil) when
-// no row exists so callers can distinguish "not found" from a real error.
-func (s *Store) GetClaim(id int64) (Claim, bool, error) {
-	const q = `SELECT id, session_id, claim, evidence, verified, recorded_at,
-		file_path, superseded_by_claim_id, tool, index_ok, vet_ok, vet_error_summary
-		FROM claims WHERE id = ?`
+// claimSelectCols is the column list every claim read shares. The scan
+// in scanClaim is positional, so this list and that function must be
+// edited together — a column added to one and not the other shifts
+// every field after it, silently.
+const claimSelectCols = `SELECT id, session_id, claim, evidence, verified, recorded_at,
+		file_path, superseded_by_claim_id, tool, index_ok, vet_ok, vet_error_summary,
+		last_checked, check_ttl_seconds`
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows so single-row
+// and multi-row reads share one decoder.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanClaim decodes one claimSelectCols row.
+func scanClaim(sc rowScanner) (Claim, error) {
 	var (
 		c          Claim
 		verified   int
@@ -1593,14 +1666,13 @@ func (s *Store) GetClaim(id int64) (Claim, bool, error) {
 		indexOK    sql.NullInt64
 		vetOK      sql.NullInt64
 		vetErrSum  sql.NullString
+		lastCheck  sql.NullInt64
+		ttl        sql.NullInt64
 	)
-	err := s.db.QueryRow(q, id).Scan(&c.ID, &c.SessionID, &c.Claim, &c.Evidence,
-		&verified, &c.RecordedAt, &filePath, &superseded, &tool, &indexOK, &vetOK, &vetErrSum)
-	if err == sql.ErrNoRows {
-		return Claim{}, false, nil
-	}
-	if err != nil {
-		return Claim{}, false, fmt.Errorf("store: GetClaim: %w", err)
+	if err := sc.Scan(&c.ID, &c.SessionID, &c.Claim, &c.Evidence,
+		&verified, &c.RecordedAt, &filePath, &superseded,
+		&tool, &indexOK, &vetOK, &vetErrSum, &lastCheck, &ttl); err != nil {
+		return Claim{}, err
 	}
 	c.Verified = verified != 0
 	if filePath.Valid {
@@ -1624,7 +1696,103 @@ func (s *Store) GetClaim(id int64) (Claim, bool, error) {
 	if vetErrSum.Valid {
 		c.VetErrorSummary = vetErrSum.String
 	}
+	if lastCheck.Valid {
+		v := lastCheck.Int64
+		c.LastChecked = &v
+	}
+	if ttl.Valid {
+		v := ttl.Int64
+		c.CheckTTLSeconds = &v
+	}
+	return c, nil
+}
+
+// GetClaim fetches a single claim by ID. Returns (zero, false, nil) when
+// no row exists so callers can distinguish "not found" from a real error.
+func (s *Store) GetClaim(id int64) (Claim, bool, error) {
+	c, err := scanClaim(s.db.QueryRow(claimSelectCols+" FROM claims WHERE id = ?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Claim{}, false, nil
+	}
+	if err != nil {
+		return Claim{}, false, fmt.Errorf("store: GetClaim: %w", err)
+	}
 	return c, true, nil
+}
+
+// staleClaimSQL is the SQL form of Claim.IsStale. The two must agree;
+// see IsStale for the semantics.
+//
+// COALESCE(last_checked, recorded_at) means a claim that has never been
+// explicitly re-checked ages from when it was recorded, which is the
+// honest reading of "how long since we knew this held".
+const staleClaimSQL = `verified = 1
+	AND check_ttl_seconds IS NOT NULL
+	AND COALESCE(last_checked, recorded_at) + check_ttl_seconds < ?`
+
+// GetStaleClaims returns claims that passed verification but whose check
+// has since expired, as of now (unix seconds).
+//
+// Stale is deliberately a third state, not a flavor of unverified.
+// Conflating them would report a claim that did hold as one that never
+// did, and would flood the Stop hook with everything ever verified.
+// GetUnverifiedClaims and GetStaleClaims return disjoint sets.
+//
+// Superseded claims are excluded, matching GetUnverifiedClaims. An empty
+// sessionID returns matches across all sessions.
+func (s *Store) GetStaleClaims(sessionID string, now int64) ([]Claim, error) {
+	clauses := []string{staleClaimSQL, "superseded_by_claim_id IS NULL"}
+	args := []any{now}
+	if sessionID != "" {
+		clauses = append(clauses, "session_id = ?")
+		args = append(args, sessionID)
+	}
+	// Same materialization cap as queryUnverifiedClaims — see the
+	// v0.44 bughunt-5 perf F2 note there.
+	const queryRowCap = 1000
+	q := claimSelectCols + " FROM claims WHERE " + strings.Join(clauses, " AND ") +
+		" ORDER BY recorded_at DESC, id DESC LIMIT ?"
+	args = append(args, queryRowCap)
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: GetStaleClaims: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Claim
+	for rows.Next() {
+		c, err := scanClaim(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: GetStaleClaims scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: GetStaleClaims iter: %w", err)
+	}
+	return out, nil
+}
+
+// TouchClaim records that a claim's verification was re-confirmed at now
+// (unix seconds), resetting its TTL window. This is the re-check path
+// that did not exist before schema v9.
+//
+// Touching a claim that does not exist is an error rather than a no-op,
+// so a caller working from a stale ID hears about it.
+func (s *Store) TouchClaim(claimID int64, now int64) error {
+	res, err := s.db.Exec(`UPDATE claims SET last_checked = ? WHERE id = ?`, now, claimID)
+	if err != nil {
+		return fmt.Errorf("store: TouchClaim %d: %w", claimID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: TouchClaim %d rows affected: %w", claimID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: TouchClaim: no claim with id %d", claimID)
+	}
+	return nil
 }
 
 func (s *Store) GetUnverifiedClaims(sessionID string) ([]Claim, error) {
@@ -1639,8 +1807,7 @@ func (s *Store) GetUnverifiedClaimsAll(sessionID string) ([]Claim, error) {
 }
 
 func (s *Store) queryUnverifiedClaims(sessionID string, includeSuperseded bool) ([]Claim, error) {
-	const selectCols = `SELECT id, session_id, claim, evidence, verified, recorded_at,
-		file_path, superseded_by_claim_id, tool, index_ok, vet_ok, vet_error_summary`
+	selectCols := claimSelectCols
 	var (
 		clauses = []string{"verified = 0"}
 		args    []any
@@ -1670,42 +1837,9 @@ func (s *Store) queryUnverifiedClaims(sessionID string, includeSuperseded bool) 
 
 	var out []Claim
 	for rows.Next() {
-		var (
-			c           Claim
-			verified    int
-			filePath    sql.NullString
-			superseded  sql.NullInt64
-			tool        sql.NullString
-			indexOK     sql.NullInt64
-			vetOK       sql.NullInt64
-			vetErrSum   sql.NullString
-		)
-		if err := rows.Scan(&c.ID, &c.SessionID, &c.Claim, &c.Evidence,
-			&verified, &c.RecordedAt, &filePath, &superseded,
-			&tool, &indexOK, &vetOK, &vetErrSum); err != nil {
+		c, err := scanClaim(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: GetUnverifiedClaims scan: %w", err)
-		}
-		c.Verified = verified != 0
-		if filePath.Valid {
-			c.FilePath = filePath.String
-		}
-		if superseded.Valid {
-			v := superseded.Int64
-			c.SupersededByClaimID = &v
-		}
-		if tool.Valid {
-			c.Tool = tool.String
-		}
-		if indexOK.Valid {
-			b := indexOK.Int64 != 0
-			c.IndexOK = &b
-		}
-		if vetOK.Valid {
-			b := vetOK.Int64 != 0
-			c.VetOK = &b
-		}
-		if vetErrSum.Valid {
-			c.VetErrorSummary = vetErrSum.String
 		}
 		out = append(out, c)
 	}
