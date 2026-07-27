@@ -1,0 +1,27 @@
+# Ground truth for Leonard itself (Track B Phase 1).
+#
+# Every value here was WRONG somewhere in this repo's documentation on
+# 2026-07-27 and had to be corrected by hand in commit 3f01e7b. That is
+# why these six were chosen: they are the facts this project has
+# demonstrably failed to keep straight.
+#
+# Each value is derivable from the repo. The derivation is recorded so
+# a human can re-check it, and so a future resolver has a spec:
+#
+#   version             cmd/leonard/root.go   const Version
+#   schema_version      internal/store/store.go   const schemaVersion
+#   bughunt_rounds      distinct bughunt-N prefixes in audits/
+#   security_reviews    security-N-review.md files in audits/
+#   treesitter_grammars tree-sitter-* deps in the crate's Cargo.toml
+#   released_versions   "## vX.Y.Z" headings in CHANGELOG.md
+#
+# NOTE: these are hand-maintained. Whether they drift, and how fast, is
+# itself a Phase 1 finding — see docs/track-b/phase-1-dogfood-ground-truth.md.
+
+leonard:
+  version: "0.54.0"
+  schema_version: 9
+  bughunt_rounds: 12
+  security_reviews: 5
+  treesitter_grammars: 29
+  released_versions: 60

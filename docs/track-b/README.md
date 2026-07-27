@@ -4,12 +4,20 @@ Implementation specs for the drift-between-artifacts track. Rationale, evidence,
 live in [`../ROADMAP-v2-measurement-and-drift.md`](../ROADMAP-v2-measurement-and-drift.md) §2;
 these documents are the build instructions.
 
-| Phase | Doc | Gated? | Depth |
+| Phase | Doc | Status | Depth |
 |---|---|---|---|
-| 0 | [Claim expiry](./phase-0-claim-expiry.md) | **No** — shipped defect | Implementation |
-| 1 | [Dogfood ground-truth on Leonard](./phase-1-dogfood-ground-truth.md) | **No** — sizes the rest | Procedure |
-| 2 | [`doctor --drift`](./phase-2-doctor-drift.md) | Yes | Design |
-| 3 | [Binding model](./phase-3-binding-model.md) | Yes | Sketch |
+| 0 | [Claim expiry](./phase-0-claim-expiry.md) | **Shipped** (`aeb9a61`, schema v9) | Implementation |
+| 1 | [Dogfood ground-truth on Leonard](./phase-1-dogfood-ground-truth.md) | **Run** → [results](./phase-1-results.md) | Procedure |
+| 2 | [`doctor --drift`](./phase-2-doctor-drift.md) | Gated | Design |
+| 3 | [Binding model](./phase-3-binding-model.md) | Gated | Sketch |
+
+## Phase 1 outcome, in one line
+
+The existing machinery **does not** solve this: 2,230 findings across 126 files, **zero** of the
+real drift caught, and a factually-correct README producing 69 false positives. The unsolved
+problem is **claim→fact association**, not truth resolution — which redirects Phase 2 toward
+narrow structural checks and away from the heuristic claim detector. Full result and evidence in
+[`phase-1-results.md`](./phase-1-results.md).
 
 ## The gate
 
