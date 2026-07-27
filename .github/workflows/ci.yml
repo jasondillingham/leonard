@@ -30,6 +30,50 @@ jobs:
           CGO_ENABLED: '0'
         run: go build ./cmd/...
 
+  docs:
+    name: Docs match the code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Leonard exists to catch ground-truth drift, and its own README
+      # still advertised v0.52.0 with "six bug-hunt rounds and two
+      # security reviews" at v0.54.0 with twelve rounds and five
+      # reviews on disk. These checks are cheap and stop that class of
+      # claim from going stale silently again.
+      - name: README version matches cmd/leonard's Version constant
+        run: |
+          code_version=$(grep -oE 'Version = "[0-9]+\.[0-9]+\.[0-9]+"' cmd/leonard/root.go | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          readme_version=$(grep -oE '\*\*Status: v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          echo "code=$code_version readme=$readme_version"
+          if [ "$code_version" != "$readme_version" ]; then
+            echo "::error::README status line says v$readme_version but cmd/leonard/root.go says v$code_version"
+            exit 1
+          fi
+      - name: Version constants agree across all binaries
+        run: |
+          cli=$(grep -oE 'Version = "[0-9.]+"' cmd/leonard/root.go | grep -oE '[0-9.]+')
+          hook=$(grep -oE 'Version = "[0-9.]+"' cmd/leonard-hook/root.go | grep -oE '[0-9.]+')
+          mcp=$(grep -oE 'version = "[0-9.]+"' cmd/leonard-mcp/main.go | grep -oE '[0-9.]+')
+          echo "cli=$cli hook=$hook mcp=$mcp"
+          if [ "$cli" != "$hook" ] || [ "$cli" != "$mcp" ]; then
+            echo "::error::version constants disagree: cli=$cli hook=$hook mcp=$mcp"
+            exit 1
+          fi
+      - name: README bug-hunt table covers every round in audits/
+        run: |
+          # Cheap structural check: every bughunt-N present on disk must
+          # be linked from the README's table. Counts written in prose
+          # ("twelve rounds") are not machine-checked, but a missing row
+          # is the failure mode that actually happened.
+          missing=0
+          for n in $(ls audits/ | grep -oE '^bughunt-[0-9]+' | grep -oE '[0-9]+' | sort -un); do
+            if ! grep -q "audits/bughunt-$n-" README.md; then
+              echo "::error::README's bug-hunt table has no row linking audits/bughunt-$n-*"
+              missing=1
+            fi
+          done
+          exit $missing
+
   rust:
     name: Rust helpers (syn + tree-sitter)
     runs-on: ubuntu-latest

@@ -2,8 +2,10 @@
 
 > *Leonard Hofstadter is the experimentalist who keeps Sheldon's overconfident theorizing tethered to reality. This tool plays the same role for Claude Code.*
 
-**Status:** Draft v0.1 — design phase, no code yet.
-**Last updated:** 2026-05-18
+**Status:** Implemented and shipping as of v0.54.0. This document is the architectural
+reference, not a forward-looking plan — the design below is built. Where the shipped
+system has deliberately diverged from the original plan, §2 and §8 record it.
+**Last updated:** 2026-07-27
 
 ---
 
@@ -35,6 +37,12 @@ These aren't fixable by a better prompt. They need an external system that (a) k
 - Cloud sync, multi-user collaboration.
 - Replacing existing test runners, linters, type checkers — Leonard *invokes* them.
 - Cross-language unified semantic model — each language gets its own parser, no global symbol resolution.
+
+> **Shipped divergence (v1.0):** "cloud sync" was narrowed rather than kept absolute. Leonard still
+> requires no external service to function, but ground-truth facts may opt into resolution by an
+> external *sync plugin* — `cmd/leonard-sync-github` resolves GitHub-backed facts (is PR #123 merged?)
+> when a project explicitly configures `[sync.github]`. Default-off, per-project, and a separate
+> binary. Rationale in [`docs/ROADMAP-v1-ground-truth.md`](./docs/ROADMAP-v1-ground-truth.md).
 
 ## 3. Architecture
 
@@ -218,22 +226,33 @@ than a checked-in TOML field).
 ```
 leonard/
 ├── DESIGN.md                # this file
-├── README.md                # user-facing intro (later)
+├── README.md                # user-facing intro
 ├── go.mod
 ├── cmd/
 │   ├── leonard/             # CLI
 │   ├── leonard-mcp/         # MCP stdio server
-│   └── leonard-hook/        # hook dispatcher
+│   ├── leonard-hook/        # hook dispatcher
+│   └── leonard-sync-github/ # optional sync plugin (GitHub-backed facts)
 ├── internal/
-│   ├── store/               # SQLite layer (sqlc or hand-rolled)
+│   ├── store/               # SQLite layer (hand-rolled, modernc.org/sqlite)
 │   ├── index/               # walker, dispatcher
-│   ├── parse/               # tree-sitter wrappers
+│   ├── parse/               # extractors (stdlib Go, gpython, hand-rolled TS)
 │   │   ├── golang.go
 │   │   ├── python.go
-│   │   └── typescript.go
+│   │   ├── typescript.go
+│   │   ├── rust/            # Cargo crate: syn-based extractor
+│   │   └── treesitter/      # Cargo crate: 29-grammar dispatcher
+│   ├── adapters/            # Adapter contract + registry
+│   │   ├── code/            # the original symbol-index behavior
+│   │   ├── groundtruth/     # prose/claims/facts adapter (+ sync plugins)
+│   │   └── selflog/         # logs truth-file edits
+│   ├── dispatcher/          # loads enabled adapters, fans out, aggregates
 │   ├── mcp/                 # tool implementations
 │   ├── hooks/               # per-hook handlers
-│   └── config/              # config loader
+│   ├── config/              # config loader + verifier trust store
+│   └── telemetry/           # OTel spans (build-tag-gated)
+├── audits/                  # bug-hunt + security-review history
+├── evals/                   # fabrication-rate eval + ground-truth corpus
 ├── testdata/                # sample projects per language
 └── .leonard/                # example config + gitignored DB
 ```
@@ -310,3 +329,9 @@ The historical MVP phases are all complete. Leonard's current state
 - Replacing or competing with: gopls, pyright, language servers in general. Leonard is *adjacent* to LSPs — it serves Claude, not the editor.
 - Long-form documentation extraction (docstrings, README parsing) — symbols only in v1.
 - Anything requiring an LLM call from inside Leonard itself. Leonard is deterministic infrastructure; the LLM lives in Claude Code.
+
+> **Shipped divergence (v1.0):** the ground-truth adapter's claim detector defaults to
+> `ModeHeuristic` — fully deterministic, no model call — but can optionally be pointed at a
+> **local** Ollama endpoint for fuzzy claim extraction (`internal/adapters/groundtruth/llm.go`).
+> Opt-in per project, off by default, and never a hosted API. The deterministic path remains the
+> contract; the LLM path is an enhancement a user must deliberately enable.

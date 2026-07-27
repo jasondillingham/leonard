@@ -31,7 +31,7 @@ eval:
 # canonical install target is `make install`, which puts them in
 # $GOPATH/bin where the Claude Code hook wiring expects them.
 build:
-	go build ./cmd/leonard ./cmd/leonard-hook ./cmd/leonard-mcp
+	go build ./cmd/...
 
 # OTel-instrumented build (build-tag gated). Default builds compile
 # stub spans — this target opts into the real OpenTelemetry SDK on
@@ -54,7 +54,7 @@ build-treesitter:
 # remain discovered from their internal/parse/{rust,treesitter}/
 # target/release/ paths.
 install:
-	go install ./cmd/leonard ./cmd/leonard-hook ./cmd/leonard-mcp
+	go install ./cmd/...
 
 tidy:
 	go mod tidy

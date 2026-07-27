@@ -12,7 +12,7 @@
 
 A local-first, per-project ground-truth toolkit that helps Claude Code avoid hallucinating over the life of a project. Symbol index + decision log + claim ledger, exposed to Claude through MCP and enforced through hooks.
 
-**Status: v0.52.0 — stable.** Self-dogfooded across 46 minor releases with **six bug-hunt rounds and two focused security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
+**Status: v0.54.0 — stable.** Self-dogfooded across 60 releases with **twelve bug-hunt rounds and five security reviews**; every HIGH and CRITICAL finding closed. Audit trail lives under [`audits/`](./audits/). Architecture in [`DESIGN.md`](./DESIGN.md); release history in [`CHANGELOG.md`](./CHANGELOG.md).
 
 **v1.0 in flight** — generalizing Leonard from "code ground-truth" to pluggable ground-truth (code adapter + new ground-truth adapter for prose/claims/facts), plus self-logging of truth changes. Design in [`docs/ROADMAP-v1-ground-truth.md`](./docs/ROADMAP-v1-ground-truth.md); phased work tracked under milestones [v0.6](https://github.com/jasondillingham/leonard/milestone/1)–[v1.0](https://github.com/jasondillingham/leonard/milestone/5).
 
@@ -120,7 +120,7 @@ Four manifest formats emit one Symbol per declared dependency with `kind="depend
 
 ## Bug-hunt discipline
 
-Leonard's quality comes from a recurring loop: **bug-hunt → triage → fix → repeat**. Six rounds + two focused security reviews have shaped the codebase:
+Leonard's quality comes from a recurring loop: **bug-hunt → triage → fix → repeat**. Twelve rounds + five security reviews have shaped the codebase:
 
 | Round | Surface audited | Findings | Documented as |
 |---|---|---|---|
@@ -131,8 +131,16 @@ Leonard's quality comes from a recurring loop: **bug-hunt → triage → fix →
 | Bughunt #4 | v0.7–v0.12 surfaces | 4 HIGH | [`audits/bughunt-4-triage.md`](./audits/bughunt-4-triage.md) |
 | Bughunt #5 | v0.19–v0.38 surfaces (tree-sitter + ledger hygiene) | 3 HIGH | [`audits/bughunt-5-triage.md`](./audits/bughunt-5-triage.md) |
 | Bughunt #6 + Security #2 | v0.39–v0.45.1 surfaces (post-edit verifier, audits/ move) | **1 CRITICAL** + 9 HIGH | [`audits/bughunt-6-triage.md`](./audits/bughunt-6-triage.md) |
+| Bughunt #7 | v0.49.0 — re-walk of the #6 carry-over backlog, promotion check | investigation-only | [`audits/bughunt-7-carryover.md`](./audits/bughunt-7-carryover.md) |
+| Security #3 | v0.49.0 cross-cutting security review | — | [`audits/security-3-review.md`](./audits/security-3-review.md) |
+| Bughunt #8 | v0.50.2 — fix verification + new-surface probe | investigation-only | [`audits/bughunt-8-verify.md`](./audits/bughunt-8-verify.md) |
+| Security #4 | v0.50.2 cross-cutting security review | — | [`audits/security-4-review.md`](./audits/security-4-review.md) |
+| Bughunt #9 | v0.51.0 — fix verification + security pass (iteration 3) | investigation-only | [`audits/bughunt-9-iteration-3.md`](./audits/bughunt-9-iteration-3.md) |
+| Bughunt #10 | v0.52.0 — fix verification + security pass (iteration 4) | investigation-only | [`audits/bughunt-10-iteration-4.md`](./audits/bughunt-10-iteration-4.md) |
+| Bughunt #11 + Security #5 | v1.0 release gate | all HIGH + MEDIUM landed | [`audits/bughunt-11-findings.md`](./audits/bughunt-11-findings.md) |
+| Bughunt #12 | v0.52 + in-flight v0.53 — full L1–L8 sweep (cap edges, index correctness, concurrency, ground-truth adapter, MCP protocol fuzz, dogfood UX, path-trust on macOS/APFS) | 46 findings, 3 HIGH | [`audits/bughunt-12-findings.md`](./audits/bughunt-12-findings.md) |
 
-Every CRITICAL and HIGH severity finding has been closed (CRITICAL was the v0.46.0 RCE-chain fix — see [`audits/security-2-review.md`](./audits/security-2-review.md)). Most MEDIUMs too — the remainder live in the deferred lists per round.
+Every CRITICAL and HIGH severity finding has been closed (CRITICAL was the v0.46.0 RCE-chain fix — see [`audits/security-2-review.md`](./audits/security-2-review.md)). Most MEDIUMs too — the remainder live in the deferred lists per round. Rounds #7–#10 were verification passes over prior fix rounds rather than new-finding sweeps; the full index, including per-lane documents, lives in [`audits/README.md`](./audits/README.md).
 
 ## Install
 
@@ -236,18 +244,21 @@ command-string scanner).
 ## Project layout
 
 ```
-cmd/{leonard,leonard-mcp,leonard-hook}    # the three binaries
-internal/store                            # SQLite-backed data layer (schema v7)
+cmd/{leonard,leonard-mcp,leonard-hook}    # the three primary binaries
+cmd/leonard-sync-github                   # optional sync plugin: resolves GitHub-backed facts
+internal/store                            # SQLite-backed data layer (schema v8)
 internal/index                            # file walker + incremental dispatch
 internal/parse                            # extractors — Go, Python, Rust, TypeScript natively; everything else via subprocess
 internal/parse/rust                       # Cargo crate: syn-based Rust extractor
-internal/parse/treesitter                 # Cargo crate: tree-sitter dispatcher (26 grammars)
+internal/parse/treesitter                 # Cargo crate: tree-sitter dispatcher (29 grammars)
+internal/adapters                         # Adapter contract + registry (code, ground-truth, selflog)
+internal/dispatcher                       # loads enabled adapters, fans hook events out, aggregates verdicts
 internal/mcp                              # MCP tool handlers + StoreAdapter
 internal/hooks                            # PreToolUse / PostToolUse / SessionStart / Stop handlers
-internal/config                           # .leonard/config.toml loader
+internal/config                           # .leonard/config.toml loader + verifier trust store
 internal/telemetry                        # OTel instrumentation (build-tag-gated)
 examples/pydantic-ai                      # Python demo wiring leonard-mcp into a pydantic-ai agent
-evals/inspect                             # Anthropic Inspect eval framework for fabrication rate
+evals/inspect                             # Inspect (UK AI Security Institute) eval for fabrication rate
 ```
 
 ## Telemetry (optional)

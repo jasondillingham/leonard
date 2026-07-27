@@ -2,6 +2,7 @@
 /leonard
 /leonard-mcp
 /leonard-hook
+/leonard-sync-github
 
 # Per-project store and runtime state
 .leonard/leonard.db

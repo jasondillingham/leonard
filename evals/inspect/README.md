@@ -2,7 +2,7 @@
 
 The premise of this project is that grounding Claude in a real symbol
 index reduces fabricated API references. This eval measures that
-premise directly using Anthropic's
+premise directly using the UK AI Security Institute's
 [Inspect](https://inspect.aisi.org.uk/) framework. It's the receipt.
 
 ## What it measures
