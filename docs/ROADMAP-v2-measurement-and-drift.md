@@ -138,6 +138,123 @@ The tempting move is to fix all five issues and then run. The better order is:
 
 **Deliverable:** one table, four arms, stated caveats, reproducible command.
 
+### 1.5 Phase 3 — the ablation harness
+
+**Gated on §1.4 step 2.** Build this only if the first real run shows a moderate effect. If the
+effect is enormous, a table with honest caveats is enough and this is over-engineering. Written
+now so it's ready when the number lands, not as a commitment to build it.
+
+The proper name for what this does is an **ablation study**: vary one component at a time and
+measure what each contributes. Inspect 0.3.223 (already pinned) supplies the runner — epochs,
+multiple arms per run, log persistence, comparison viewer. The engineering is small. The
+statistics are the entire game.
+
+#### The matrix
+
+Replace the hardcoded task functions with a parameterized cross product:
+
+| Dimension | Values |
+|---|---|
+| Tools | none, Leonard MCP |
+| Prompt | bare, grounding instruction, grounding + tool nudge |
+| Model's index state | full, stale, **empty** |
+
+Index state is meaningless when tools are off, so the space is 3 + (3 × 3) = **12 cells**, not 18.
+
+#### The ablation that justifies the harness
+
+**Empty index.** The model can still call `verify_symbol`; it just gets "not found" for
+everything.
+
+If the empty-index arm scores as well as the full-index arm, Leonard's benefit is not grounding —
+it is that handing a model verification tools makes it more cautious. That is a placebo effect and
+nothing currently rules it out. If full clearly beats empty, the index's contribution is isolated
+and the claim becomes defensible.
+
+No other cell in the matrix separates *"grounding works"* from *"tools make models careful."* This
+experiment alone is worth the harness.
+
+#### A design detail that is easy to get wrong
+
+**The scorer's index is the oracle; the model's index is the treatment. They must be decoupled.**
+
+Today both derive from the same `PROJECT_ROOT` — `mcp_server_stdio(cwd=PROJECT_ROOT)` for the
+model's tools, `fabrication_scorer(PROJECT_ROOT)` for the oracle. They are already separate
+parameters that happen to be assigned the same value, so splitting them is a small change:
+
+- `model_index_root` — varies per cell (full / stale / empty fixture)
+- `oracle_root` — **always** the real, fully-indexed repo
+
+Wire these together and a stale-index arm would be scored against a stale oracle, which would make
+fabrications look correct. That would invert the result silently, which is the worst failure mode
+an eval can have.
+
+Fixtures: *empty* is an `init`-ed but never-`index`-ed store; *stale* is the tree indexed at an
+older commit while samples are written against current.
+
+#### Pre-registration
+
+The matrix invites 12-cell fishing. Multiple comparisons inflate false positives, so declare the
+hypotheses before running:
+
+- **Primary:** `tools=leonard, index=full, prompt=bare` vs `tools=none, prompt=bare`.
+  Isolates tools + index with prompt held constant. This is the headline number.
+- **Secondary:** `index=empty` vs `index=full` (both tools on, prompt bare). The placebo test.
+- **Tertiary:** `prompt=grounding` vs `prompt=bare` (both tools off). Isolates the instruction —
+  the confound described in §1.3.
+
+Everything else is exploratory and should be reported as such.
+
+#### Power targets
+
+Two-proportion test, α = 0.05 two-sided, 80% power, independent samples:
+
+| Control → treated | Samples per arm |
+|---|---|
+| 40% → 60% | 97 |
+| 50% → 70% | 93 |
+| 50% → 80% | 39 |
+| 40% → 80% | 23 |
+| 30% → 90% | 10 |
+| 20% → 95% | 6 |
+
+At n=7 only a very large effect is detectable. That is the gate in §1.4: if the first run lands
+near the bottom rows, we are done and this harness is unnecessary. If it lands near the top, the
+dataset needs to grow to roughly 40–100 samples before any comparison means anything.
+
+#### Epochs are not a substitute for samples
+
+Inspect's `--epochs` re-runs each sample N times. This reduces variance from **model
+stochasticity** — it does not buy **generalization**. Twenty epochs over 7 prompts measures those
+7 prompts precisely; it says little about coding tasks in general, because observations within a
+sample are correlated and effective n is far below raw observation count.
+
+- More epochs → "this result is reproducible"
+- More samples → "this result generalizes"
+
+Both are worth having; treating them as interchangeable is how eval results get quietly
+overstated.
+
+#### Held-out split
+
+Once the harness can hill-climb (change a hook heuristic, re-run, keep what helps), overfitting
+becomes the dominant risk. With 7 prompts, tuning against the full set fits noise, and the
+published number becomes the number that was overfit to.
+
+Grow the dataset first, then split: tune on dev, report on held-out data never used for tuning.
+The current 7 samples are a reasonable dev set; the held-out set should be written fresh.
+
+#### Cost
+
+12 cells × n samples × epochs. At n=40 with 3 epochs that is ~1,440 model calls per full sweep.
+Run the three pre-registered comparisons at full power and the exploratory cells at reduced n.
+
+#### Regression use
+
+Tie every run to a git SHA. The sweep then doubles as a guard against Leonard regressing its own
+value proposition — a stronger version of the `docs` CI check added in `3f01e7b`, and the only
+mechanism proposed here that would catch a heuristic change that quietly makes fabrication worse.
+
 ---
 
 ## 2. Track B — drift between artifacts
@@ -216,13 +333,18 @@ spent a day instead of a quarter.
 
 ## 3. Sequencing
 
-1. **Track A steps 1–2** — a real number. Days, not weeks; most of the work is done.
+1. **Track A steps 1–2** (§1.4) — a real number. Days, not weeks; most of the work is done.
 2. **Decide the bet.** A large effect argues for investing in the code side. A small one argues
    the claim ledger is the durable half, which is my prior for a separate reason: symbol indexing
    is in a race against model scale and context growth, while *"what has this project publicly
    committed to, and does this draft contradict it?"* is not a problem bigger models solve.
-3. **Track A step 3–4** — defensible number, committed results.
-4. **Track B minimal** — `leonard doctor --drift`.
+3. **Track A steps 3–4** (§1.4) — defensible number, committed results.
+4. **Track A phase 3** (§1.5) — the ablation harness, **only if step 2 showed a moderate effect**.
+   The empty-index arm is the reason to build it; if it can't be run, don't build the rest.
+5. **Track B minimal** — `leonard doctor --drift`.
+
+The branch point is step 2. Everything after it is contingent, and the plan should not pretend
+otherwise until a number exists.
 
 ## 4. Operational note
 
