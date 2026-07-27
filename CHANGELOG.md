@@ -7,6 +7,44 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.55.0 — incident-1: session-start hook runaway (1 HIGH)
+
+**Fixes the session-start CPU runaway observed live on 2026-07-27**
+(full write-up: [`audits/incident-1-session-start-runaway.md`](audits/incident-1-session-start-runaway.md)).
+A `leonard-hook session-start` invocation in a project with a
+non-hidden `truth_dir` and a large machine-appended `audit-log.md`
+spun at ~2 cores for hours as an orphan and ignored SIGTERM. Three
+compounding defects, all closed:
+
+- **Fuzzy-scan hot path** — `findFuzzyOccurrences` now rejects on
+  word-boundary and F016 edge rules BEFORE running the Levenshtein DP
+  (the left-edge check skips mid-word offsets without entering the
+  window loop at all), and the DP rows are allocated once per call
+  (`levenshteinBuf`) instead of twice per window. 100 KB haystack,
+  one rule: 140 ms → 6.9 ms, 600k allocs → 5. Match semantics
+  unchanged; all pre-existing fuzzy/boundary/F014/F016 tests pass
+  unmodified.
+- **Session-start scan scope + budget** — the ground-truth truth dir
+  is excluded from the `.md` walk (scanning it is circular:
+  `do-not-claim.md` matches its own rules, and `audit-log.md` grows
+  without bound); files over 1 MiB are skipped with a stderr note;
+  the scan observes ctx and a 5 s wall-clock budget between files and
+  reports a partial-scan note when truncated. `truthDir` is resolved
+  against the canonicalized project root (and symlink-resolved) so
+  the exclusion holds on macOS `/var` vs `/private/var`.
+- **Process lifetime guarantee** — `leonard-hook` now runs under a
+  55 s wall-clock deadline (below Claude Code's 60 s default hook
+  timeout) with a watchdog that force-exits (code 1, never the
+  blocking 2) if a handler is still running 10 s after context
+  cancellation. A hook can no longer become a SIGTERM-immune orphan:
+  the old code trapped SIGTERM into a context that the scan loop
+  never checked.
+
+New regression tests: `TestSessionStart_ExcludesTruthDir`,
+`TestSessionStart_CancelledContextReportsPartialScan`,
+`TestSessionStart_SkipsOversizeFiles`,
+`BenchmarkFindFuzzyOccurrences_LargeHaystack`.
+
 ## v0.54.0 — bughunt-12 sweep (3 HIGH + 32 MEDIUM/LOW)
 
 **35 commits closing every addressable finding from the bughunt-12 audit**

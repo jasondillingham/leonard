@@ -25,9 +25,40 @@ import (
 // patience window.
 const telemetryShutdownTimeout = 5 * time.Second
 
+// hookWallClockBudget is the hard ceiling on one hook invocation's
+// lifetime. Claude Code's default hook timeout is 60s — but timing
+// out only means Claude Code stops WAITING; the child keeps running.
+// incident-1: a session-start scan that ignored ctx spun at 2 cores
+// for hours as an orphan after SIGTERM (the signal was trapped by
+// NotifyContext, cancelling a context nobody checked). The deadline
+// plus the watchdog below guarantee the process dies regardless of
+// what a handler does.
+const hookWallClockBudget = 55 * time.Second
+
+// watchdogGrace is how long the watchdog waits after ctx cancellation
+// (signal or deadline) before force-exiting. Longer than
+// telemetryShutdownTimeout so a well-behaved wind-down, including the
+// telemetry flush, is never cut short.
+const watchdogGrace = telemetryShutdownTimeout + 5*time.Second
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancelBudget := context.WithTimeout(ctx, hookWallClockBudget)
+	defer cancelBudget()
+
+	// Watchdog: once the context is cancelled — SIGTERM/SIGINT or the
+	// wall-clock budget — a handler that fails to observe ctx gets
+	// watchdogGrace to finish before the process is force-killed. On
+	// the normal path ctx is never cancelled and this goroutine parks
+	// until process exit. Exit code 1: a plain error to Claude Code,
+	// never the blocking exit 2.
+	go func() {
+		<-ctx.Done()
+		time.Sleep(watchdogGrace)
+		fmt.Fprintf(os.Stderr, "leonard-hook: watchdog: handler still running %s after cancellation (%v); forcing exit\n", watchdogGrace, context.Cause(ctx))
+		os.Exit(1)
+	}()
 
 	// Optional OpenTelemetry tracing. No-op by default; only the
 	// `-tags otel` build pulls in the SDK and reads OTEL_* env vars

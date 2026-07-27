@@ -53,6 +53,24 @@ func findFuzzyOccurrences(haystack, needle string, threshold int) []span {
 	// exact-length span rather than a truncated one.
 	sizes := orderedWindowSizes(nLen, minW, maxW)
 
+	// Word-boundary edges of the needle, hoisted out of the scan.
+	// incident-1: these checks used to run AFTER the Levenshtein DP,
+	// so every mid-word byte offset in the haystack paid for a full
+	// DP table only to have the match rejected on the boundary rule.
+	// Rejecting on boundaries first skips the DP for the ~5-in-6
+	// positions that sit inside a word.
+	needleStartsWord := isWordByte(needle[0])
+	needleEndsWord := isWordByte(needle[len(needle)-1])
+
+	// Shared DP rows, reused across every window (incident-1: the
+	// per-window allocations dominated GC time on large files).
+	bufLen := nLen
+	if maxW > bufLen {
+		bufLen = maxW
+	}
+	prevRow := make([]int, bufLen+1)
+	currRow := make([]int, bufLen+1)
+
 	var fuzzy []span
 	i := 0
 	for i <= hLen-minW {
@@ -65,6 +83,14 @@ func findFuzzyOccurrences(haystack, needle string, threshold int) []span {
 			continue
 		}
 
+		// Left word boundary depends only on i — check it before
+		// trying any window. Same rule hasWordBoundaries applies:
+		// only required when the needle itself starts on a word char.
+		if needleStartsWord && i > 0 && isWordByte(haystack[i-1]) {
+			i++
+			continue
+		}
+
 		matched := false
 		for _, w := range sizes {
 			if i+w > hLen {
@@ -73,30 +99,28 @@ func findFuzzyOccurrences(haystack, needle string, threshold int) []span {
 			if _, hits := spanOverlap(i, i+w, exact); hits {
 				continue
 			}
-			window := hLower[i : i+w]
-			if levenshtein(window, nLower, threshold) <= threshold {
-				// #85: same word-boundary rule as findAllOccurrences
-				// — fuzzy windows that extend past a word edge of
-				// the needle shouldn't claim a match. The needle's
-				// edges drive the requirement; punctuation-edged
-				// needles skip the check on that side.
-				if !hasWordBoundaries(haystack, i, i+w, needle) {
+			// Right word boundary — the cheap half of the old
+			// post-DP hasWordBoundaries call, applied before the
+			// DP instead of after.
+			if needleEndsWord && i+w < hLen && isWordByte(haystack[i+w]) {
+				continue
+			}
+			// F016: when the window grew beyond the needle's
+			// length (one-insertion match), the first extra
+			// character at the right edge must not be a word
+			// char while the needle itself ends on a word char.
+			// Without this check, "Scrum mastery" (w=13)
+			// matches rule "Scrum master" (nLen=12) because
+			// the boundary check looks at haystack[end] = ' '
+			// (space after "mastery") instead of the 'y' that
+			// extends the match into the longer word.
+			if w > nLen && isWordByte(needle[nLen-1]) {
+				if edgePos := i + nLen; edgePos < hLen && isWordByte(haystack[edgePos]) {
 					continue
 				}
-				// F016: when the window grew beyond the needle's
-				// length (one-insertion match), the first extra
-				// character at the right edge must not be a word
-				// char while the needle itself ends on a word char.
-				// Without this check, "Scrum mastery" (w=13)
-				// matches rule "Scrum master" (nLen=12) because
-				// hasWordBoundaries looks at haystack[end] = ' '
-				// (space after "mastery") instead of the 'y' that
-				// extends the match into the longer word.
-				if w > nLen && isWordByte(needle[nLen-1]) {
-					if edgePos := i + nLen; edgePos < hLen && isWordByte(haystack[edgePos]) {
-						continue
-					}
-				}
+			}
+			window := hLower[i : i+w]
+			if levenshteinBuf(window, nLower, threshold, prevRow, currRow) <= threshold {
 				// F014: reject numeric near-misses. A 1-edit
 				// change that modifies a digit (e.g. "53 releases"
 				// vs rule "52 releases") is a semantically
@@ -186,8 +210,21 @@ func orderedWindowSizes(target, minW, maxW int) []int {
 // levenshtein computes the Levenshtein distance between a and b,
 // bounded above by `cap`. When the partial distance exceeds cap the
 // function returns cap+1 (early exit). Standard two-row DP, O(min(n,m))
-// space.
+// space. Allocates its own rows; hot paths that call this in a loop
+// should use levenshteinBuf with reusable buffers instead.
 func levenshtein(a, b string, cap int) int {
+	n := len(a)
+	if len(b) > n {
+		n = len(b)
+	}
+	return levenshteinBuf(a, b, cap, make([]int, n+1), make([]int, n+1))
+}
+
+// levenshteinBuf is levenshtein with caller-supplied row buffers so a
+// scan loop can amortize the allocations (incident-1: the per-window
+// make calls dominated GC time when fuzzy-scanning large files). Both
+// buffers must have len >= min(len(a), len(b)) + 1.
+func levenshteinBuf(a, b string, cap int, prevBuf, currBuf []int) int {
 	if a == b {
 		return 0
 	}
@@ -200,7 +237,7 @@ func levenshtein(a, b string, cap int) int {
 	}
 
 	// Diff in length is a lower bound on the distance — short-circuit
-	// before allocating the DP table.
+	// before touching the DP table.
 	diff := la - lb
 	if diff < 0 {
 		diff = -diff
@@ -215,8 +252,8 @@ func levenshtein(a, b string, cap int) int {
 		la, lb = lb, la
 	}
 
-	prev := make([]int, lb+1)
-	curr := make([]int, lb+1)
+	prev := prevBuf[:lb+1]
+	curr := currBuf[:lb+1]
 	for j := 0; j <= lb; j++ {
 		prev[j] = j
 	}

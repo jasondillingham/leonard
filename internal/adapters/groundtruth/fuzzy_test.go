@@ -234,3 +234,21 @@ func TestOrderedWindowSizes_TargetFirst(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkFindFuzzyOccurrences_LargeHaystack models the incident-1
+// shape: a large prose haystack fuzzy-scanned against a realistic
+// rule needle at the default threshold. Before the boundary-first
+// rejection + DP-buffer reuse this ran the Levenshtein DP at every
+// byte offset with two fresh allocations per window.
+func BenchmarkFindFuzzyOccurrences_LargeHaystack(b *testing.B) {
+	chunk := "The team shipped the release on time and the customers were satisfied with the quality of the work delivered. "
+	haystack := ""
+	for len(haystack) < 100_000 {
+		haystack += chunk
+	}
+	needle := "the release shipped ahead of schedule"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		findFuzzyOccurrences(haystack, needle, 1)
+	}
+}

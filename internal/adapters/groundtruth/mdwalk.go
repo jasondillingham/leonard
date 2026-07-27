@@ -27,9 +27,23 @@ var SkipDirs = map[string]bool{
 }
 
 // walkMDFiles returns up to cap .md files under root, skipping SkipDirs,
-// hidden directories, and any path matched by ig (when non-nil). capped is
-// true when the walk was stopped early because cap was reached.
-func walkMDFiles(root string, cap int, ig *ignore.GitIgnore) (targets []string, capped bool, err error) {
+// hidden directories, any path matched by ig (when non-nil), and any
+// directory listed in excludeDirs (absolute paths, compared cleaned).
+// capped is true when the walk was stopped early because cap was reached.
+//
+// excludeDirs exists for the ground-truth truth_dir (incident-1): the
+// truth tree is the evidence the detector checks claims AGAINST, so
+// scanning it for claims is circular — do-not-claim.md matches its own
+// rules by definition, and audit-log.md is a machine-appended log that
+// grows without bound (834 KB in the job-hunt dogfood project, which
+// turned the session-start fuzzy scan into an hours-long CPU burn).
+func walkMDFiles(root string, cap int, ig *ignore.GitIgnore, excludeDirs ...string) (targets []string, capped bool, err error) {
+	excluded := make(map[string]bool, len(excludeDirs))
+	for _, d := range excludeDirs {
+		if d != "" {
+			excluded[filepath.Clean(d)] = true
+		}
+	}
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkerr error) error {
 		if walkerr != nil {
 			return nil
@@ -38,6 +52,9 @@ func walkMDFiles(root string, cap int, ig *ignore.GitIgnore) (targets []string, 
 		if d.IsDir() {
 			name := d.Name()
 			if SkipDirs[name] || (strings.HasPrefix(name, ".") && name != ".") {
+				return filepath.SkipDir
+			}
+			if excluded[filepath.Clean(path)] {
 				return filepath.SkipDir
 			}
 			if ig != nil && ig.MatchesPath(rel) {

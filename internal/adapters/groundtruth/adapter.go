@@ -82,15 +82,36 @@ func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error 
 		return err
 	}
 
+	// Canonicalize the project root once, so trust lookups (which
+	// hash projectRoot to derive the trust-file path) match no
+	// matter how the caller spelled the directory. On macOS
+	// t.TempDir() returns the unresolved /var/folders form while
+	// os.Getwd() after chdir returns the resolved /private/var/
+	// folders form; without canonicalization the two hashes diverge
+	// and a trust grant from the CLI doesn't satisfy the adapter's
+	// trust check.
+	canonRoot := cfg.ProjectRoot
+	if resolved, err := filepath.EvalSymlinks(cfg.ProjectRoot); err == nil {
+		canonRoot = resolved
+	}
+
 	// truth_dir is project-relative by default. The historical
 	// implementation force-prepended ".leonard/" before joining,
 	// which trapped operators who wanted their truth tree at e.g.
 	// "source-of-truth/" at the project root. v0.53 makes the
 	// path operator-controlled: relative paths join directly to
 	// projectRoot, absolute paths pass through unchanged.
+	//
+	// Resolved against canonRoot (and symlink-canonicalized itself)
+	// so path comparisons against walk results — the session-start
+	// truth-dir exclusion — hold on macOS where /var and
+	// /private/var name the same directory.
 	truthDir := parsed.TruthDir
 	if !filepath.IsAbs(truthDir) {
-		truthDir = filepath.Join(cfg.ProjectRoot, truthDir)
+		truthDir = filepath.Join(canonRoot, truthDir)
+	}
+	if resolved, err := filepath.EvalSymlinks(truthDir); err == nil {
+		truthDir = resolved
 	}
 
 	// Resolve stderr early so we can write warnings during loading.
@@ -131,19 +152,6 @@ func (a *GroundTruthAdapter) Init(_ context.Context, cfg adapters.Config) error 
 	hasAudit, err := auditLogPresent(filepath.Join(truthDir, "audit-log.md"))
 	if err != nil {
 		return err
-	}
-
-	// Canonicalize the project root once, so trust lookups (which
-	// hash projectRoot to derive the trust-file path) match no
-	// matter how the caller spelled the directory. On macOS
-	// t.TempDir() returns the unresolved /var/folders form while
-	// os.Getwd() after chdir returns the resolved /private/var/
-	// folders form; without canonicalization the two hashes diverge
-	// and a trust grant from the CLI doesn't satisfy the adapter's
-	// trust check.
-	canonRoot := cfg.ProjectRoot
-	if resolved, err := filepath.EvalSymlinks(cfg.ProjectRoot); err == nil {
-		canonRoot = resolved
 	}
 
 	a.mu.Lock()

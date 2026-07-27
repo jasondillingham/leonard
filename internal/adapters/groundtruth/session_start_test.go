@@ -128,6 +128,109 @@ func TestSessionStart_ForbiddenFindings(t *testing.T) {
 	}
 }
 
+// TestSessionStart_ExcludesTruthDir confirms the truth tree itself is
+// not scanned for claims (incident-1): do-not-claim.md matches its own
+// rules by definition, and audit-log.md is machine-appended and grows
+// without bound. Uses a non-hidden truth_dir — the default
+// .leonard/ground-truth location is already pruned as a dotdir, which
+// masked this for every project that kept the default.
+func TestSessionStart_ExcludesTruthDir(t *testing.T) {
+	root := t.TempDir()
+	gtDir := filepath.Join(root, "source-of-truth")
+	if err := os.MkdirAll(gtDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for name, body := range map[string]string{
+		"facts.yaml":      "tech_stack:\n  primary_language: Go\n",
+		"stories.md":      "# Stories\n",
+		"do-not-claim.md": "## Compliance\n\n- ❌ \"HIPAA-compliant\" — Not certified.\n",
+		"filters.yaml":    "",
+		// Machine-appended log inside the truth dir repeating the
+		// forbidden phrase — must not be scanned.
+		"audit-log.md": "logged: HIPAA-compliant claim denied\n",
+	} {
+		if err := os.WriteFile(filepath.Join(gtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("Ordinary prose.\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	a := groundtruth.New()
+	err := a.Init(context.Background(), adapters.Config{
+		ProjectRoot: root,
+		Raw:         map[string]any{"truth_dir": "source-of-truth/"},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	res, err := a.(*groundtruth.GroundTruthAdapter).SessionStart(context.Background(), adapters.SessionStartPayload{})
+	if err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	if strings.Contains(res.AdditionalContext, "forbidden") {
+		t.Errorf("truth dir should be excluded from the scan; got forbidden in output: %q", res.AdditionalContext)
+	}
+	// Only README.md should have been scanned — the five truth-tree
+	// files must not count toward the total.
+	if !strings.Contains(res.AdditionalContext, "1 .md files") {
+		t.Errorf("want exactly 1 file scanned (README.md), got %q", res.AdditionalContext)
+	}
+}
+
+// TestSessionStart_CancelledContextReportsPartialScan confirms the scan
+// observes ctx cancellation between files (incident-1: the scan ignored
+// ctx entirely, so SIGTERM was trapped by main's NotifyContext while
+// the loop spun on).
+func TestSessionStart_CancelledContextReportsPartialScan(t *testing.T) {
+	a := sessionStartFixture(t,
+		"tech_stack:\n  primary_language: Go\n",
+		"# rules\n",
+		map[string]string{
+			"doc.md": "Ordinary prose.",
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res, err := a.SessionStart(ctx, adapters.SessionStartPayload{})
+	if err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	if !strings.Contains(res.AdditionalContext, "partial") {
+		t.Errorf("cancelled ctx: want partial-scan note, got %q", res.AdditionalContext)
+	}
+	if !strings.Contains(res.AdditionalContext, "0 .md files") {
+		t.Errorf("cancelled ctx: want 0 files scanned, got %q", res.AdditionalContext)
+	}
+}
+
+// TestSessionStart_SkipsOversizeFiles confirms files past the
+// per-file size cap are skipped rather than fed to the detector
+// (incident-1: an 834 KB machine-generated .md dominated scan cost).
+func TestSessionStart_SkipsOversizeFiles(t *testing.T) {
+	big := strings.Repeat("Our platform is HIPAA-compliant for healthcare.\n", 1<<20/48+1)
+	a := sessionStartFixture(t,
+		"tech_stack:\n  primary_language: Go\n",
+		"## Compliance\n\n- ❌ \"HIPAA-compliant\" — Not certified.\n",
+		map[string]string{
+			"huge-generated-log.md": big,
+			"README.md":             "Ordinary prose.",
+		},
+	)
+	res, err := a.SessionStart(context.Background(), adapters.SessionStartPayload{})
+	if err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	if strings.Contains(res.AdditionalContext, "forbidden") {
+		t.Errorf("oversize file should be skipped; got forbidden in output: %q", res.AdditionalContext)
+	}
+	if !strings.Contains(res.AdditionalContext, "1 .md files") {
+		t.Errorf("want exactly 1 file scanned (README.md), got %q", res.AdditionalContext)
+	}
+}
+
 // TestSessionStart_SkipsBuildDirs confirms that directories like
 // node_modules and vendor are excluded from the scan.
 func TestSessionStart_SkipsBuildDirs(t *testing.T) {
