@@ -552,6 +552,76 @@ func (s *Store) ReplaceSymbols(filePath string, syms []Symbol) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := replaceSymbolsTx(tx, filePath, syms); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: ReplaceSymbols commit: %w", err)
+	}
+	return nil
+}
+
+// ReplaceFileSymbols upserts f and replaces the symbols for f.Path in a
+// SINGLE transaction.
+//
+// Splitting these across two transactions corrupts the index. indexAbs
+// committed the file row carrying the NEW content hash, then wrote
+// symbols separately; a crash or a lock timeout in between left the new
+// hash paired with the previous parse's symbols. The hash-skip at the
+// top of indexAbs then matches on every later run, so the file is never
+// re-parsed and the bad pairing is permanent — the index silently
+// reports stale symbols as ground truth, which is the one failure mode
+// this tool exists to prevent.
+//
+// The file row must be written before the symbols: symbols.file_path is
+// a FOREIGN KEY into files(path) and foreign_keys is ON (see Open).
+func (s *Store) ReplaceFileSymbols(f File, syms []Symbol) error {
+	if f.Path == "" {
+		return errors.New("store: ReplaceFileSymbols: empty path")
+	}
+	if f.IndexedAt == 0 {
+		f.IndexedAt = time.Now().Unix()
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: ReplaceFileSymbols begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := upsertFileTx(tx, f); err != nil {
+		return err
+	}
+	if err := replaceSymbolsTx(tx, f.Path, syms); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: ReplaceFileSymbols commit %q: %w", f.Path, err)
+	}
+	return nil
+}
+
+// upsertFileTx is UpsertFile's body, scoped to an open transaction so
+// callers can compose it with other writes atomically. Assumes
+// f.IndexedAt is already defaulted.
+func upsertFileTx(tx *sql.Tx, f File) error {
+	_, err := tx.Exec(`INSERT INTO files(path, hash, language, size_bytes, indexed_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET
+			hash       = excluded.hash,
+			language   = excluded.language,
+			size_bytes = excluded.size_bytes,
+			indexed_at = excluded.indexed_at`,
+		f.Path, f.Hash, f.Language, f.SizeBytes, f.IndexedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: UpsertFile %q: %w", f.Path, err)
+	}
+	return nil
+}
+
+// replaceSymbolsTx is ReplaceSymbols' body, scoped to an open
+// transaction. See ReplaceSymbols for the tag-rewriting contract.
+func replaceSymbolsTx(tx *sql.Tx, filePath string, syms []Symbol) error {
 	if _, err := tx.Exec(`DELETE FROM symbols WHERE file_path = ?`, filePath); err != nil {
 		return fmt.Errorf("store: ReplaceSymbols clear: %w", err)
 	}
@@ -589,9 +659,6 @@ func (s *Store) ReplaceSymbols(filePath string, syms []Symbol) error {
 		if sym.ID != 0 {
 			tagToID[sym.ID] = realID
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: ReplaceSymbols commit: %w", err)
 	}
 	return nil
 }

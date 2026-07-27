@@ -249,6 +249,42 @@ type Indexer struct {
 	// protects parseFailures append from the data race.
 	parseFailuresMu sync.Mutex
 	parseFailures   []ParseFailure
+
+	// storeErrors collects persistence failures — a write that did not
+	// commit, or a read that could not be performed. These are distinct
+	// from parseFailures: a parse failure is a fact about the source
+	// file and is expected in normal operation, whereas a store error
+	// means the index on disk is incomplete. IndexAll previously
+	// discarded them entirely (`_ = i.indexAbs(path)`), so `leonard
+	// index` reported success while writes were failing. Guarded by the
+	// same worker-pool concurrency as parseFailures.
+	storeErrorsMu sync.Mutex
+	storeErrors   []StoreError
+}
+
+// StoreError is a persistence failure recorded against a specific file
+// during indexing.
+type StoreError struct {
+	Path    string
+	Message string
+}
+
+// recordStoreError appends a persistence failure. Safe for concurrent
+// use by the IndexAll worker pool.
+func (i *Indexer) recordStoreError(path string, err error) {
+	i.storeErrorsMu.Lock()
+	defer i.storeErrorsMu.Unlock()
+	i.storeErrors = append(i.storeErrors, StoreError{Path: path, Message: err.Error()})
+}
+
+// StoreErrors returns a copy of the persistence failures accumulated
+// since the indexer was created.
+func (i *Indexer) StoreErrors() []StoreError {
+	i.storeErrorsMu.Lock()
+	defer i.storeErrorsMu.Unlock()
+	out := make([]StoreError, len(i.storeErrors))
+	copy(out, i.storeErrors)
+	return out
 }
 
 // New returns an Indexer rooted at root. The root is cleaned and converted
@@ -372,7 +408,21 @@ func (i *Indexer) IndexAll() error {
 	// this sweep, deleting a file and re-running `leonard index` left
 	// the stale row in the store — verify_symbol kept returning
 	// matches for code that no longer existed. Bughunt-2 cli F2.
-	return i.pruneStaleFiles()
+	if err := i.pruneStaleFiles(); err != nil {
+		return err
+	}
+
+	// Fail loudly when any file failed to persist. The worker pool
+	// discards indexAbs' return value, so before this check a store
+	// that rejected every write still produced a clean `leonard index`
+	// and an index the operator believed was complete. Parse failures
+	// stay non-fatal — they are reported separately via ParseFailures
+	// and are a normal property of a mixed-language tree.
+	if errs := i.StoreErrors(); len(errs) > 0 {
+		return fmt.Errorf("index: %d file(s) failed to persist; first: %s: %s",
+			len(errs), errs[0].Path, errs[0].Message)
+	}
+	return nil
 }
 
 // pruneStaleFiles collects every file row that should be removed and
@@ -635,6 +685,7 @@ func (i *Indexer) indexAbs(path string) error {
 	rel := i.storeKey(path)
 	prior, found, err := i.Store.GetFile(rel)
 	if err != nil {
+		i.recordStoreError(rel, err)
 		return fmt.Errorf("store.GetFile: %w", err)
 	}
 	if found && prior.Hash == hash {
@@ -650,15 +701,21 @@ func (i *Indexer) indexAbs(path string) error {
 	syms, err := spec.extract(rel, data)
 	if err != nil {
 		// Persist the file row so an unchanged-but-broken file is not re-parsed
-		// every walk; clear out any prior symbols for it.
-		_ = i.Store.ReplaceSymbols(rel, nil)
-		_ = i.Store.UpsertFile(store.File{
+		// every walk; clear out any prior symbols for it. Atomic for the same
+		// reason as the success path — a half-applied write here would pair the
+		// new hash with the previous parse's symbols. If the write fails
+		// nothing is committed, so the file simply gets re-parsed next run;
+		// the store error is recorded but the extract error stays primary,
+		// since that is what the caller is being told about.
+		if storeErr := i.Store.ReplaceFileSymbols(store.File{
 			Path:      rel,
 			Hash:      hash,
 			Language:  spec.lang,
 			SizeBytes: int64(len(data)),
 			IndexedAt: time.Now().Unix(),
-		})
+		}, nil); storeErr != nil {
+			i.recordStoreError(rel, storeErr)
+		}
 		// Record the failure so the CLI can surface it. Keep just the first
 		// line of the error to stay terse — parsers like gpython emit
 		// multi-line diagnostics that would otherwise spam the summary.
@@ -672,17 +729,20 @@ func (i *Indexer) indexAbs(path string) error {
 		return fmt.Errorf("extract %s: %w", rel, err)
 	}
 
-	if err := i.Store.UpsertFile(store.File{
+	// One transaction, not two. Committing the file row (with the new
+	// hash) separately from the symbols meant a crash or lock timeout
+	// between them left the new hash paired with the old parse's
+	// symbols — and the hash-skip above then made that pairing
+	// permanent. See store.ReplaceFileSymbols.
+	if err := i.Store.ReplaceFileSymbols(store.File{
 		Path:      rel,
 		Hash:      hash,
 		Language:  spec.lang,
 		SizeBytes: int64(len(data)),
 		IndexedAt: time.Now().Unix(),
-	}); err != nil {
-		return fmt.Errorf("store.UpsertFile: %w", err)
-	}
-	if err := i.Store.ReplaceSymbols(rel, syms); err != nil {
-		return fmt.Errorf("store.ReplaceSymbols: %w", err)
+	}, syms); err != nil {
+		i.recordStoreError(rel, err)
+		return fmt.Errorf("store.ReplaceFileSymbols: %w", err)
 	}
 	return nil
 }
