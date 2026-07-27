@@ -278,8 +278,28 @@ mechanism proposed here that would catch a heuristic change that quietly makes f
 
 ## 2. Track B — drift between artifacts
 
-Deliberately a sketch, not a spec. Track A should resolve first, because it tells us whether the
-code side or the claim side is the durable bet, and that changes what this should watch.
+Phase 0 is a shipped defect and is specced to implementation depth. Phase 1 is a cheap experiment
+that sizes everything after it. Phases 2+ stay sketches on purpose — Track A's result determines
+whether the code side or the claim side is the durable bet, and that changes what this should
+watch. **Do not build Phase 2+ before the measurement gate resolves.**
+
+### 2.0 The finding that reframes this track
+
+**Leonard does not run its own ground-truth adapter.**
+
+`EnabledAdapters` (`internal/config/config.go:103`) auto-enables `ground-truth` only when
+`.leonard/ground-truth/` exists. This repo's `.leonard/` contains `config.toml` and the database
+and nothing else. There is no truth tree, no `facts.yaml`, and no `[sync.*]` config. Only the
+`code` adapter loads.
+
+So the four drift failures below were not missed because the primitive is too weak. They were
+missed because **the half of Leonard that checks claims was switched off on Leonard.** The
+symbol-index half is dogfooded thoroughly; the claim half — the half §3 argues is the more durable
+bet — has never been pointed at this project.
+
+That inverts the first question. It is not "what new primitive is needed?" It is "how much of this
+does the shipped machinery already catch once it is turned on?" Nobody knows, and it is cheap to
+find out. That is Phase 1.
 
 ### 2.1 The evidence, all from one afternoon
 
@@ -293,10 +313,21 @@ found in this session lived in the **seam between two artifacts**, and Leonard c
 | 3 | README status line said v0.52.0 while `cmd/leonard/root.go` said v0.54.0 | prose ↔ constant |
 | 4 | `~/go/bin/leonard-hook` running at 0.55.0, its source in **no commit** | installed artifact ↔ source |
 
+A fifth, found later the same day and arguably the sharpest: `evals/inspect/tasks.py`'s third arm
+carried a docstring describing a system-prompt experiment that **was not running**, because
+`Task()` silently discarded the `system_message=` kwarg. A claim in a docstring diverged from what
+the code did, for two months, with no mechanism anywhere that could have noticed.
+
 Number 4 is the thesis in miniature. A ground-truth toolkit that cannot say *"the binary executing
 on your machine is not in your repository"* is missing the highest-consequence drift class there
 is. The fix shipped for #3 was a `grep` in CI — an unglamorous patch to apply *to a ground-truth
-tool*, and a decent signal that the primitive is missing rather than the rule.
+tool*.
+
+**Case 2 is explicitly out of scope.** "Design phase, no code yet" is a semantic claim about a
+whole document. No resolver catches it, and pretending otherwise would oversell what this
+primitive does. Three of the five cases are mechanically checkable; #2 needs a claim detector, and
+#5 needs something that can compare a docstring's assertion to a library's actual behavior, which
+is beyond anything proposed here.
 
 ### 2.2 The generalization
 
@@ -334,19 +365,97 @@ The honest version: the mechanism is largely built. What's missing is the *bindi
 that a particular claim is answerable by a particular resolver, and checking it on a schedule or
 at session start.
 
-### 2.4 Smallest thing worth building
+### 2.4 Phase 0 — `verified` never decays *(a shipped defect; build this regardless)*
 
-Not the general framework. One resolver, chosen because it caught a real problem today:
+Independent of every resolver question, small, and wrong today.
 
-**`leonard doctor --drift`** answering three questions:
+The `claims` table is `(id, session_id, claim, evidence, verified, recorded_at, file_path,
+superseded_by_claim_id, tool, index_ok, vet_ok, vet_error_summary)`. The lifecycle operations are
+`RecordClaim`, `SupersedeClaimsForFile`, `SupersedeOutstandingFailures`, `ResolveClaim`,
+`PurgeSupersededClaims`, `GetClaim`, `GetUnverifiedClaims`.
 
-1. Is the installed binary's version traceable to a commit? (catches #4)
-2. Do the version constants agree with each other and with the README status line? (catches #3 —
-   currently a CI `grep` that belongs in the tool)
-3. Are there uncommitted changes to files that ground-truth claims depend on?
+**There is no re-check anywhere.** No `last_checked` column, no TTL, no expiry. `verified` is a
+one-time boolean, and supersession fires on *a later edit to the same file* — never on the
+underlying truth changing. A claim verified on 2026-05-20 still reads as verified today even if
+what it asserted stopped being true in June.
 
-If that proves useful in daily dogfooding, generalize to the binding model. If it doesn't, we've
-spent a day instead of a quarter.
+That is the drift problem living inside the ledger built to prevent it. The ledger models *"was
+this checked?"* when the question that matters is *"is this still true?"*
+
+Minimum fix:
+
+- Add `last_checked INTEGER` and `check_ttl_seconds INTEGER` (nullable — NULL means "never
+  expires", preserving current behavior for existing rows).
+- A claim past its TTL reports as `stale`, distinct from both `verified` and `unverified`.
+  Three states, not two.
+- `GetUnverifiedClaims` gains a sibling that returns stale-but-previously-verified claims, so the
+  Stop hook can surface "5 claims haven't been re-checked in 30 days" without conflating them with
+  claims that never passed.
+
+This needs a schema migration (v9) and touches `queryUnverifiedClaims`. It does not need
+resolvers, bindings, or any new concept — just an honest answer to how old a verification is.
+
+### 2.5 Phase 1 — dogfood the ground-truth adapter on Leonard *(the experiment that sizes the rest)*
+
+Per §2.0, it has never been enabled here. Before designing a new primitive, find out what the
+existing one already catches.
+
+1. Create `.leonard/ground-truth/` with a `facts.yaml` holding the facts this project keeps
+   getting wrong: current version, bug-hunt round count, security-review count, tree-sitter
+   grammar count, schema version.
+2. Run `leonard list-stale-claims --scope '**/*.md'` across the repo.
+3. Record which of drift cases #1 and #3 it catches, and which it misses.
+
+**This is the decision point for the whole track.** If declaring five facts catches the README
+drift with zero new code, Track B is mostly "turn it on and write the facts down," and Phases 2+
+shrink to the cases facts.yaml genuinely cannot express (binary provenance, git state). If it
+catches nothing, the gap is real and precisely characterized, which is a far better position from
+which to design than the current one.
+
+Either outcome is worth a day. Do not skip to Phase 2 without this result.
+
+### 2.6 Phase 2 — `leonard doctor --drift` *(design depth only; gated on the measurement gate)*
+
+`doctor` already reports **"stale paths (file row exists but missing on disk)"** — index↔disk
+divergence. This is not a new concept; it is the same check generalized, which is the right way to
+argue for it.
+
+Built-in resolvers for the cases `facts.yaml` cannot express:
+
+| Check | Catches | Resolver |
+|---|---|---|
+| Version constants agree with each other and the README | #3 | extract Go const, grep prose |
+| Installed binary traceable to a commit | #4 | compare `--version` + build info to git |
+| Uncommitted changes to files ground-truth claims depend on | new | `git status` over the truth tree |
+
+Check 1 currently lives in CI as a `grep` (`3f01e7b`). It belongs in the tool.
+
+Whether these become plugins or stay built in is a Phase 3 question. Built-in first: three
+resolvers do not justify a protocol.
+
+### 2.7 Phase 3+ — the binding model *(sketch; do not spec further yet)*
+
+The general form from §2.2, with the seam named:
+
+- **Declared** in the truth tree (operator-authored, reviewable, in git) — mirroring how
+  `facts.yaml` already works.
+- **Cached** in the store with `last_checked` and last verdict — mirroring how the DB already
+  holds derived state.
+
+That split is the existing facts.yaml↔store philosophy, not a new architecture.
+
+**Two constraints found while grounding this, both real:**
+
+1. **Sync plugins give less than hoped.** The protocol (`internal/adapters/groundtruth/sync/doc.go`)
+   already returns `changes: [{path, old, new, reason}]`, which *is* a drift report, so
+   `leonard sync --dry-run` would surface drift for free. But it only covers facts a plugin owns,
+   and this repo currently declares **zero** facts and configures **zero** sync plugins. It is an
+   opportunistic win once Phase 1 exists, not a phase of its own.
+2. **Automatic checking crosses a trust boundary.** `sync/doc.go` states that explicit
+   `leonard sync` invocation *is* the trust boundary, and that fingerprinting plugin paths the way
+   `[post_edit.verify].command` is fingerprinted remains unbuilt. Any SessionStart-triggered drift
+   check that runs external resolvers needs that trust work first. Built-in resolvers (Phase 2)
+   sidestep this; plugin-based ones do not.
 
 ---
 
@@ -360,10 +469,18 @@ spent a day instead of a quarter.
 3. **Track A steps 3–4** (§1.4) — defensible number, committed results.
 4. **Track A phase 3** (§1.5) — the ablation harness, **only if step 2 showed a moderate effect**.
    The empty-index arm is the reason to build it; if it can't be run, don't build the rest.
-5. **Track B minimal** — `leonard doctor --drift`.
+5. **Track B phases 2+** (§2.6–2.7) — gated on step 2.
 
-The branch point is step 2. Everything after it is contingent, and the plan should not pretend
-otherwise until a number exists.
+**Two items are not gated and can start now**, because neither depends on the measurement result:
+
+- **Track B Phase 0** (§2.4) — `verified` never decaying is a defect in shipped code, not a
+  design question.
+- **Track B Phase 1** (§2.5) — dogfooding the ground-truth adapter on Leonard costs a day and
+  determines how much of Phases 2+ is even needed. Running it early is strictly better than
+  designing around a guess.
+
+The branch point for everything else is step 2. Until a number exists, the plan should not pretend
+to know which half of the project is the durable bet.
 
 ## 4. Operational note
 
