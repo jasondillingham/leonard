@@ -9,6 +9,13 @@
 .leonard/leonard.db-journal
 .leonard/leonard.db-wal
 .leonard/leonard.db-shm
+# Adapter runtime state. Written by the ground-truth adapter's post-edit
+# hook and the self-logging adapter respectively; both are session-scoped
+# machine state, not project content. Surfaced by Track B Phase 1, which
+# enabled the ground-truth adapter here for the first time and left an
+# untracked pending-audit.log behind on the first edit.
+.leonard/pending-audit.log
+.leonard/pending-decisions.log
 # v0.52 (formerly v0.51): the [post_edit.verify].command trust
 # fingerprint now lives OUTSIDE the project tree at
 # $XDG_CONFIG_HOME/leonard/trust/<project-hash>.sha256, so no
