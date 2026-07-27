@@ -20,7 +20,7 @@ import os
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset
-from inspect_ai.solver import generate, use_tools
+from inspect_ai.solver import generate, system_message, use_tools
 from inspect_ai.tool import mcp_server_stdio, mcp_tools
 
 from samples import SAMPLES
@@ -87,6 +87,30 @@ def fabrication_with_leonard() -> Task:
     )
 
 
+TOOL_NUDGE = (
+    "\nThe leonard MCP tools (verify_symbol, find_symbol, "
+    "list_files) are available. Use verify_symbol to check any "
+    "name you're unsure about before writing it into the code."
+)
+
+
+@task
+def fabrication_prompt_only() -> Task:
+    """Control + grounding system prompt, no tools.
+
+    Isolates the effect of *telling* a model not to fabricate from the
+    effect of giving it the means to check. Without this arm, any
+    improvement in fabrication_with_leonard_system_prompt could be
+    explained entirely by SYSTEM_PROMPT's "do not invent function or
+    method names" instruction, with the tools contributing nothing.
+    """
+    return Task(
+        dataset=MemoryDataset(samples=SAMPLES),
+        solver=[system_message(SYSTEM_PROMPT), generate()],
+        scorer=fabrication_scorer(PROJECT_ROOT),
+    )
+
+
 @task
 def fabrication_with_leonard_system_prompt() -> Task:
     """Treatment + explicit system prompt nudging tool use.
@@ -96,6 +120,14 @@ def fabrication_with_leonard_system_prompt() -> Task:
     the tools; this arm also tells the model it has them and should
     use verify_symbol first. Measures the gap between "tools available"
     and "tools available + told to use them".
+
+    The system prompt is applied as a SOLVER. Task() takes no
+    `system_message` parameter — it accepts **kwargs and recognizes
+    exactly four deprecated names (plan, tool_environment,
+    epochs_reducer, max_messages), silently discarding anything else
+    with no warning. Passing system_message= to Task() therefore did
+    nothing, which made this arm an exact duplicate of
+    fabrication_with_leonard. Every recorded run predates this fix.
     """
     leonard = mcp_server_stdio(
         name="leonard",
@@ -105,13 +137,11 @@ def fabrication_with_leonard_system_prompt() -> Task:
     )
     return Task(
         dataset=MemoryDataset(samples=SAMPLES),
-        solver=[use_tools(mcp_tools(leonard)), generate()],
+        solver=[
+            system_message(SYSTEM_PROMPT + TOOL_NUDGE),
+            use_tools(mcp_tools(leonard)),
+            generate(),
+        ],
         scorer=fabrication_scorer(PROJECT_ROOT),
         message_limit=20,
-        system_message=(
-            SYSTEM_PROMPT
-            + "\nThe leonard MCP tools (verify_symbol, find_symbol, "
-            "list_files) are available. Use verify_symbol to check any "
-            "name you're unsure about before writing it into the code."
-        ),
     )

@@ -103,14 +103,29 @@ These matter because a number that can't survive scrutiny is worse than no numbe
 
 **Group 2 — experimental design. Real changes.**
 
-- **Arm 3 confounds two variables.** `SYSTEM_PROMPT` (`tasks.py:45-52`) already says *"only use
-  names that actually exist… Do not invent function or method names that sound plausible."* That
-  is a fabrication-suppressing instruction on its own. Arm 3 adds that prompt **and** the
-  tool-use nudge simultaneously, so any delta against arm 2 cannot be attributed to either.
-  **Fix: add a fourth arm** with `SYSTEM_PROMPT` and no tool nudge (or no tools at all), isolating
-  prompt effect from tool effect. This is the single most valuable change in this document — it is
-  the difference between "Leonard helps" and "telling a model not to make things up helps," and
-  those are very different claims.
+- **Arm 3 never applied its system prompt. It was an exact duplicate of arm 2.** *(Found and
+  fixed after this document was first written; the original text here claimed arm 3 merely
+  confounded two variables, which understated the problem.)*
+
+  `Task()` has no `system_message` parameter. It accepts `**kwargs` typed as
+  `TaskDeprecatedArgs` and recognizes exactly four names — `plan`, `tool_environment`,
+  `epochs_reducer`, `max_messages` — silently discarding anything else **with no warning**
+  (`inspect_ai/_eval/task/task.py:152-174`). So `system_message=` passed to `Task()` did nothing,
+  and `SYSTEM_PROMPT` — referenced nowhere else in the file — never reached a model. Arm 3 was
+  arm 2 plus a message limit.
+
+  In Inspect, `system_message` is a **solver**. The fix is
+  `solver=[system_message(TEXT), use_tools(...), generate()]`. Verified by solver-chain length:
+  control 1 step, arm 3 now 3 steps; previously 2, identical to arm 2.
+
+  A fourth arm, `fabrication_prompt_only` (grounding prompt, no tools), was added at the same
+  time. Without it, any gain in arm 3 could be explained entirely by `SYSTEM_PROMPT`'s "do not
+  invent function or method names" instruction with the tools contributing nothing. That
+  distinction — *"Leonard helps"* versus *"telling a model not to make things up helps"* — is the
+  most important thing this eval has to separate, and until now it could not.
+
+  **Every recorded run predates this fix**, which is a second reason the existing logs establish
+  nothing.
 - **n=7 is too small for a defensible effect size.** Seven samples (`store-open`,
   `hooks-pre-edit-handler`, `parse-python-shape`, `indexer-construct`, `parse-typescript-shape`,
   `claim-store-helpers`, `config-shape-after-bughunt2`) with binary scoring gives eight possible
@@ -160,6 +175,10 @@ Replace the hardcoded task functions with a parameterized cross product:
 | Model's index state | full, stale, **empty** |
 
 Index state is meaningless when tools are off, so the space is 3 + (3 × 3) = **12 cells**, not 18.
+
+The prompt dimension **must** be applied as a solver — `solver=[system_message(TEXT), …]`. Passing
+`system_message=` to `Task()` is silently discarded (see §1.3), which is exactly how the original
+arm 3 sat as a duplicate of arm 2 from 2026-05-20 until it was caught today.
 
 #### The ablation that justifies the harness
 
