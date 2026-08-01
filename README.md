@@ -168,13 +168,22 @@ Both Rust helpers compile once per machine. Leonard discovers them automatically
 
 ## Dogfood wiring (this repo)
 
-Leonard is wired into its own development through `.claude/settings.local.json` (gitignored — personal config, not shared). The shape:
+Leonard needs two files: the MCP server goes in a project-root `.mcp.json`, and the hooks go in `.claude/settings.local.json`. Both are per-user — gitignore them.
 
-```jsonc
+**`.mcp.json`** (project root):
+
+```json
 {
   "mcpServers": {
     "leonard": { "command": "/path/to/go/bin/leonard-mcp" }
-  },
+  }
+}
+```
+
+**`.claude/settings.local.json`**:
+
+```jsonc
+{
   "hooks": {
     "PreToolUse":  [{ "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook pre-edit"  }]}],
     "PostToolUse": [{ "matcher": "Edit|Write|MultiEdit",              "hooks": [{ "type": "command", "command": "/path/to/go/bin/leonard-hook post-edit" }]}],
@@ -184,7 +193,17 @@ Leonard is wired into its own development through `.claude/settings.local.json` 
 }
 ```
 
-Enable Leonard in a new project: `leonard init .`, then drop the same JSON into that project's `.claude/settings.local.json` and restart Claude Code in the directory.
+> **Do not put `mcpServers` inside `settings.local.json`.** Current Claude Code rejects it with
+> `Settings validation failed: Unrecognized field: mcpServers`, and a rejected settings file takes
+> the hooks down with it — you get no Leonard enforcement at all, silently. ([#98](https://github.com/jasondillingham/leonard/issues/98))
+
+> **Do not trim `Bash` out of the `PreToolUse` matcher.** It is load-bearing, not decorative.
+> `pre-edit` branches on `ToolName == "Bash"` to scan the command string for `.leonard/` write
+> redirections (`bashTouchesLeonardDir`). That check is the fix for **bughunt-7 F2**, a HIGH where
+> `echo pwned > .leonard/config.toml` compromised operator-protected config in a single tool call.
+> A matcher of `Edit|Write` reopens it, and nothing warns you.
+
+Enable Leonard in a new project: `leonard init .`, drop both files in, and restart Claude Code in the directory.
 
 ## Per-project verifier (`[post_edit.verify]`)
 
