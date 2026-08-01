@@ -7,6 +7,42 @@ bug-hunt theme fix, or a perf sweep) and ships with updated version
 strings (`leonard --version`, `leonard-hook --version`,
 `leonard-mcp --version`) + test coverage.
 
+## v0.56.0 — doctor detects unsafe hook wiring; eval made runnable
+
+**`leonard doctor` now inspects the Claude Code hook wiring** and reports a
+class of failure that was previously invisible: Leonard's guards only run for
+the tools the operator wired into the hook matcher, and nothing checked that
+the wiring was sound.
+
+- **SECURITY finding** when the `PreToolUse` matcher omits `Bash`. The pre-edit
+  guard branches on `ToolName == "Bash"` to scan command strings for writes
+  into the protected data directory (the bughunt-7 F2 fix). A matcher without
+  `Bash` silently disables it — a HIGH reopened with no warning. An audit of
+  one machine found this in 3 of 7 wired projects, including this repo itself.
+- Warnings for a matcher that omits `MultiEdit`/`NotebookEdit` (edits bypass
+  the guard) or that a `PostToolUse` matcher omits `MultiEdit` (edits skip
+  re-indexing); for `mcpServers` present in `settings.local.json` (#98, which
+  Claude Code rejects — taking the hooks down with it); and for a missing or
+  unparseable configuration.
+- Matcher evaluation mirrors Claude Code's own matcher function, verified
+  against the shipping binary: an exact **case-sensitive** list (`|` or `,`
+  separated) versus an unanchored regex, with every ambiguous case biased
+  toward flagging rather than a false "covered".
+
+**Eval (Track A) made runnable.** The Inspect fabrication scorer now resolves
+`leonard-hook` via `$LEONARD_HOOK_BIN` → `PATH` → `$(go env GOPATH)/bin`
+(handling multi-entry GOPATH), removing the PATH footgun that killed a correct
+setup at scorer init. Added `evals/inspect/RESULTS.md` as the committed run
+record — `logs/` is gitignored, so a run otherwise leaves no trace — with the
+reporting rules that keep the number honest (exclude scorer errors, report
+no-code-block separately, never quote the mean as a fabrication rate, always
+record a git SHA and a failure taxonomy).
+
+**Docs and hygiene.** MCP setup corrected to a project-root `.mcp.json` (#98).
+The ground-truth adapter's machine-appended `audit-log.md` is no longer
+tracked (it grew unbounded, one section per edit — the shape behind
+incident-1) and is now gitignored alongside the other adapter runtime state.
+
 ## v0.55.0 — incident-1: session-start hook runaway (1 HIGH)
 
 **Fixes the session-start CPU runaway observed live on 2026-07-27**
