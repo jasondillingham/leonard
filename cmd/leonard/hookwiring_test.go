@@ -93,6 +93,24 @@ func TestCheckHookWiring_EscapedPipeRegexIsSecurityFinding(t *testing.T) {
 	}
 }
 
+// CRITICAL regression (binary-verified against 2.1.220): exact mode is
+// case-sensitive, so a plausibly-typed all-lowercase matcher covers no tool
+// and the hook fires for nothing. The old code lowercased and reported this as
+// safe — a silent false negative on the security path.
+func TestCheckHookWiring_LowercaseExactIsSecurityFinding(t *testing.T) {
+	root := t.TempDir()
+	writeSettings(t, root, `{
+      "hooks": {
+        "PreToolUse":  [{"matcher": "edit|write|multiedit|notebookedit|bash", "hooks": [{"command": "/go/bin/leonard-hook pre-edit"}]}],
+        "PostToolUse": [{"matcher": "Edit|Write|MultiEdit", "hooks": [{"command": "/go/bin/leonard-hook post-edit"}]}]
+      }
+    }`)
+	sec := findingsWith(checkHookWiring(root), wiringSecurity)
+	if len(sec) != 1 || !strings.Contains(sec[0].Message, "Bash") {
+		t.Fatalf("lowercase exact matcher should yield a Bash SECURITY finding, got %+v", checkHookWiring(root))
+	}
+}
+
 // F3: in regex mode the match is case-sensitive, so a lowercase "bash" does
 // not cover the "Bash" tool. (The `.*` forces regex mode.)
 func TestCheckHookWiring_RegexModeIsCaseSensitive(t *testing.T) {
@@ -174,10 +192,12 @@ func TestCheckHookWiring_SecuritySortsFirst(t *testing.T) {
 	}
 }
 
-// An empty matcher means "all tools" in Claude Code. Flagging it would make
-// doctor scream at the most permissive config there is.
+// The raw match-all spellings mean "all tools" in Claude Code. Flagging them
+// would make doctor scream at the most permissive config there is. Note "   "
+// is NOT here: a spaces-only matcher is an empty exact list, covered by the
+// case-sensitivity/spaces test below.
 func TestCheckHookWiring_MatchAllMatchersAreComplete(t *testing.T) {
-	for _, m := range []string{"", "*", ".*", "   "} {
+	for _, m := range []string{"", "*", ".*"} {
 		root := t.TempDir()
 		writeSettings(t, root, `{
           "hooks": {
@@ -192,10 +212,12 @@ func TestCheckHookWiring_MatchAllMatchersAreComplete(t *testing.T) {
 }
 
 // Exact-mode coverage: whole-token comparison (so "Edit" never satisfies
-// "NotebookEdit"), case-insensitive, and both `|` and `,` separators with
-// optional surrounding whitespace — all per the hooks docs.
+// "NotebookEdit"), CASE-SENSITIVE (verified against the 2.1.220 binary — the
+// exact branch does .includes(e) with no lowercasing), and both `|` and `,`
+// separators with per-token whitespace trimmed.
 func TestMissingTools_ExactMode(t *testing.T) {
 	full := requiredPreEditTools
+	all := []string{"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"}
 	cases := []struct {
 		matcher    string
 		wantMiss   []string
@@ -205,14 +227,22 @@ func TestMissingTools_ExactMode(t *testing.T) {
 		{"Edit|Write|MultiEdit|NotebookEdit|Bash", nil, true},
 		// Substring must not satisfy: Edit does not cover NotebookEdit.
 		{"Edit|Write|MultiEdit|Bash", []string{"NotebookEdit"}, true},
-		// Case-insensitive in exact mode (documented).
-		{"edit|write|multiedit|notebookedit|bash", nil, true},
-		{"EDIT|WRITE|MULTIEDIT|NOTEBOOKEDIT|BASH", nil, true},
-		// Comma separators, and mixed with pipes, with whitespace (F5).
+		// Exact mode is CASE-SENSITIVE: lowercase/uppercase tool names cover
+		// nothing, because Claude Code compares the raw tool name. This is the
+		// F1-review CRITICAL — the old code lowercased and reported these as
+		// fully covered, silently suppressing the SECURITY finding.
+		{"edit|write|multiedit|notebookedit|bash", all, true},
+		{"EDIT|WRITE|MULTIEDIT|NOTEBOOKEDIT|BASH", all, true},
+		{"Edit|Write|MultiEdit|NotebookEdit|bash", []string{"Bash"}, true},
+		// Comma separators, and mixed with pipes, with whitespace.
 		{"Edit,Write,MultiEdit,NotebookEdit,Bash", nil, true},
 		{"Edit, Write, MultiEdit, NotebookEdit, Bash", nil, true},
 		{"Edit | Write | MultiEdit | NotebookEdit | Bash", nil, true},
 		{"Edit,Write | MultiEdit,NotebookEdit|Bash", nil, true},
+		// Spaces-only: an empty exact list (matches nothing), NOT match-all —
+		// so every required tool is missing. Trimming to "" here would be a
+		// false "match all" (review finding 3).
+		{"   ", all, true},
 	}
 	for _, tc := range cases {
 		miss, understood := missingTools(tc.matcher, full)
@@ -225,14 +255,40 @@ func TestMissingTools_ExactMode(t *testing.T) {
 	}
 }
 
-// Match-all spellings. "" and "*" are the documented literals; ".*" reaches
-// the same answer through the regex path (F4: a match-all must be recognized
-// even when it is only part of an alternation).
+// Match-all spellings. "" and "*" are the raw literals Claude Code special-cases;
+// ".*" and friends reach the same answer through the regex path (so a match-all
+// buried in an alternation is still recognized). A spaces-only matcher is NOT
+// here — it is an empty exact list, tested separately above.
 func TestMissingTools_MatchAll(t *testing.T) {
-	for _, m := range []string{"", "*", "   ", ".*", "Edit|Write|.*", "(Edit|Write|MultiEdit|NotebookEdit|Bash)", "Edit|Write|MultiEdit|NotebookEdit|Bash.*"} {
+	for _, m := range []string{"", "*", ".*", "Edit|Write|.*", "(Edit|Write|MultiEdit|NotebookEdit|Bash)", "Edit|Write|MultiEdit|NotebookEdit|Bash.*"} {
 		miss, understood := missingTools(m, requiredPreEditTools)
 		if !understood || len(miss) != 0 {
 			t.Errorf("missingTools(%q) = (%v, %v), want full coverage", m, miss, understood)
+		}
+	}
+}
+
+// commandInvokes must recognize shell-quoted and shell-wrapped invocations
+// (review finding 5), and still reject look-alikes.
+func TestCommandInvokes(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		sub  string
+		want bool
+	}{
+		{"/go/bin/leonard-hook pre-edit", "pre-edit", true},
+		{`"/path with spaces/leonard-hook" pre-edit`, "pre-edit", true},
+		{`sh -c "leonard-hook pre-edit"`, "pre-edit", true},
+		{"env FOO=bar leonard-hook pre-edit", "pre-edit", true},
+		{"leonard-hook pre-edit --verbose", "pre-edit", true},
+		{"/opt/pre-edit-tools/leonard-hook session-start", "pre-edit", false}, // path has "pre-edit"; not a pre-edit hook
+		{"/opt/pre-edit-tools/leonard-hook session-start", "session-start", true},
+		{"leonard-hook-wrapper pre-edit", "pre-edit", false}, // different binary
+		{"/go/bin/leonard-hook post-edit", "pre-edit", false},
+	}
+	for _, tc := range cases {
+		if got := commandInvokes(tc.cmd, tc.sub); got != tc.want {
+			t.Errorf("commandInvokes(%q, %q) = %v, want %v", tc.cmd, tc.sub, got, tc.want)
 		}
 	}
 }

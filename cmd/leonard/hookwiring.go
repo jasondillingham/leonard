@@ -227,63 +227,68 @@ func matchersFor(groups []struct {
 }
 
 // commandInvokes reports whether cmd runs `leonard-hook <sub>` as an actual
-// argv token pair, not merely as a substring of some path.
+// invocation, not merely as a substring of some path.
+//
+// It matches `leonard-hook <sub>` as a token pair, tolerating a closing quote
+// right after the binary (so `sh -c "leonard-hook pre-edit"` and
+// `"/path with spaces/leonard-hook" pre-edit` are recognized — strings.Fields
+// would have split those on the quoted whitespace and missed them). The binary
+// name must sit at a path boundary — line start, a slash, or a quote — so
+// `leonard-hook-wrapper` is not mistaken for `leonard-hook`, and <sub> must be
+// a whole token so a path containing "pre-edit" is not matched.
 func commandInvokes(cmd, sub string) bool {
-	fields := strings.Fields(cmd)
-	for i, f := range fields {
-		if filepath.Base(f) != "leonard-hook" {
-			continue
-		}
-		if i+1 < len(fields) && fields[i+1] == sub {
-			return true
-		}
-	}
-	return false
+	re := regexp.MustCompile(`(^|[\s/"'])leonard-hook["']?\s+` + regexp.QuoteMeta(sub) + `($|[\s"'])`)
+	return re.MatchString(cmd)
 }
 
 // missingTools reports which of want the matcher fails to cover, and whether
-// the matcher could be evaluated at all. Claude Code evaluates matchers in
-// two modes (per the hooks docs):
+// the matcher could be evaluated at all. It mirrors Claude Code's own matcher
+// function (BFy in the 2.1.220 binary), which evaluates a matcher in two modes:
 //
-//   - "" or "*" — match every tool. ("*" is not a valid regex, so Claude
-//     special-cases it; ".*" is NOT special-cased here — it falls through to
-//     the regex path, where it matches everything anyway. Handling every
-//     match-all spelling in one place avoids the F4 bug where a match-all
-//     buried in an alternation, e.g. "Edit|.*", was missed.)
-//   - only [A-Za-z0-9_- ,|] — a case-INsensitive list of exact tool names,
-//     separated by `|` or `,`, surrounding whitespace optional.
-//   - anything else — an unanchored, case-SENSITIVE JavaScript regex.
+//   - "" or "*" — match every tool, tested against the RAW string. ".*" is not
+//     special-cased; it falls through to the regex path, where it matches
+//     everything anyway, so a match-all buried in an alternation ("Edit|.*")
+//     is still recognized.
+//   - only [A-Za-z0-9_- ,|] — a **case-sensitive** list of exact tool names,
+//     separated by `|` or `,`, with per-token whitespace trimmed. (Verified
+//     against the binary: the exact branch does `.includes(e)` with no
+//     lowercasing. `bash` does NOT cover the `Bash` tool.)
+//   - anything else — an unanchored, case-sensitive regex.
 //
-// understood is false only when the matcher is a regex that will not compile.
-// In that case the caller must warn rather than assert coverage either way:
-// claiming full coverage would silently suppress a real SECURITY finding
-// (this is the F1 failure mode in another form), and claiming a gap would cry
-// wolf on a matcher we simply don't understand.
+// Every deviation from the binary here is deliberately biased toward *flagging*
+// rather than toward "covered", because this drives a security check: a false
+// "covered" silently suppresses the SECURITY finding the check exists to raise.
+// So the matcher is NOT trimmed before classification (a spaces-only matcher is
+// not "*"), and the exact compare is case-sensitive.
+//
+// understood is false only when the matcher is a regex RE2 cannot compile. RE2
+// and JS diverge in both directions (RE2 rejects lookahead/backreferences that
+// JS accepts; RE2 accepts some constructs JS rejects), so a non-compiling
+// matcher is genuinely unknown — the caller warns for manual review rather than
+// asserting coverage (which could hide a dead hook) or a specific gap.
 func missingTools(matcher string, want []string) (missing []string, understood bool) {
-	m := strings.TrimSpace(matcher)
-	if m == "" || m == "*" {
+	// Match-all is tested against the raw matcher, exactly as the binary does
+	// (`if(!t||t==="*")`). Trimming here would turn a spaces-only matcher —
+	// which Claude Code treats as an empty exact list matching nothing — into
+	// a false "match all".
+	if matcher == "" || matcher == "*" {
 		return nil, true
 	}
 
-	if exactListMatcher.MatchString(m) {
+	if exactListMatcher.MatchString(matcher) {
 		present := map[string]bool{}
-		for _, tok := range splitExactList(m) {
-			present[strings.ToLower(tok)] = true
+		for _, tok := range splitExactList(matcher) {
+			present[tok] = true
 		}
 		for _, tool := range want {
-			if !present[strings.ToLower(tool)] {
+			if !present[tool] {
 				missing = append(missing, tool)
 			}
 		}
 		return missing, true
 	}
 
-	// Regex mode. Go's regexp (RE2) is unanchored via MatchString and
-	// case-sensitive by default — the same defaults as the JS regex Claude
-	// Code uses. RE2 rejects a few JS constructs (lookahead, backreferences);
-	// those surface as a compile failure and become an "understood == false"
-	// warning rather than a wrong verdict.
-	re, err := regexp.Compile(m)
+	re, err := regexp.Compile(matcher)
 	if err != nil {
 		return nil, false
 	}
