@@ -17,13 +17,18 @@ The scorer (see `scoring.py`) pipes every produced snippet through
 detector. A score of 1.0 means the hook found zero fabricated
 references; 0.0 means it blocked the snippet for inventing names.
 
-Three tasks share that dataset + scorer (in `tasks.py`):
+Four tasks share that dataset + scorer (in `tasks.py`):
 
-| Task | What it measures |
-|---|---|
-| `fabrication_control` | Claude alone, no MCP tools. Baseline rate. |
-| `fabrication_with_leonard` | Claude with `leonard-mcp` wired via `mcp_server_stdio` — tools advertised, model decides whether to use. |
-| `fabrication_with_leonard_system_prompt` | Same tools + an explicit system-message nudge to verify_symbol first. Measures the gap between "tools available" and "tools available + told." |
+| Task | Tools | System prompt | What it measures |
+|---|---|---|---|
+| `fabrication_control` | — | — | Claude alone. Baseline rate from model priors. |
+| `fabrication_prompt_only` | — | ✅ | The prompt's effect with no tools to back it. Separates "told to verify" from "able to verify." |
+| `fabrication_with_leonard` | ✅ | — | `leonard-mcp` wired via `mcp_server_stdio` — tools advertised, model decides whether to use. |
+| `fabrication_with_leonard_system_prompt` | ✅ | ✅ | Tools plus an explicit nudge to `verify_symbol` first. The gap between "tools available" and "tools available + told." |
+
+`fabrication_prompt_only` was added in `caac19e`, which also fixed a bug where arm 4 never
+applied its system prompt at all (`Task()` silently discarded the `system_message=` kwarg, making
+it a duplicate of arm 3). **Every `.eval` log in `logs/` predates that fix.**
 
 ## Running
 
@@ -36,6 +41,11 @@ uv sync
 # Build the Leonard binaries the scorer + MCP server need
 go install ../../cmd/...
 
+# The scorer locates leonard-hook itself: $LEONARD_HOOK_BIN, else PATH, else
+# $(go env GOPATH)/bin — the `go install` target, which is NOT on PATH by
+# default. Set the env var only to pin a specific build:
+#   export LEONARD_HOOK_BIN=/path/to/leonard-hook
+
 # Make sure the repo is indexed (the scorer needs .leonard/leonard.db)
 (cd ../.. && leonard init . && leonard index)
 
@@ -44,9 +54,10 @@ export ANTHROPIC_API_KEY=sk-...
 uv run inspect eval tasks.py@fabrication_control \
     --model anthropic/claude-sonnet-4-5
 
-# Or run all three back-to-back
+# Or run all four back-to-back
 uv run inspect eval \
     tasks.py@fabrication_control \
+    tasks.py@fabrication_prompt_only \
     tasks.py@fabrication_with_leonard \
     tasks.py@fabrication_with_leonard_system_prompt \
     --model anthropic/claude-sonnet-4-5
@@ -54,6 +65,10 @@ uv run inspect eval \
 # Inspect the results
 uv run inspect view
 ```
+
+**Write the run down.** `logs/` is gitignored, so a run leaves no trace in the repo. Record it in
+[`RESULTS.md`](./RESULTS.md), which carries the reporting rules — most importantly: exclude
+`scorer_error`, report `no_code_block` separately, and never quote the mean as a fabrication rate.
 
 A full pass over the 7 samples is ~$0.50–$2 depending on how chatty
 the treatment runs get (the treated runs use more tokens because each

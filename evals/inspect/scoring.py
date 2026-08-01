@@ -87,6 +87,66 @@ def _run_self_check(project_root: str) -> None:
     _self_check_done = True
 
 
+def _resolve_hook_bin() -> str:
+    """Locate the leonard-hook binary the scorer pipes candidate code through.
+
+    ROADMAP-v2 §1.2 names the PATH entry as one of the three things standing
+    between this harness and a real number. `go install` writes to
+    $(go env GOPATH)/bin, which is *not* on PATH by default — /usr/local/go/bin
+    is the toolchain, not the install target — so `shutil.which` alone turns a
+    correct setup into a hard failure at scorer init.
+
+    Resolution order:
+      1. $LEONARD_HOOK_BIN, if set. Explicit operator intent wins.
+      2. PATH.
+      3. $(go env GOPATH)/bin/leonard-hook, the default `go install` target.
+
+    A bad explicit override raises rather than silently falling through to a
+    different binary — scoring against the wrong hook would produce numbers
+    that look fine and mean nothing, which is the failure mode the self-check
+    and the forced cwd both already exist to prevent.
+    """
+    override = os.environ.get("LEONARD_HOOK_BIN")
+    if override:
+        if not (os.path.isfile(override) and os.access(override, os.X_OK)):
+            raise RuntimeError(
+                f"LEONARD_HOOK_BIN={override!r} is not an executable file. "
+                "Unset it to fall back to PATH, or point it at a real "
+                "leonard-hook binary."
+            )
+        return override
+
+    found = shutil.which("leonard-hook")
+    if found:
+        return found
+
+    try:
+        gopath = subprocess.run(
+            ["go", "env", "GOPATH"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        gopath = ""
+    # GOPATH may hold several colon-separated entries; `go install` writes to
+    # the bin/ of the first. Check every entry rather than treating the whole
+    # string as one path (which would build "/a:/b/bin/leonard-hook").
+    for entry in gopath.split(os.pathsep):
+        if not entry:
+            continue
+        candidate = os.path.join(entry, "bin", "leonard-hook")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    raise RuntimeError(
+        "leonard-hook not found. Build it with `go install ./cmd/...` from the "
+        "repo root, then either add $(go env GOPATH)/bin to PATH or set "
+        "LEONARD_HOOK_BIN to the binary's full path."
+    )
+
+
 def detect_fabrications(code: str, project_root: str) -> tuple[list[str], str]:
     """Run leonard-hook pre-edit against code; return (fabricated, raw_response).
 
@@ -105,11 +165,7 @@ def detect_fabrications(code: str, project_root: str) -> tuple[list[str], str]:
 def _detect_fabrications_raw(code: str, project_root: str) -> tuple[list[str], str]:
     """detect_fabrications minus the self-check, so the self-check can
     use it without recursing."""
-    hook = shutil.which("leonard-hook")
-    if hook is None:
-        raise RuntimeError(
-            "leonard-hook not found on PATH — run `go install ./cmd/leonard-hook`"
-        )
+    hook = _resolve_hook_bin()
     payload = json.dumps(
         {
             "session_id": "eval-fab-scorer",
