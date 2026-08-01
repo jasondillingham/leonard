@@ -37,6 +37,11 @@ func newDoctorCmd(rt Runtime) *cobra.Command {
 				return fmt.Errorf("doctor: %w", err)
 			}
 			renderDoctorReport(cmd.OutOrStdout(), rep, time.Now())
+			// #101: the store can be perfectly healthy while Leonard's
+			// guards are switched off by a bad hook matcher. That failure
+			// is invisible by construction, so doctor is the right place
+			// to look for it.
+			renderWiringFindings(cmd.OutOrStdout(), checkHookWiring(cwd))
 			return nil
 		},
 	}
